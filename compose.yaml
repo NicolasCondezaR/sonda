@@ -32,5 +32,17 @@ services:
     entrypoint: ["grpcdemo"]
     command: ["-addr", ":8082", "-reflection=true"]
 
+  # The terminal client. Behind a profile because it is something you run, not
+  # something that runs: `docker compose run --rm tui`.
+  tui:
+    build: .
+    profiles: ["tui"]
+    entrypoint: ["mirador-tui"]
+    command: ["-api", "http://mirador:9000"]
+    tty: true
+    stdin_open: true
+    depends_on:
+      - mirador
+
 volumes:
   mirador-data:

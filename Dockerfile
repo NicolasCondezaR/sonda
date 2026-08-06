@@ -15,6 +15,7 @@ ENV CGO_ENABLED=0
 RUN go build -trimpath -ldflags="-s -w" -o /out/mirador ./cmd/mirador
 RUN go build -trimpath -ldflags="-s -w" -o /out/echo ./examples/echo
 RUN go build -trimpath -ldflags="-s -w" -o /out/grpcdemo ./examples/grpcdemo
+RUN go build -trimpath -ldflags="-s -w" -o /out/mirador-tui ./cmd/mirador-tui
 
 FROM alpine:3.21
 
@@ -22,6 +23,7 @@ RUN adduser -D -u 10001 mirador && mkdir -p /data && chown mirador:mirador /data
 COPY --from=build /out/mirador /usr/local/bin/mirador
 COPY --from=build /out/echo /usr/local/bin/echo
 COPY --from=build /out/grpcdemo /usr/local/bin/grpcdemo
+COPY --from=build /out/mirador-tui /usr/local/bin/mirador-tui
 
 USER mirador
 VOLUME /data

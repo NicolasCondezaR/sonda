@@ -16,9 +16,10 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/mirador-field.jpg)
 
-> **Status: phase 5.** Capture, decoding, storage, search, the query API, the
-> operator interface, replay and structural diff all work, and the whole thing
-> runs from `docker compose up`. See [Roadmap](#roadmap).
+> **Status: phase 6, feature complete.** Capture, decoding, storage, search,
+> the query API, the web interface, replay, structural diff and a terminal
+> client all work, and the whole thing runs from `docker compose up`. See
+> [Roadmap](#roadmap).
 
 ## How it works
 
@@ -107,6 +108,67 @@ network requests, no webfonts.
 Above: a gRPC call that returned `PermissionDenied`. The HTTP status is 200 —
 gRPC reports failure below HTTP — and the request is decoded to field names
 because the service serves reflection.
+
+## The terminal client
+
+The same instrument, in a terminal. It is a second client of the API rather than
+a second implementation: it captures nothing and stores nothing, it reads a
+running Mirador.
+
+```bash
+go build -o mirador-tui ./cmd/mirador-tui
+./mirador-tui                          # defaults to http://127.0.0.1:9000
+./mirador-tui -api http://host:9000
+
+docker compose run --rm tui            # or from the image
+```
+
+```
+M I R A D O R  ■ LIVE   FAULTS  ALL    1M  5M  30M                  19 CAPTURED  ·  2 FLAGGED
+CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -10M       -5M  NOW
+ ■ echo       7     1     │·············│···········│···········│···········│·········█·····
+▸■ orders     12    1     │·············│···········│···········│···········│·········█·····
+──────────────────────────┴─────────────────────────────────────────────────────────────────
+ POST /demo.v1.Orders/Fail
+ orders   gRPC   HTTP 200   1.72ms
+ gRPC 7 PermissionDenied — no tienes acceso a este pedido
+ demo.v1.Orders / Fail   schema from reflection
+ REQUEST  1 message(s)
+   {
+     "code": 7,
+     "message": "no tienes acceso a este pedido"
+   }
+ RESPONSE  0 message(s)
+ ↑↓ chan · ←→ call · ⏎ read · r replay · d diff · f faults · w window · h hold · / find · q quit
+```
+
+The translation is mostly direct — monospace is free here, hairlines become
+box-drawing characters, and channel colours carry over unchanged. Two things
+needed a different expression:
+
+- There are no type sizes, so the four roles become weight and dimming.
+- A lane is one row tall, so a fault cannot be a taller bar. It becomes a **full
+  block where an ordinary call is a half one** (`█` against `▄`), with a third
+  glyph for a cell holding both. Shape still carries the outcome before colour
+  does, which is the rule that matters.
+
+| Key | |
+|---|---|
+| `↑` `↓` | pick a channel |
+| `←` `→` | step along it, call by call |
+| `enter` | read the selected call |
+| `r` | replay it |
+| `d` | diff a replay against its original |
+| `f` | faults only, or everything |
+| `w` | cycle the sweep |
+| `h` | hold the trace |
+| `/` | search |
+| `q` | quit |
+
+Stepping moves call by call rather than cell by cell: an empty cell is not
+something to point at. `h` holds the trace for the same reason the web client
+freezes the field under the pointer — a mark that slides while you aim at it is
+not selectable.
 
 ## PowerShell
 
@@ -366,7 +428,7 @@ operators.
 | 3 | Web UI with a live timeline | done |
 | 4 | Replay and structural diff | done |
 | 5 | Packaging and documentation | done |
-| 6 | TUI, as a second client of the same API | next |
+| 6 | TUI, as a second client of the same API | done |
 
 ### Limitations
 
