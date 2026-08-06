@@ -1,0 +1,269 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"mirador/internal/config"
+	"mirador/internal/proxy"
+	"mirador/internal/store"
+)
+
+// liveStack wires a real proxy in front of a real upstream and a real API, so a
+// replay travels the same path a client's request does.
+type liveStack struct {
+	api      http.Handler
+	store    *store.Store
+	target   config.Target
+	received chan *http.Request
+	bodies   chan []byte
+}
+
+type directRecorder struct {
+	mu    sync.Mutex
+	store *store.Store
+}
+
+func (d *directRecorder) Record(c *store.Call) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, _ = d.store.Insert(context.Background(), c)
+}
+
+func (d *directRecorder) Dropped() int64 { return 0 }
+
+func newLiveStack(t *testing.T) *liveStack {
+	t.Helper()
+
+	stack := &liveStack{
+		received: make(chan *http.Request, 8),
+		bodies:   make(chan []byte, 8),
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		stack.received <- r.Clone(context.Background())
+		stack.bodies <- body
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"echo":` + strconv.Quote(string(body)) + `}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	stack.store = db
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack.target = config.Target{
+		Name:     "api",
+		Listen:   listener.Addr().String(),
+		Upstream: upstream.URL,
+		Protocol: config.ProtocolHTTP,
+	}
+
+	recorder := &directRecorder{store: db}
+	server := &http.Server{Handler: proxy.New(stack.target, 1<<20, recorder).Handler()}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+
+	stack.api = New(db, recorder, []config.Target{stack.target}, nil).Handler()
+	return stack
+}
+
+// call sends one request through the proxy and returns the id it was captured
+// under.
+func (s *liveStack) call(t *testing.T, method, path, body string) int64 {
+	t.Helper()
+	req, err := http.NewRequest(method, "http://"+s.target.Listen+path, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-Id", "original")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	<-s.received
+	<-s.bodies
+	return s.waitForCall(t, 0)
+}
+
+// waitForCall polls until a capture newer than after exists. The recorder runs
+// off the request path, so the row lands a moment after the response.
+func (s *liveStack) waitForCall(t *testing.T, after int64) int64 {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		calls, err := s.store.List(context.Background(), store.Filter{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) > 0 && calls[0].ID > after {
+			return calls[0].ID
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no call captured after id %d", after)
+	return 0
+}
+
+func (s *liveStack) replay(t *testing.T, id int64, body string) (int, map[string]any) {
+	t.Helper()
+	var reader io.Reader = http.NoBody
+	if body != "" {
+		reader = bytes.NewBufferString(body)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/calls/"+strconv.FormatInt(id, 10)+"/replay", reader)
+	rec := httptest.NewRecorder()
+	s.api.ServeHTTP(rec, req)
+
+	var out map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+// A replay that does not put the same bytes on the wire is not a replay.
+func TestReplaySendsTheOriginalRequestByteForByte(t *testing.T) {
+	stack := newLiveStack(t)
+	original := `{"sku":"ABC-9","cliente":"Comercial Andes"}`
+	id := stack.call(t, http.MethodPost, "/v1/orders?dry=1", original)
+
+	code, out := stack.replay(t, id, "")
+	if code != http.StatusOK {
+		t.Fatalf("replay returned %d: %v", code, out)
+	}
+
+	select {
+	case req := <-stack.received:
+		if req.URL.RequestURI() != "/v1/orders?dry=1" {
+			t.Errorf("upstream saw %q", req.URL.RequestURI())
+		}
+		if req.Method != http.MethodPost {
+			t.Errorf("method = %q", req.Method)
+		}
+		if got := req.Header.Get("X-Request-Id"); got != "original" {
+			t.Errorf("original headers were not carried over: X-Request-Id = %q", got)
+		}
+		// The marker Mirador adds must never reach the upstream.
+		if got := req.Header.Get(proxy.ReplayHeader); got != "" {
+			t.Errorf("the replay marker leaked to the upstream: %q", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the upstream never received the replay")
+	}
+
+	select {
+	case body := <-stack.bodies:
+		if string(body) != original {
+			t.Errorf("upstream received %q, want %q", body, original)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no body received")
+	}
+}
+
+// The replay is captured like any other traffic and linked to its source, which
+// is what makes the diff possible at all.
+func TestReplayIsCapturedAndLinked(t *testing.T) {
+	stack := newLiveStack(t)
+	id := stack.call(t, http.MethodPost, "/v1/orders", `{"sku":"ABC-9"}`)
+
+	if code, out := stack.replay(t, id, ""); code != http.StatusOK {
+		t.Fatalf("replay returned %d: %v", code, out)
+	}
+	<-stack.received
+	<-stack.bodies
+
+	replayID := stack.waitForCall(t, id)
+	replayed, err := stack.store.Get(context.Background(), replayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.ReplayOf == nil {
+		t.Fatal("the replay was not linked back to the original")
+	}
+	if *replayed.ReplayOf != id {
+		t.Errorf("linked to %d, want %d", *replayed.ReplayOf, id)
+	}
+	// The captured headers must match what the upstream got, marker included —
+	// meaning absent.
+	if got := replayed.Request.Headers.Get(proxy.ReplayHeader); got != "" {
+		t.Errorf("the marker was recorded as part of the request: %q", got)
+	}
+}
+
+// Refusing is the honest answer: only the head of the body was kept, so the
+// request that would go out is not the one that was captured.
+func TestReplayRefusesATruncatedCapture(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "truncated.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	id, err := db.Insert(context.Background(), &store.Call{
+		Target: "api", Protocol: "http", Method: "POST", Path: "/v1/orders",
+		Status: 200, ClientAddr: "127.0.0.1:1", StartedAt: time.Now().UTC(),
+		Request: store.Message{
+			Headers: http.Header{}, Body: []byte(`{"sku":"AB`),
+			Size: 4096, Truncated: true,
+		},
+		Response: store.Message{Headers: http.Header{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targets := []config.Target{{Name: "api", Listen: "127.0.0.1:1", Upstream: "http://127.0.0.1:1", Protocol: "http"}}
+	handler := New(db, noDrops{}, targets, nil).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/calls/"+strconv.FormatInt(id, 10)+"/replay", http.NoBody)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	var out map[string]string
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if !bytes.Contains([]byte(out["error"]), []byte("max_body_bytes")) {
+		t.Errorf("the refusal should say how to fix it, got %q", out["error"])
+	}
+}
+
+func TestReplayToAnUnknownChannelIsRejected(t *testing.T) {
+	stack := newLiveStack(t)
+	id := stack.call(t, http.MethodGet, "/v1/orders", "")
+
+	code, out := stack.replay(t, id, `{"target":"does-not-exist"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (%v)", code, out)
+	}
+}
+
+func TestReplayOfAMissingCall(t *testing.T) {
+	stack := newLiveStack(t)
+	if code, _ := stack.replay(t, 999999, ""); code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", code)
+	}
+}

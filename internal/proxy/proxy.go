@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"sync"
 	"time"
 
 	"mirador/internal/config"
@@ -103,6 +104,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response: newCapture(p.maxBody),
 	}
 
+	replayOf := replayedFrom(r.Header)
 	requestHeaders := r.Header.Clone()
 	r.Body = ex.request.wrap(r.Body)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, ex))
@@ -122,16 +124,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		StartedAt:  started,
 		Duration:   time.Since(started),
 		Error:      errorText(ex.err),
+		ReplayOf:   replayOf,
 		Request: store.Message{
 			Headers:   requestHeaders,
 			Body:      ex.request.bytes(),
-			Size:      ex.request.total,
+			Size:      ex.request.size(),
 			Truncated: ex.request.truncated(),
 		},
 		Response: store.Message{
 			Headers:   recorder.Header().Clone(),
 			Body:      ex.response.bytes(),
-			Size:      ex.response.total,
+			Size:      ex.response.size(),
 			Truncated: ex.response.truncated(),
 		},
 	}
@@ -193,8 +196,17 @@ func errorText(err error) string {
 
 // capture keeps the head of a stream while the whole stream flows through
 // untouched, and counts every byte that passed.
+//
+// The lock is not decoration. A request body is read on the transport's own
+// write goroutine, not on the handler's, and a server is free to answer before
+// it has read the whole body — a 4xx on the headers does exactly that. The
+// handler then reads these fields while the transport may still be writing.
+// It is a narrow window on a localhost proxy, which is precisely the kind of
+// race that survives every manual test and shows up once in production.
 type capture struct {
 	limit int64
+
+	mu    sync.Mutex
 	head  bytes.Buffer
 	total int64
 }
@@ -209,13 +221,29 @@ func (c *capture) wrap(body io.ReadCloser) io.ReadCloser {
 }
 
 func (c *capture) bytes() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.head.Len() == 0 {
 		return nil
 	}
-	return c.head.Bytes()
+	// A copy, not the buffer's own storage: the recorder writes asynchronously
+	// and the reader may still append.
+	out := make([]byte, c.head.Len())
+	copy(out, c.head.Bytes())
+	return out
 }
 
-func (c *capture) truncated() bool { return c.total > int64(c.head.Len()) }
+func (c *capture) size() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
+}
+
+func (c *capture) truncated() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total > int64(c.head.Len())
+}
 
 type capturingBody struct {
 	capture *capture
@@ -226,10 +254,12 @@ func (b *capturingBody) Read(p []byte) (int, error) {
 	n, err := b.source.Read(p)
 	if n > 0 {
 		c := b.capture
+		c.mu.Lock()
 		c.total += int64(n)
 		if room := c.limit - int64(c.head.Len()); room > 0 {
 			c.head.Write(p[:min(int64(n), room)])
 		}
+		c.mu.Unlock()
 	}
 	return n, err
 }

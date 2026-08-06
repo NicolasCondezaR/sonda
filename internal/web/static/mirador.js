@@ -26,6 +26,7 @@ const state = {
   frozen: false,             // pointer resting in the field holds the trace
   frozenOffset: 0,
   selected: null,
+  detail: null,             // the call currently in the inspector
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
   pxPerMs: 0,
   epoch: Date.now(),
@@ -49,6 +50,7 @@ const dom = {
   inspector: document.getElementById("inspector"),
   inspectorIdle: document.getElementById("inspector-idle"),
   inspectorBody: document.getElementById("inspector-body"),
+  diffBody: document.getElementById("diff-body"),
 };
 
 /* ------------------------------------------------------------- helpers -- */
@@ -440,7 +442,9 @@ async function select(id) {
   try {
     const res = await fetch("api/calls/" + id);
     if (!res.ok) throw new Error("detail " + res.status);
-    renderInspector(await res.json());
+    const detail = await res.json();
+    state.detail = detail;
+    renderInspector(detail);
   } catch (err) {
     dom.inspectorBody.replaceChildren(
       el("div", "insp-sec__body note note--fault", "Could not read this call: " + err.message));
@@ -492,6 +496,7 @@ function renderInspector(call) {
     head.appendChild(el("div", "insp-head__fault", call.error));
   }
   out.appendChild(head);
+  out.appendChild(renderActions(call));
 
   if (call.grpc) {
     out.appendChild(renderGRPC(call.grpc));
@@ -508,7 +513,189 @@ function renderInspector(call) {
 
   dom.inspectorBody.replaceChildren(out);
   dom.inspectorBody.scrollTop = 0;
+  dom.diffBody.hidden = true;
 }
+
+/* ------------------------------------------------------------- actions -- */
+
+function renderActions(call) {
+  const bar = el("div", "actions");
+
+  const replay = el("button", "switch__key switch__key--lone", "REPLAY");
+  replay.type = "button";
+
+  // Only the head of a truncated body was stored, so replaying it would put a
+  // different request on the wire. The control says why up front instead of
+  // failing after the click.
+  if (call.request.truncated) {
+    replay.disabled = true;
+    replay.title = "This request was truncated when captured, so it cannot be replayed faithfully.";
+  }
+  replay.addEventListener("click", () => runReplay(call, replay, bar));
+  bar.appendChild(replay);
+
+  if (call.replay_of) {
+    const diff = el("button", "switch__key switch__key--lone", "DIFF vs ORIGINAL");
+    diff.type = "button";
+    diff.addEventListener("click", () => runDiff(call.replay_of, call.id));
+    bar.appendChild(diff);
+    bar.appendChild(el("span", "actions__note", "replay of #" + call.replay_of));
+  }
+  return bar;
+}
+
+async function runReplay(call, button, bar) {
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = "SENDING";
+  for (const stale of bar.querySelectorAll(".actions__note--fault")) stale.remove();
+
+  try {
+    const res = await fetch("api/calls/" + call.id + "/replay", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || ("replay " + res.status));
+
+    // The replay travels through the proxy, so it arrives as an ordinary
+    // capture. Wait for it rather than guessing its id.
+    const replayed = await waitForReplay(call.id);
+    if (replayed) {
+      await select(replayed);
+      runDiff(call.id, replayed);
+    } else {
+      bar.appendChild(el("span", "actions__note",
+        "sent to " + out.sent_to + " - " + (out.error || out.status)));
+    }
+  } catch (err) {
+    bar.appendChild(el("span", "actions__note actions__note--fault", err.message));
+  } finally {
+    button.disabled = call.request.truncated;
+    button.textContent = previous;
+  }
+}
+
+// The recorder writes off the request path, so the row lands a moment after the
+// response comes back.
+async function waitForReplay(originalID) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const res = await fetch("api/calls?limit=20");
+    if (!res.ok) continue;
+    const body = await res.json();
+    const hit = body.calls.find((c) => c.replay_of === originalID);
+    if (hit) return hit.id;
+  }
+  return null;
+}
+
+/* ---------------------------------------------------------------- diff -- */
+
+async function runDiff(aID, bID) {
+  dom.diffBody.hidden = false;
+  dom.diffBody.replaceChildren(el("div", "insp-sec__body insp-sec__body--loading", "Comparing"));
+
+  try {
+    const res = await fetch("api/diff?a=" + aID + "&b=" + bID);
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || ("diff " + res.status));
+    renderDiff(out);
+  } catch (err) {
+    dom.diffBody.replaceChildren(
+      el("div", "insp-sec__body note note--fault", "Could not compare: " + err.message));
+  }
+}
+
+function renderDiff(d) {
+  const out = document.createDocumentFragment();
+
+  const head = section("DIFF  #" + d.a.id + " to #" + d.b.id, "a is red, b is green");
+  head.body.appendChild(kv([
+    ["a", "#" + d.a.id + "  " + d.a.method + " " + d.a.path],
+    ["b", "#" + d.b.id + "  " + d.b.method + " " + d.b.path],
+  ]));
+  out.appendChild(head.wrap);
+
+  const outcome = section("OUTCOME");
+  if (!d.metadata.length) {
+    outcome.body.appendChild(el("p", "diff__same", "Same outcome."));
+  } else {
+    outcome.body.appendChild(renderChanges(d.metadata));
+  }
+  out.appendChild(outcome.wrap);
+
+  out.appendChild(renderSideDiff("REQUEST", d.request));
+  out.appendChild(renderSideDiff("RESPONSE", d.response));
+
+  dom.diffBody.replaceChildren(out);
+  dom.diffBody.scrollTop = 0;
+}
+
+function renderSideDiff(title, side) {
+  const s = section(title);
+
+  if (!side.comparable) {
+    s.body.appendChild(el("p", "note", side.reason || "Not comparable."));
+    s.body.appendChild(el("p", "diff__same",
+      side.identical ? "The bytes are identical." : "The bytes differ."));
+    return s.wrap;
+  }
+
+  if (side.messages) {
+    for (const m of side.messages) {
+      const block = el("div", "msg");
+      block.appendChild(el("span", "label", "MESSAGE #" + m.index));
+      if (m.only_in) {
+        block.appendChild(el("p", "note", "Only present in " + m.only_in + "."));
+      } else if (!m.comparable) {
+        block.appendChild(el("p", "note", m.reason));
+      } else if (m.identical) {
+        block.appendChild(el("p", "diff__same", "Identical."));
+      } else {
+        block.appendChild(renderChanges(m.changes));
+      }
+      s.body.appendChild(block);
+    }
+    if (!side.messages.length) s.body.appendChild(el("p", "diff__same", "No messages."));
+    return s.wrap;
+  }
+
+  if (side.identical) {
+    s.body.appendChild(el("p", "diff__same", "Identical."));
+  } else {
+    s.body.appendChild(renderChanges(side.changes));
+  }
+  return s.wrap;
+}
+
+function renderChanges(changes) {
+  const wrap = el("div", "chg");
+  for (const c of changes) {
+    const symbol = c.kind === "added" ? "+" : c.kind === "removed" ? "-" : "~";
+    const mark = el("span", "chg__mark", symbol);
+    mark.dataset.kind = c.kind;
+    wrap.append(mark, el("span", "chg__path", c.path));
+
+    const values = el("div", "chg__values");
+    if (c.kind !== "added") {
+      values.append(el("span", "chg__side", "a"), el("span", "chg__a", formatValue(c.a)));
+    }
+    if (c.kind !== "removed") {
+      values.append(el("span", "chg__side", "b"), el("span", "chg__b", formatValue(c.b)));
+    }
+    wrap.appendChild(values);
+  }
+  return wrap;
+}
+
+function formatValue(value) {
+  if (value === undefined || value === null) return "(absent)";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
 
 function renderSide(title, msg) {
   const aside = msg.truncated
@@ -632,6 +819,8 @@ function renderWire(fields) {
 
 function closeInspector() {
   state.selected = null;
+  state.detail = null;
+  dom.diffBody.hidden = true;
   for (const node of state.nodes.values()) node.setAttribute("aria-pressed", "false");
   dom.inspectorBody.hidden = true;
   dom.inspectorIdle.hidden = false;

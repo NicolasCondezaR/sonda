@@ -51,6 +51,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/schemas", s.listSchemas)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/stream", s.stream)
+	mux.HandleFunc("POST /api/calls/{id}/replay", s.replayCall)
+	mux.HandleFunc("GET /api/diff", s.diffCalls)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -75,6 +77,10 @@ type summaryJSON struct {
 	GRPCStatus     *int32 `json:"grpc_status,omitempty"`
 	GRPCStatusText string `json:"grpc_status_text,omitempty"`
 	GRPCMessage    string `json:"grpc_message,omitempty"`
+
+	// ReplayOf turns "did the fix work?" into a diff instead of a memory
+	// exercise, so it travels with the summary and reaches the live view.
+	ReplayOf *int64 `json:"replay_of,omitempty"`
 }
 
 type messageJSON struct {
@@ -180,6 +186,7 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 			Duration: c.Duration, Error: c.Error,
 			RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
 			GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
+			ReplayOf: c.ReplayOf,
 		}),
 		ClientAddr:       c.ClientAddr,
 		Request:          toMessage(c.Request),
@@ -280,6 +287,10 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
+// timeLayout keeps sub-second precision: two calls in the same burst have to be
+// distinguishable, and rounding to the second would merge them.
+const timeLayout = time.RFC3339Nano
+
 func toSummary(c store.Summary) summaryJSON {
 	out := summaryJSON{
 		ID:           c.ID,
@@ -288,13 +299,14 @@ func toSummary(c store.Summary) summaryJSON {
 		Method:       c.Method,
 		Path:         c.Path,
 		Status:       c.Status,
-		StartedAt:    c.StartedAt.Format(time.RFC3339Nano),
+		StartedAt:    c.StartedAt.Format(timeLayout),
 		DurationMS:   float64(c.Duration.Microseconds()) / 1000,
 		Error:        c.Error,
 		RequestSize:  c.RequestSize,
 		ResponseSize: c.ResponseSize,
 		GRPCStatus:   c.GRPCStatus,
 		GRPCMessage:  c.GRPCMessage,
+		ReplayOf:     c.ReplayOf,
 	}
 	if c.GRPCStatus != nil {
 		out.GRPCStatusText = codes.Code(*c.GRPCStatus).String()

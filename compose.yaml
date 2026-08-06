@@ -8,6 +8,14 @@ services:
     volumes:
       - ./mirador.docker.yaml:/etc/mirador/mirador.yaml:ro
       - mirador-data:/data
+    # busybox wget, already in the base image, so the healthcheck adds nothing
+    # to the container.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     depends_on:
       - echo
       - grpcdemo

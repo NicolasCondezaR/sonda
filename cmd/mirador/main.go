@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -22,6 +23,38 @@ import (
 	"mirador/internal/web"
 )
 
+// version reports the revision Go already embeds at build time, so a binary
+// copied onto another machine can still say which commit it is. No ldflags to
+// remember and no generated file to keep in sync.
+func version() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "mirador (unknown build)"
+	}
+	var revision, modified string
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			if setting.Value == "true" {
+				modified = " (uncommitted changes)"
+			}
+		}
+	}
+	// The container image is built from a context without .git — keeping the
+	// repository out of it is what makes the build context kilobytes instead of
+	// megabytes — so there is no revision to report there. Saying so beats
+	// printing a Go version alone and looking truncated.
+	if revision == "" {
+		return "mirador (built without VCS information) " + info.GoVersion
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	return "mirador " + revision + modified + " " + info.GoVersion
+}
+
 func main() {
 	if err := run(); err != nil {
 		slog.Error("mirador stopped", "error", err)
@@ -31,7 +64,13 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "mirador.yaml", "path to the configuration file")
+	showVersion := flag.Bool("version", false, "print the build this binary came from and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version())
+		return nil
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -46,6 +85,12 @@ func run() error {
 
 	recorder := store.NewRecorder(db, cfg.BufferSize)
 	resolvers := buildResolvers(cfg)
+
+	// Wire the live view before anything starts reading from the recorder.
+	// Registering the hook once Run is already going is a data race on the
+	// field it writes, and the one place it would surface is under load.
+	apiServer := api.New(db, recorder, cfg.Targets, resolvers)
+	recorder.OnStored(apiServer.Hub().Publish)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -78,7 +123,7 @@ func run() error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := serveAPI(ctx, cfg, db, recorder, resolvers); err != nil {
+		if err := serveAPI(ctx, cfg, apiServer); err != nil {
 			fail <- err
 		}
 	}()
@@ -117,10 +162,7 @@ func buildResolvers(cfg *config.Config) api.Resolvers {
 	return resolvers
 }
 
-func serveAPI(ctx context.Context, cfg *config.Config, db *store.Store, recorder *store.Recorder, resolvers api.Resolvers) error {
-	apiServer := api.New(db, recorder, cfg.Targets, resolvers)
-	recorder.OnStored(apiServer.Hub().Publish)
-
+func serveAPI(ctx context.Context, cfg *config.Config, apiServer *api.Server) error {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiServer.Handler())
 	mux.Handle("/health", apiServer.Handler())
