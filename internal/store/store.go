@@ -55,6 +55,10 @@ type Call struct {
 	// ReplayOf links a call back to the capture it was replayed from, which is
 	// what makes "did the fix work?" a diff rather than a memory exercise.
 	ReplayOf *int64
+
+	// Project is the group the capture was taken under. Without it, switching
+	// projects would pour one system's traffic into another's field.
+	Project string
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -74,6 +78,7 @@ type Summary struct {
 	GRPCStatus   *int32
 	GRPCMessage  string
 	ReplayOf     *int64
+	Project      string
 }
 
 type Filter struct {
@@ -83,6 +88,7 @@ type Filter struct {
 	Status   int
 	Protocol string
 	Search   string
+	Project  string
 	Since    time.Time
 	Until    time.Time
 	BeforeID int64
@@ -128,7 +134,8 @@ CREATE TABLE IF NOT EXISTS calls (
 	resp_trailers  TEXT    NOT NULL DEFAULT '{}',
 	grpc_status    INTEGER,
 	grpc_message   TEXT    NOT NULL DEFAULT '',
-	replay_of      INTEGER
+	replay_of      INTEGER,
+	project        TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS calls_started_at_idx ON calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS calls_target_idx     ON calls(target, id DESC);
@@ -143,6 +150,7 @@ var addedColumns = map[string]string{
 	"grpc_status":   `ALTER TABLE calls ADD COLUMN grpc_status INTEGER`,
 	"grpc_message":  `ALTER TABLE calls ADD COLUMN grpc_message TEXT NOT NULL DEFAULT ''`,
 	"replay_of":     `ALTER TABLE calls ADD COLUMN replay_of INTEGER`,
+	"project":       `ALTER TABLE calls ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
 }
 
 func migrate(db *sql.DB) error {
@@ -196,7 +204,7 @@ func Open(path string) (*Store, error) {
 	// One writer avoids SQLITE_BUSY on the recorder path; reads are cheap enough
 	// to share it in a tool that observes a single developer's local stack.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + projectSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
@@ -234,13 +242,14 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			target, protocol, method, path, status, client_addr, started_at,
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
-			resp_trailers, grpc_status, grpc_message, replay_of
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			resp_trailers, grpc_status, grpc_message, replay_of, project
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
+		c.Project,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -289,6 +298,9 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	if f.Protocol != "" {
 		add("protocol = ?", f.Protocol)
 	}
+	if f.Project != "" {
+		add("project = ?", f.Project)
+	}
 	if f.GRPCStatus != nil {
 		add("grpc_status = ?", *f.GRPCStatus)
 	}
@@ -311,7 +323,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of
+		       replay_of, project
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -337,7 +349,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
-			&replayOf); err != nil {
+			&replayOf, &s.Project); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
@@ -361,13 +373,13 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		SELECT id, target, protocol, method, path, status, client_addr, started_at,
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
-		       resp_trailers, grpc_status, grpc_message, replay_of
+		       resp_trailers, grpc_status, grpc_message, replay_of, project
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf)
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project)
 	if err != nil {
 		return nil, err
 	}
@@ -412,13 +424,18 @@ type TargetStats struct {
 // the FailedOnly filter so the rail and the field can never disagree.
 const faultPredicate = `(error != '' OR status >= 400 OR (grpc_status IS NOT NULL AND grpc_status != 0))`
 
-func (s *Store) Stats(ctx context.Context) (Stats, error) {
+func (s *Store) Stats(ctx context.Context, project string) (Stats, error) {
 	var (
 		st             Stats
 		oldest, newest sql.NullInt64
+		where          string
+		args           []any
 	)
+	if project != "" {
+		where, args = " WHERE project = ?", []any{project}
+	}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM calls`,
+		`SELECT COUNT(*), MIN(started_at), MAX(started_at) FROM calls`+where, args...,
 	).Scan(&st.Calls, &oldest, &newest)
 	if err != nil {
 		return st, err
@@ -432,7 +449,7 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT target, COUNT(*), SUM(CASE WHEN `+faultPredicate+` THEN 1 ELSE 0 END)
-		FROM calls GROUP BY target`)
+		FROM calls`+where+` GROUP BY target`, args...)
 	if err != nil {
 		return st, fmt.Errorf("stats by target: %w", err)
 	}

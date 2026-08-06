@@ -37,6 +37,7 @@
     </div>
 
     <button type="button" class="switch__key switch__key--lone" id="hold" aria-pressed="false">HOLD</button>
+    <button type="button" class="switch__key switch__key--lone" id="open-projects">PROJECTS</button>
   </div>
 
   <output class="readout" id="readout" aria-live="polite"></output>
@@ -75,6 +76,15 @@
   </aside>
 
 </main>
+
+<section class="admin" id="admin" hidden aria-label="Projects">
+  <header class="admin__bar">
+    <span class="label">PROJECTS</span>
+    <span class="admin__note" id="admin-note"></span>
+    <button type="button" class="switch__key switch__key--lone" id="close-admin">CLOSE</button>
+  </header>
+  <div class="admin__body" id="admin-body"></div>
+</section>
 
 <script src="mirador.js"></script>
 </body>

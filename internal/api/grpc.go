@@ -69,7 +69,7 @@ func (s *Server) buildGRPCView(ctx context.Context, c *store.Call) *grpcView {
 	}
 
 	var input, output protoreflect.MessageDescriptor
-	if resolver := s.resolvers[c.Target]; resolver != nil {
+	if resolver := s.resolvers()[c.Target]; resolver != nil {
 		found, err := resolver.Lookup(ctx, service, method)
 		if err != nil {
 			view.Schema.Error = err.Error()

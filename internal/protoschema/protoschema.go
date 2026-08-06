@@ -48,7 +48,9 @@ type Method struct {
 
 // Resolver holds the schema for one target and resolves it lazily.
 type Resolver struct {
-	descriptorSetPath string
+	descriptorSetPath string // a file on disk
+	descriptorSet     []byte // or the bytes themselves, held in the database
+	descriptorLabel   string
 	reflectionAddr    string // empty when reflection is disabled
 
 	mu        sync.Mutex
@@ -60,6 +62,18 @@ type Resolver struct {
 
 func NewResolver(descriptorSetPath, reflectionAddr string) *Resolver {
 	return &Resolver{descriptorSetPath: descriptorSetPath, reflectionAddr: reflectionAddr}
+}
+
+// NewResolverWithBytes takes the descriptor set itself rather than a path to
+// it. Configuration lives in the database now, and a stored path would break
+// the moment the database file is copied to another machine — which is exactly
+// what a single-file store is for.
+func NewResolverWithBytes(descriptorSet []byte, label, reflectionAddr string) *Resolver {
+	return &Resolver{
+		descriptorSet:   descriptorSet,
+		descriptorLabel: label,
+		reflectionAddr:  reflectionAddr,
+	}
 }
 
 // Lookup finds the input and output messages for a fully qualified method,
@@ -113,6 +127,15 @@ func (r *Resolver) resolve(ctx context.Context) (*protoregistry.Files, Source, e
 	}
 	r.lastTry = time.Now()
 
+	if len(r.descriptorSet) > 0 {
+		files, err := parseDescriptorSet(r.descriptorSet, r.descriptorLabel)
+		if err == nil {
+			r.files, r.source, r.lastError = files, SourceDescriptorSet, nil
+			return files, SourceDescriptorSet, nil
+		}
+		r.lastError = fmt.Errorf("descriptor set: %w", err)
+	}
+
 	if r.descriptorSetPath != "" {
 		files, err := loadDescriptorSet(r.descriptorSetPath)
 		if err == nil {
@@ -146,9 +169,31 @@ func loadDescriptorSet(path string) (*protoregistry.Files, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDescriptorSet(raw, path)
+}
+
+// ParseDescriptorSet validates bytes before they are stored, so an upload that
+// is not a descriptor set is rejected at the form rather than silently leaving
+// every message undecoded.
+func ParseDescriptorSet(raw []byte) (services int, err error) {
+	files, err := parseDescriptorSet(raw, "the uploaded file")
+	if err != nil {
+		return 0, err
+	}
+	files.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
+		services += fd.Services().Len()
+		return true
+	})
+	if services == 0 {
+		return 0, fmt.Errorf("the file parses but declares no services")
+	}
+	return services, nil
+}
+
+func parseDescriptorSet(raw []byte, label string) (*protoregistry.Files, error) {
 	var set descriptorpb.FileDescriptorSet
 	if err := proto.Unmarshal(raw, &set); err != nil {
-		return nil, fmt.Errorf("%s is not a FileDescriptorSet: %w", path, err)
+		return nil, fmt.Errorf("%s is not a FileDescriptorSet: %w", label, err)
 	}
 	return protodesc.NewFiles(&set)
 }

@@ -16,9 +16,9 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/mirador-field.jpg)
 
-> **Status: phase 6, feature complete.** Capture, decoding, storage, search,
-> the query API, the web interface, replay, structural diff and a terminal
-> client all work, and the whole thing runs from `docker compose up`. See
+> **Status: phase 7.** Capture, decoding, storage, search, the query API, the
+> web interface, replay, structural diff, a terminal client and project
+> management all work, and the whole thing runs from `docker compose up`. See
 > [Roadmap](#roadmap).
 
 ## How it works
@@ -108,6 +108,70 @@ network requests, no webfonts.
 Above: a gRPC call that returned `PermissionDenied`. The HTTP status is 200 —
 gRPC reports failure below HTTP — and the request is decoded to field names
 because the service serves reflection.
+
+## Projects
+
+A project groups the services of one system — a monorepo, a side project,
+whatever is being worked on today — and everything about it is configured from
+the interface. Press **PROJECTS**.
+
+The grouping is not filing for its own sake. It carries the two things that are
+shared across a system's services and would otherwise be repeated on each one:
+
+- **One descriptor set for the whole project.** Uploaded, not referenced by
+  path, so it travels with the database when it is copied to another machine.
+- **One answer to "are these ports open".** Only the active project listens, so
+  two projects can claim the same port without colliding, and switching closes
+  one set and opens the other without restarting anything.
+
+Captures are tagged with the project they were taken under, so switching does
+not pour one system's traffic into another's field.
+
+### Import instead of typing
+
+Setting up fifteen services by hand is how a tool like this gets abandoned after
+one afternoon. The addresses are already written down somewhere, so
+**IMPORT FROM A FILE** reads them: a `.env` full of `*_URL` entries, or a
+compose file with published ports.
+
+Every entry comes back with the line it was found on, and with its suggested
+port already probed, so a wrong reading or a clash is visible before anything is
+saved. Nothing is added until you say so.
+
+```
++  ms-auth       grpc  http://localhost:50052  127.0.0.1:9152  port already in use
++  ms-billing    grpc  http://localhost:50067  127.0.0.1:9167  line 3: MS_BILLING_GRPC_URL
++  ms-executive  grpc  http://localhost:50064  127.0.0.1:9164  line 2: MS_EXECUTIVE_GRPC_URL
+```
+
+Database URLs, message brokers, callback URLs and anything else that is not a
+service to call are left out. A list with a connection string in it is worse
+than a list missing an entry: the first gets saved and proxied, the second gets
+noticed.
+
+### The one step no screen removes
+
+Mirador is an explicit proxy. It sees nothing until whoever makes the call is
+told to call it instead — no amount of configuration screen changes that, because
+the caller decides where its requests go.
+
+So each service hands over the exact line, ready to copy:
+
+```
+point the caller here:  MS_AUTH_GRPC_URL=127.0.0.1:9152
+```
+
+Restart the caller with that in its environment and its traffic appears in the
+field. Nothing on disk changes, and dropping the variable puts it back.
+
+### The configuration file
+
+`mirador.yaml` still carries the process-level settings — where the API listens,
+how much of a body to keep, how long captures live. Its `targets` are only a
+**seed**: they become the first project the first time a database is created,
+and are ignored afterwards, so an edit made in the interface is never undone by
+a stale file. Running with no configuration file at all is an ordinary first
+run.
 
 ## The terminal client
 
@@ -388,6 +452,13 @@ host. See `mirador.docker.yaml`.
 | `GET /api/schemas` | Per gRPC target: which schema source resolved, or why none did. |
 | `POST /api/calls/{id}/replay` | Send the call again, optionally onto another channel. |
 | `GET /api/diff?a=&b=` | Structural comparison of two calls. |
+| `GET /api/projects` | Projects, their services, and what is really listening. |
+| `POST /api/projects` | Create one. `PATCH`/`DELETE /api/projects/{id}` rename and remove. |
+| `POST /api/projects/{id}/activate` | Close the current project's ports and open this one's. |
+| `POST /api/projects/{id}/descriptor` | Upload the compiled schemas for the whole project. |
+| `POST /api/projects/{id}/services` | Add or update a service. `DELETE /api/services/{id}` removes one. |
+| `POST /api/discover` | Read services out of a `.env` or compose file without saving anything. |
+| `GET /api/runtime` | Which project is active and what is really listening. |
 | `GET /api/stats` | Capture count, time span, and calls dropped under load. |
 | `GET /health` | Liveness. |
 
@@ -429,6 +500,7 @@ operators.
 | 4 | Replay and structural diff | done |
 | 5 | Packaging and documentation | done |
 | 6 | TUI, as a second client of the same API | done |
+| 7 | Projects: grouped services, configured from the interface, imported from a file | done |
 
 ### Limitations
 

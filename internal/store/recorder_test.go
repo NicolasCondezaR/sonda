@@ -38,7 +38,7 @@ func TestRecorderDrainsBufferOnShutdown(t *testing.T) {
 	}
 	rec.Wait()
 
-	st, err := s.Stats(context.Background())
+	st, err := s.Stats(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

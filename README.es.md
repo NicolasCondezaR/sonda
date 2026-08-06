@@ -16,9 +16,9 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/mirador-field.jpg)
 
-> **Estado: fase 6, funcionalmente completo.** Captura, decodificación,
-> almacenamiento, búsqueda, la API de consulta, la interfaz web, el replay, el
-> diff estructural y un cliente de terminal funcionan, y todo se levanta con
+> **Estado: fase 7.** Captura, decodificación, almacenamiento, búsqueda, la API
+> de consulta, la interfaz web, el replay, el diff estructural, un cliente de
+> terminal y la gestión de proyectos funcionan, y todo se levanta con
 > `docker compose up`. Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
@@ -110,6 +110,70 @@ peticiones de red y sin fuentes web.
 Arriba: una llamada gRPC que devolvió `PermissionDenied`. El estado HTTP es 200
 —gRPC reporta el fallo por debajo de HTTP— y la request aparece decodificada con
 nombres de campo porque el servicio sirve reflection.
+
+## Proyectos
+
+Un proyecto agrupa los servicios de un sistema —un monorepo, un proyecto
+propio, lo que estés tocando hoy— y todo lo suyo se configura desde la interfaz.
+Botón **PROJECTS**.
+
+La agrupación no es orden por el orden. Carga las dos cosas que son comunes a
+los servicios de un sistema y que si no habría que repetir en cada uno:
+
+- **Un descriptor set para todo el proyecto.** Se sube, no se referencia por
+  ruta, así viaja con la base de datos cuando la copias a otra máquina.
+- **Una sola respuesta a "¿están abiertos estos puertos?".** Solo el proyecto
+  activo escucha, así dos proyectos pueden pedir el mismo puerto sin chocar, y
+  cambiar cierra un conjunto y abre el otro sin reiniciar nada.
+
+Las capturas quedan etiquetadas con el proyecto bajo el que se tomaron, así
+cambiar no mezcla el tráfico de un sistema con el campo de otro.
+
+### Importar en vez de escribir
+
+Configurar quince servicios a mano es como una herramienta así termina
+abandonada después de una tarde. Las direcciones ya están escritas en alguna
+parte, así que **IMPORT FROM A FILE** las lee: un `.env` lleno de entradas
+`*_URL`, o un archivo de compose con puertos publicados.
+
+Cada entrada vuelve con la línea donde se encontró y con su puerto sugerido ya
+probado, así una lectura equivocada o un choque se ven antes de guardar nada. No
+se agrega nada hasta que lo digas.
+
+```
++  ms-auth       grpc  http://localhost:50052  127.0.0.1:9152  port already in use
++  ms-billing    grpc  http://localhost:50067  127.0.0.1:9167  line 3: MS_BILLING_GRPC_URL
++  ms-executive  grpc  http://localhost:50064  127.0.0.1:9164  line 2: MS_EXECUTIVE_GRPC_URL
+```
+
+Quedan fuera las URLs de base de datos, los brokers de mensajes, las URLs de
+callback y cualquier cosa que no sea un servicio al que llamar. Una lista con
+una cadena de conexión adentro es peor que una a la que le falte una entrada: la
+primera se guarda y se proxea, la segunda se nota.
+
+### El paso que ninguna pantalla elimina
+
+Mirador es un proxy explícito. No ve nada hasta que a quien hace la llamada se
+le dice que llame a Mirador — y eso no lo cambia ninguna pantalla de
+configuración, porque es el que llama quien decide a dónde van sus requests.
+
+Por eso cada servicio te entrega la línea exacta, lista para copiar:
+
+```
+point the caller here:  MS_AUTH_GRPC_URL=127.0.0.1:9152
+```
+
+Reinicias al que llama con eso en su entorno y su tráfico aparece en el campo.
+No cambia nada en disco, y sacar la variable lo deja como estaba.
+
+### El archivo de configuración
+
+`mirador.yaml` sigue cargando los ajustes del proceso: dónde escucha la API,
+cuánto cuerpo se guarda, cuánto viven las capturas. Sus `targets` son solo una
+**semilla**: se convierten en el primer proyecto la primera vez que se crea una
+base de datos, y después se ignoran, así una edición hecha en la interfaz nunca
+queda deshecha por un archivo viejo. Arrancar sin archivo de configuración es un
+primer uso normal.
 
 ## El cliente de terminal
 
@@ -400,6 +464,13 @@ en el host. Ver `mirador.docker.yaml`.
 | `GET /api/schemas` | Por cada target gRPC: qué fuente de esquema resolvió, o por qué ninguna. |
 | `POST /api/calls/{id}/replay` | Reenvía la llamada, opcionalmente a otro canal. |
 | `GET /api/diff?a=&b=` | Comparación estructural de dos llamadas. |
+| `GET /api/projects` | Los proyectos, sus servicios y qué está escuchando de verdad. |
+| `POST /api/projects` | Crear uno. `PATCH`/`DELETE /api/projects/{id}` renombran y borran. |
+| `POST /api/projects/{id}/activate` | Cierra los puertos del proyecto actual y abre los de este. |
+| `POST /api/projects/{id}/descriptor` | Sube los esquemas compilados de todo el proyecto. |
+| `POST /api/projects/{id}/services` | Agrega o actualiza un servicio. `DELETE /api/services/{id}` quita uno. |
+| `POST /api/discover` | Lee servicios de un `.env` o un compose sin guardar nada. |
+| `GET /api/runtime` | Qué proyecto está activo y qué está escuchando de verdad. |
 | `GET /api/stats` | Cantidad de capturas, rango de tiempo y llamadas descartadas bajo carga. |
 | `GET /health` | Liveness. |
 
@@ -444,6 +515,7 @@ leerse como operadores de consulta.
 | 4 | Replay y diff estructural | listo |
 | 5 | Empaquetado y documentación | listo |
 | 6 | TUI, como segundo cliente de la misma API | listo |
+| 7 | Proyectos: servicios agrupados, configurados desde la interfaz, importados de un archivo | listo |
 
 ### Limitaciones
 

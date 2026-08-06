@@ -272,7 +272,7 @@ func TestStats(t *testing.T) {
 	mustInsert(t, s, sampleCall("api", "GET", "/a", 200, nil))
 	mustInsert(t, s, sampleCall("api", "GET", "/b", 200, nil))
 
-	st, err := s.Stats(ctx)
+	st, err := s.Stats(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
