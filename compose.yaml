@@ -1,0 +1,28 @@
+services:
+  mirador:
+    build: .
+    ports:
+      - "9000:9000" # query API
+      - "9101:9101" # proxy in front of the echo service
+      - "9201:9201" # proxy in front of the gRPC service
+    volumes:
+      - ./mirador.docker.yaml:/etc/mirador/mirador.yaml:ro
+      - mirador-data:/data
+    depends_on:
+      - echo
+      - grpcdemo
+
+  # Toy upstreams so the stack does something on the first run. Their ports are
+  # not published on purpose: traffic is supposed to arrive through Mirador.
+  echo:
+    build: .
+    entrypoint: ["echo"]
+    command: ["-addr", ":8081"]
+
+  grpcdemo:
+    build: .
+    entrypoint: ["grpcdemo"]
+    command: ["-addr", ":8082", "-reflection=true"]
+
+volumes:
+  mirador-data:

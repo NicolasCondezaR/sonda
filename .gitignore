@@ -1,0 +1,8 @@
+mirador.yaml
+*.db
+*.db-shm
+*.db-wal
+/mirador
+/mirador.exe
+/echo
+/echo.exe

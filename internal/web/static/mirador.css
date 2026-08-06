@@ -1,0 +1,626 @@
+/* Mirador — the instrument face. See DESIGN.md for the system this implements. */
+
+:root {
+  --case: #14171c;
+  --field: #0f1216;
+  --raised: #1b1f26;
+  --grid: rgba(214, 218, 224, 0.055);
+  --grid-major: rgba(214, 218, 224, 0.11);
+  --rule: rgba(214, 218, 224, 0.14);
+  --ink: #e6e9ee;
+  --ink-dim: #9aa3ae;
+  --ink-faint: #78828d;
+  --fault: #ff5257;
+  --armed: #5fa858;
+  --shadow-overlay: -12px 0 32px rgba(0, 0, 0, 0.5);
+
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", "Segoe UI Mono", Consolas,
+          "Liberation Mono", monospace;
+
+  --hair: 2px;
+  --tight: 6px;
+  --base: 12px;
+  --loose: 20px;
+
+  --rail-w: 208px;
+  --inspector-w: 460px;
+  --lane-h: 26px;
+  --bar-h: 46px;
+  --axis-h: 22px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Any display rule beats the hidden attribute's default, so an element the
+   script hides keeps painting. Twice already it put a stale panel on top of
+   live content; this closes the whole category rather than each instance. */
+[hidden] { display: none !important; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--case);
+  color: var(--ink);
+  font: 400 13px/1.45 var(--mono);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Payloads carry Spanish, and occasionally bytes that are not valid text. */
+  overflow-wrap: anywhere;
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+}
+
+:focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------------- bar ---- */
+
+.bar {
+  flex: none;
+  height: var(--bar-h);
+  display: flex;
+  align-items: center;
+  gap: var(--loose);
+  padding: 0 var(--base);
+  border-bottom: 1px solid var(--rule);
+  background: var(--case);
+}
+
+.bar__id { display: flex; align-items: center; gap: var(--base); flex: none; }
+
+.bar__name {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--ink);
+}
+
+.acquisition {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tight);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+}
+
+.acquisition__lamp {
+  width: 6px;
+  height: 6px;
+  background: var(--ink-faint);
+}
+
+.acquisition[data-state="live"] .acquisition__lamp { background: var(--armed); }
+.acquisition[data-state="live"] .acquisition__text { color: var(--ink-dim); }
+.acquisition[data-state="held"] .acquisition__lamp { background: var(--ink-dim); }
+.acquisition[data-state="lost"] .acquisition__lamp { background: var(--fault); }
+.acquisition[data-state="lost"] .acquisition__text { color: var(--fault); }
+
+.bar__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--base);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A latched toggle shows its position by ink and a seated underline, the way a
+   panel switch does. Never a filled accent pill. */
+.switch { display: flex; border: 1px solid var(--rule); }
+
+.switch__key {
+  appearance: none;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  background: var(--raised);
+  color: var(--ink-faint);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.09em;
+  padding: 7px 10px;
+  cursor: pointer;
+  position: relative;
+}
+
+.switch__key:last-child { border-right: 0; }
+.switch__key:hover { color: var(--ink-dim); }
+
+.switch__key[aria-pressed="true"] { color: var(--ink); }
+
+.switch__key[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: var(--ink);
+}
+
+.switch__key--lone { border: 1px solid var(--rule); }
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--tight);
+  flex: 1 1 auto;
+  min-width: 120px;
+  max-width: 380px;
+  border: 1px solid var(--rule);
+  background: var(--raised);
+  padding: 0 10px;
+  height: 26px;
+}
+
+.search__label { flex: none; }
+
+.search__input {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: 400 12px/1 var(--mono);
+  width: 100%;
+  padding: 0;
+}
+
+.search__input::placeholder { color: var(--ink-faint); }
+.search__input:focus { outline: none; }
+.search:focus-within { border-color: var(--ink-dim); }
+
+.readout {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.readout__fault { color: var(--fault); }
+
+/* --------------------------------------------------------------- deck ---- */
+
+.deck {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--inspector-w);
+}
+
+/* --------------------------------------------------------------- rail ---- */
+
+.rail {
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--case);
+}
+
+.rail__head,
+.rail__foot {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tight);
+  padding: 0 var(--base);
+  height: var(--axis-h);
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+}
+
+.rail__foot {
+  border-bottom: 0;
+  border-top: 1px solid var(--rule);
+  margin-top: auto;
+  font-size: 10px;
+  color: var(--ink-faint);
+  height: auto;
+  padding: var(--tight) var(--base);
+  display: block;
+}
+
+.rail__counts { letter-spacing: 0.06em; }
+
+.rail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.channel {
+  display: flex;
+  align-items: center;
+  gap: var(--tight);
+  height: var(--lane-h);
+  padding: 0 var(--base);
+  border-bottom: 1px solid var(--grid);
+  cursor: pointer;
+  width: 100%;
+  background: none;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.channel:hover { background: var(--raised); }
+.channel[aria-pressed="true"] { background: var(--raised); }
+.channel[aria-pressed="true"] .channel__name { color: var(--ink); }
+
+.channel__swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  background: var(--ch);
+}
+
+/* Past the ninth target the probe sequence repeats, distinguished the way a
+   second probe group is on the instrument. */
+.channel__swatch--hollow {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--ch);
+}
+
+.channel__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel__calls,
+.channel__faults {
+  flex: none;
+  font-size: 11px;
+  text-align: right;
+  color: var(--ink-faint);
+}
+
+.channel__calls { width: 40px; }
+.channel__faults { width: 34px; }
+.channel__faults[data-any="true"] { color: var(--fault); }
+
+.channel__proto {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
+
+/* -------------------------------------------------------------- field ---- */
+
+.field {
+  position: relative;
+  min-width: 0;
+  background: var(--field);
+  display: flex;
+  flex-direction: column;
+}
+
+.axis {
+  flex: none;
+  height: var(--axis-h);
+  position: relative;
+  border-bottom: 1px solid var(--rule);
+}
+
+.axis__tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding-left: 5px;
+  border-left: 1px solid var(--grid-major);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+  pointer-events: none;
+}
+
+.field__body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The measurement grid. Divisions correspond to the labelled axis above and
+   stay fixed while events move under them. */
+.lanes {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      var(--grid-major) 0 1px,
+      transparent 1px var(--division, 25%)
+    );
+}
+
+.lane {
+  position: relative;
+  height: var(--lane-h);
+  border-bottom: 1px solid var(--grid);
+}
+
+.lane__track {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
+/* An event: a short filled rect in the channel colour, width proportional to
+   duration with a floor so an instant call stays visible. */
+.ev {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  height: 9px;
+  min-width: 3px;
+  background: var(--ch);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ev::before {
+  content: "";
+  position: absolute;
+  inset: -6px -5px;
+}
+
+.ev:hover { outline: 1px solid var(--ink); outline-offset: 1px; }
+
+/* A fault is a different shape, not a red event. Shape carries it so it
+   survives a red channel, a colour-blind reader, and a glance from across the
+   room — which is the whole reason the tool is open. */
+.ev--fault {
+  top: 0;
+  translate: none;
+  height: 100%;
+  min-width: 3px;
+  background: var(--fault);
+}
+
+.ev[aria-pressed="true"] {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+  z-index: 2;
+}
+
+/* The instrument's native motion: an event arrives at the right edge and its
+   acquire flash decays. Nothing else on the surface animates. */
+@keyframes acquire {
+  from { background: var(--ink); }
+  to   { background: var(--ch); }
+}
+
+.ev--new { animation: acquire 700ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+@keyframes acquire-fault {
+  from { background: var(--ink); }
+  to   { background: var(--fault); }
+}
+
+.ev--fault.ev--new { animation-name: acquire-fault; }
+
+.field__now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 1px;
+  background: var(--ink-dim);
+  pointer-events: none;
+}
+
+.field__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tight);
+  text-align: center;
+  padding: var(--loose);
+  pointer-events: none;
+}
+
+.field__empty-line {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--ink-dim);
+}
+
+.field__empty-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+  max-width: 48ch;
+}
+
+/* ---------------------------------------------------------- inspector ---- */
+
+.inspector {
+  border-left: 1px solid var(--rule);
+  background: var(--case);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.inspector__idle {
+  padding: var(--base);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tight);
+}
+
+.inspector__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.insp-head {
+  padding: var(--base);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: var(--tight);
+}
+
+.insp-head__path {
+  font-size: 13px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.insp-head__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--base);
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+
+.insp-head__fault {
+  color: var(--fault);
+  font-size: 12px;
+}
+
+.insp-sec { border-bottom: 1px solid var(--rule); }
+
+.insp-sec__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--tight);
+  padding: var(--tight) var(--base);
+  background: var(--raised);
+}
+
+.insp-sec__body { padding: var(--base); }
+
+/* Fixed field/value columns so values form a scannable rule down the panel. */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(0, 11ch) minmax(0, 1fr);
+  gap: 2px var(--base);
+  margin: 0;
+  font-size: 12px;
+}
+
+.kv dt { color: var(--ink-faint); overflow-wrap: anywhere; }
+.kv dd { margin: 0; color: var(--ink-dim); overflow-wrap: anywhere; }
+
+.payload {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.msg { border-top: 1px solid var(--grid); padding-top: var(--tight); margin-top: var(--tight); }
+.msg:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+
+.msg__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tight);
+  margin-bottom: var(--tight);
+}
+
+/* Inferences read visibly weaker than measurements. */
+.wire { margin: 0; font-size: 12px; }
+.wire__row { display: flex; gap: var(--tight); align-items: baseline; }
+.wire__num { color: var(--ink-faint); min-width: 3ch; text-align: right; }
+.wire__type { color: var(--ink-faint); min-width: 8ch; }
+.wire__val { color: var(--ink-dim); overflow-wrap: anywhere; }
+.wire__note { color: var(--ink-faint); font-size: 11px; opacity: 0.8; }
+.wire__nest { padding-left: var(--base); border-left: 1px solid var(--grid); margin-left: 3ch; }
+
+.note {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.note--fault { color: var(--fault); }
+
+.insp-sec__body--loading { color: var(--ink-faint); font-size: 12px; }
+
+/* --------------------------------------------------------- responsive ---- */
+
+/* Reading a payload and scanning the field are not simultaneous tasks, so on a
+   narrower screen the inspector takes the field rather than shrinking it. */
+@media (max-width: 1100px) {
+  .deck { grid-template-columns: var(--rail-w) minmax(0, 1fr); }
+
+  .inspector {
+    position: fixed;
+    inset: var(--bar-h) 0 0 auto;
+    width: min(460px, 100%);
+    border-left: 1px solid var(--rule);
+    box-shadow: var(--shadow-overlay);
+    z-index: 5;
+  }
+
+  .inspector__idle { display: none; }
+}
+
+@media (max-width: 720px) {
+  :root { --rail-w: 100%; }
+
+  .deck {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .rail {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+    max-height: 34vh;
+  }
+
+  .bar {
+    height: auto;
+    flex-wrap: wrap;
+    padding: var(--tight) var(--base);
+    gap: var(--tight) var(--base);
+  }
+
+  .bar__controls { flex-wrap: wrap; }
+  .readout { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ev--new { animation: none; }
+  .lane__track { transition: none; }
+}

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mirador</title>
+<link rel="stylesheet" href="mirador.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230f1216'/><path d='M1 11h3V5h3v6h3V7h4' stroke='%235fa858' fill='none' stroke-width='1.5'/></svg>">
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar__id">
+    <span class="bar__name">MIRADOR</span>
+    <span class="acquisition" id="acquisition" data-state="connecting">
+      <span class="acquisition__lamp" aria-hidden="true"></span>
+      <span class="acquisition__text" id="acquisition-text">CONNECTING</span>
+    </span>
+  </div>
+
+  <div class="bar__controls">
+    <div class="switch" role="group" aria-label="Event filter">
+      <button type="button" class="switch__key" data-filter="failed" aria-pressed="true">FAULTS</button>
+      <button type="button" class="switch__key" data-filter="all" aria-pressed="false">ALL</button>
+    </div>
+
+    <div class="switch" role="group" aria-label="Time window">
+      <button type="button" class="switch__key" data-window="60000" aria-pressed="false">1M</button>
+      <button type="button" class="switch__key" data-window="300000" aria-pressed="true">5M</button>
+      <button type="button" class="switch__key" data-window="1800000" aria-pressed="false">30M</button>
+    </div>
+
+    <div class="search">
+      <label class="search__label" for="search">FIND</label>
+      <input id="search" class="search__input" type="search" spellcheck="false"
+             autocomplete="off" placeholder="path, id, payload text">
+    </div>
+
+    <button type="button" class="switch__key switch__key--lone" id="hold" aria-pressed="false">HOLD</button>
+  </div>
+
+  <output class="readout" id="readout" aria-live="polite"></output>
+</header>
+
+<main class="deck">
+
+  <nav class="rail" aria-label="Channels">
+    <div class="rail__head">
+      <span class="label">CHANNEL</span>
+      <span class="label rail__counts">CALLS&nbsp;&nbsp;FAULT</span>
+    </div>
+    <ul class="rail__list" id="rail"></ul>
+    <div class="rail__foot" id="rail-foot"></div>
+  </nav>
+
+  <section class="field" aria-label="Event field">
+    <div class="axis" id="axis" aria-hidden="true"></div>
+    <div class="field__body" id="field-body">
+      <div class="lanes" id="lanes"></div>
+      <div class="field__empty" id="field-empty" hidden>
+        <p class="field__empty-line" id="empty-headline">ARMED</p>
+        <p class="field__empty-note" id="empty-note">Waiting for traffic through the proxy.</p>
+      </div>
+    </div>
+    <div class="field__now" aria-hidden="true"></div>
+  </section>
+
+  <aside class="inspector" id="inspector" aria-label="Selected call">
+    <div class="inspector__idle" id="inspector-idle">
+      <p class="label">INSPECTOR</p>
+      <p class="inspector__hint">Select an event in the field to read it.</p>
+    </div>
+    <div class="inspector__body" id="inspector-body" hidden></div>
+  </aside>
+
+</main>
+
+<script src="mirador.js"></script>
+</body>
+</html>

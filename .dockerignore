@@ -1,0 +1,11 @@
+.git
+.gitignore
+*.db
+*.db-shm
+*.db-wal
+mirador.yaml
+mirador
+mirador.exe
+echo
+echo.exe
+README.md

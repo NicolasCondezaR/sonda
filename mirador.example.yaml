@@ -1,0 +1,49 @@
+# Mirador — configuration for running against services on this machine.
+#
+# One target per service you want to observe. Point the client at `listen`
+# instead of the real address and Mirador forwards to `upstream`, capturing
+# both halves on the way through.
+#
+# Copy this file to mirador.yaml and edit it.
+
+api_listen: 127.0.0.1:9000
+database: mirador.db
+
+# Bytes kept per body. The whole body always reaches its destination; this
+# only caps what is stored.
+max_body_bytes: 262144
+
+# Calls buffered in memory while waiting to be written. When the buffer is
+# full, captures are dropped rather than slowing down the traffic, and the
+# drop count shows up in GET /api/stats.
+buffer_size: 1024
+
+retention:
+  max_calls: 50000
+  max_age: 24h
+  interval: 1m
+
+targets:
+  - name: echo
+    listen: 127.0.0.1:9101
+    upstream: http://127.0.0.1:8081
+    protocol: http
+
+  - name: orders
+    listen: 127.0.0.1:9201
+    upstream: http://127.0.0.1:8082
+    protocol: grpc
+    # Reflection defaults to on. When the service serves it, Mirador discovers
+    # the schema by itself and nothing else is needed.
+    #
+    # When it does not, compile the protos and point at the result:
+    #   buf build -o descriptors.binpb
+    #   protoc --descriptor_set_out=descriptors.binpb --include_imports ...
+    # descriptor_set: examples/grpcdemo/descriptors.binpb
+    # reflection: false
+
+  # Real service, for reference. Whatever calls it uses 127.0.0.1:9102.
+  # - name: admin-api
+  #   listen: 127.0.0.1:9102
+  #   upstream: http://127.0.0.1:3000
+  #   protocol: http

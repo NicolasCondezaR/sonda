@@ -1,0 +1,8 @@
+# LF in the repository and in the working copy, on every machine. Go tooling,
+# gofmt and CI all assume it, and a checkout that silently rewrites line endings
+# is how a Windows clone starts failing checks that pass everywhere else.
+* text=auto eol=lf
+
+# Compiled protobuf descriptors are binary. Left to heuristics, a line-ending
+# rewrite would corrupt the file rather than fail loudly.
+*.binpb binary

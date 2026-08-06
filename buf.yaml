@@ -1,0 +1,9 @@
+version: v2
+modules:
+  - path: examples/grpcdemo/proto
+lint:
+  use:
+    - BASIC
+breaking:
+  use:
+    - FILE

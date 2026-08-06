@@ -1,0 +1,350 @@
+// Package api exposes the captured traffic over HTTP.
+//
+// This is the seam the SDD depends on: the web UI and the later TUI are two
+// clients of this API, so neither one owns the query logic.
+package api
+
+import (
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"time"
+	"unicode/utf8"
+
+	"google.golang.org/grpc/codes"
+
+	"mirador/internal/config"
+	"mirador/internal/store"
+)
+
+type Dropper interface {
+	Dropped() int64
+}
+
+type Server struct {
+	store     *store.Store
+	dropped   Dropper
+	targets   []config.Target
+	resolvers Resolvers
+	hub       *Hub
+}
+
+func New(s *store.Store, dropped Dropper, targets []config.Target, resolvers Resolvers) *Server {
+	return &Server{
+		store: s, dropped: dropped, targets: targets,
+		resolvers: resolvers, hub: NewHub(),
+	}
+}
+
+// Hub is the live-view fan-out; wire it to the recorder with OnStored.
+func (s *Server) Hub() *Hub { return s.hub }
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/calls", s.listCalls)
+	mux.HandleFunc("GET /api/calls/{id}", s.getCall)
+	mux.HandleFunc("GET /api/targets", s.listTargets)
+	mux.HandleFunc("GET /api/schemas", s.listSchemas)
+	mux.HandleFunc("GET /api/stats", s.stats)
+	mux.HandleFunc("GET /api/stream", s.stream)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	return mux
+}
+
+type summaryJSON struct {
+	ID           int64   `json:"id"`
+	Target       string  `json:"target"`
+	Protocol     string  `json:"protocol"`
+	Method       string  `json:"method"`
+	Path         string  `json:"path"`
+	Status       int     `json:"status"`
+	StartedAt    string  `json:"started_at"`
+	DurationMS   float64 `json:"duration_ms"`
+	Error        string  `json:"error,omitempty"`
+	RequestSize  int64   `json:"request_size"`
+	ResponseSize int64   `json:"response_size"`
+
+	// For gRPC the HTTP status is 200 even when the call failed, so the real
+	// outcome has to be in the listing or the listing lies.
+	GRPCStatus     *int32 `json:"grpc_status,omitempty"`
+	GRPCStatusText string `json:"grpc_status_text,omitempty"`
+	GRPCMessage    string `json:"grpc_message,omitempty"`
+}
+
+type messageJSON struct {
+	Headers   http.Header `json:"headers"`
+	Text      string      `json:"text,omitempty"`
+	Base64    string      `json:"base64,omitempty"`
+	Size      int64       `json:"size"`
+	Stored    int         `json:"stored"`
+	Truncated bool        `json:"truncated"`
+}
+
+type callJSON struct {
+	summaryJSON
+	ClientAddr       string      `json:"client_addr"`
+	Request          messageJSON `json:"request"`
+	Response         messageJSON `json:"response"`
+	ResponseTrailers http.Header `json:"response_trailers,omitempty"`
+	GRPC             *grpcView   `json:"grpc,omitempty"`
+}
+
+func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := store.Filter{
+		Target:     q.Get("target"),
+		Method:     q.Get("method"),
+		Path:       q.Get("path"),
+		Protocol:   q.Get("protocol"),
+		Search:     q.Get("q"),
+		FailedOnly: q.Get("failed") == "true",
+	}
+
+	if raw := q.Get("grpc_status"); raw != "" {
+		code, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "grpc_status must be a number")
+			return
+		}
+		n := int32(code)
+		f.GRPCStatus = &n
+	}
+
+	var err error
+	if f.Status, err = intParam(q.Get("status")); err != nil {
+		writeError(w, http.StatusBadRequest, "status must be a number")
+		return
+	}
+	if f.Limit, err = intParam(q.Get("limit")); err != nil {
+		writeError(w, http.StatusBadRequest, "limit must be a number")
+		return
+	}
+	beforeID, err := intParam(q.Get("before_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "before_id must be a number")
+		return
+	}
+	f.BeforeID = int64(beforeID)
+
+	if f.Since, err = timeParam(q.Get("since")); err != nil {
+		writeError(w, http.StatusBadRequest, "since must be an RFC3339 timestamp")
+		return
+	}
+	if f.Until, err = timeParam(q.Get("until")); err != nil {
+		writeError(w, http.StatusBadRequest, "until must be an RFC3339 timestamp")
+		return
+	}
+
+	calls, err := s.store.List(r.Context(), f)
+	if err != nil {
+		slog.Error("list calls", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not list calls")
+		return
+	}
+
+	out := make([]summaryJSON, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, toSummary(c))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"calls": out})
+}
+
+func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "id must be a number")
+		return
+	}
+
+	c, err := s.store.Get(r.Context(), id)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "no call with that id")
+		return
+	}
+	if err != nil {
+		slog.Error("get call", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not read call")
+		return
+	}
+
+	out := callJSON{
+		summaryJSON: toSummary(store.Summary{
+			ID: c.ID, Target: c.Target, Protocol: c.Protocol, Method: c.Method,
+			Path: c.Path, Status: c.Status, StartedAt: c.StartedAt,
+			Duration: c.Duration, Error: c.Error,
+			RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
+			GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
+		}),
+		ClientAddr:       c.ClientAddr,
+		Request:          toMessage(c.Request),
+		Response:         toMessage(c.Response),
+		ResponseTrailers: c.ResponseTrailers,
+	}
+	if c.Protocol == config.ProtocolGRPC {
+		out.GRPC = s.buildGRPCView(r.Context(), c)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// listSchemas reports what each gRPC target's schema resolution produced. It
+// answers the question the tool would otherwise leave hanging: field names are
+// missing, and is that because reflection is off, the descriptor set is stale,
+// or the service was down when Mirador asked?
+func (s *Server) listSchemas(w http.ResponseWriter, r *http.Request) {
+	type schemaStatus struct {
+		Target        string `json:"target"`
+		Source        string `json:"source"`
+		DescriptorSet string `json:"descriptor_set,omitempty"`
+		Reflection    bool   `json:"reflection"`
+		Error         string `json:"error,omitempty"`
+	}
+
+	out := make([]schemaStatus, 0)
+	for _, t := range s.targets {
+		if t.Protocol != config.ProtocolGRPC {
+			continue
+		}
+		entry := schemaStatus{
+			Target:        t.Name,
+			DescriptorSet: t.DescriptorSet,
+			Reflection:    t.ReflectionEnabled(),
+		}
+		if resolver := s.resolvers[t.Name]; resolver != nil {
+			source, err := resolver.Status(r.Context())
+			entry.Source = string(source)
+			if err != nil {
+				entry.Error = err.Error()
+			}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"schemas": out})
+}
+
+// channelColors is the logic-probe colour code, in its standard order, minus
+// black — unreadable on the instrument ground.
+//
+// It is not decoration. With fifteen or more services on screen at once, each
+// one needs an identity the eye can latch onto, and this is the ordering a
+// developer who has ever wired a probe already knows by heart. Beyond nine
+// targets the sequence repeats with a hollow mark, the way a second probe
+// group is distinguished on a real instrument.
+var channelColors = []string{
+	"#8a5a3c", // brown
+	"#c8443c", // red
+	"#d97b2b", // orange
+	"#d8b843", // yellow
+	"#5fa858", // green
+	"#4a86c8", // blue
+	"#8b6bc4", // violet
+	"#8a8f98", // grey
+	"#d6dae0", // white
+}
+
+// Channel is a target's identity in the live view.
+func channelFor(index int) (color string, hollow bool) {
+	return channelColors[index%len(channelColors)], index >= len(channelColors)
+}
+
+func (s *Server) listTargets(w http.ResponseWriter, _ *http.Request) {
+	type targetJSON struct {
+		Name     string `json:"name"`
+		Listen   string `json:"listen"`
+		Upstream string `json:"upstream"`
+		Protocol string `json:"protocol"`
+		Color    string `json:"color"`
+		Hollow   bool   `json:"hollow"`
+	}
+	out := make([]targetJSON, 0, len(s.targets))
+	for i, t := range s.targets {
+		color, hollow := channelFor(i)
+		out = append(out, targetJSON{t.Name, t.Listen, t.Upstream, t.Protocol, color, hollow})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"targets": out})
+}
+
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.store.Stats(r.Context())
+	if err != nil {
+		slog.Error("stats", "error", err)
+		writeError(w, http.StatusInternalServerError, "could not read stats")
+		return
+	}
+	st.Dropped = s.dropped.Dropped()
+	writeJSON(w, http.StatusOK, st)
+}
+
+func toSummary(c store.Summary) summaryJSON {
+	out := summaryJSON{
+		ID:           c.ID,
+		Target:       c.Target,
+		Protocol:     c.Protocol,
+		Method:       c.Method,
+		Path:         c.Path,
+		Status:       c.Status,
+		StartedAt:    c.StartedAt.Format(time.RFC3339Nano),
+		DurationMS:   float64(c.Duration.Microseconds()) / 1000,
+		Error:        c.Error,
+		RequestSize:  c.RequestSize,
+		ResponseSize: c.ResponseSize,
+		GRPCStatus:   c.GRPCStatus,
+		GRPCMessage:  c.GRPCMessage,
+	}
+	if c.GRPCStatus != nil {
+		out.GRPCStatusText = codes.Code(*c.GRPCStatus).String()
+	}
+	return out
+}
+
+// toMessage renders a stored body without deciding what it means. UTF-8 goes
+// out as text, anything else as base64 — pretty-printing and protobuf decoding
+// belong to the view, not to storage.
+func toMessage(m store.Message) messageJSON {
+	out := messageJSON{
+		Headers:   m.Headers,
+		Size:      m.Size,
+		Stored:    len(m.Body),
+		Truncated: m.Truncated,
+	}
+	if len(m.Body) == 0 {
+		return out
+	}
+	if utf8.Valid(m.Body) {
+		out.Text = string(m.Body)
+	} else {
+		out.Base64 = base64.StdEncoding.EncodeToString(m.Body)
+	}
+	return out
+}
+
+func intParam(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(s)
+}
+
+func timeParam(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	return time.Parse(time.RFC3339, s)
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		slog.Error("write response", "error", err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}

@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package demo.v1;
+
+option go_package = "mirador/examples/grpcdemo/demo/v1";
+
+// Orders is the toy service Mirador is developed and demoed against. Its
+// methods exist to produce the four shapes a gRPC proxy has to survive: a
+// plain unary call, a server stream, a client stream, and a failure that
+// answers with a non-zero status and no message at all.
+service Orders {
+  // Unary, succeeds.
+  rpc GetOrder(GetOrderRequest) returns (Order);
+
+  // Server streaming: several response messages on one call.
+  rpc ListOrders(ListOrdersRequest) returns (stream Order);
+
+  // Client streaming: several request messages on one call.
+  rpc CreateOrders(stream Order) returns (CreateOrdersSummary);
+
+  // Answers with the requested status code and no body, which is the
+  // trailers-only response that carries the status in the headers instead
+  // of the trailers.
+  rpc Fail(FailRequest) returns (Order);
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message ListOrdersRequest {
+  int32 limit = 1;
+  string customer = 2;
+
+  // Pause between messages, so a stream can be observed arriving in pieces
+  // rather than all at once.
+  int32 delay_ms = 3;
+}
+
+message FailRequest {
+  // A google.rpc.Code: 5 is NOT_FOUND, 7 PERMISSION_DENIED, 14 UNAVAILABLE.
+  int32 code = 1;
+  string message = 2;
+}
+
+message CreateOrdersSummary {
+  int32 created = 1;
+}
+
+message Order {
+  string id = 1;
+  string customer = 2;
+  repeated Line lines = 3;
+  Money total = 4;
+  Status status = 5;
+}
+
+message Line {
+  string sku = 1;
+  int32 quantity = 2;
+  Money price = 3;
+}
+
+// int64 is deliberate: protojson renders it as a string, which is the kind of
+// detail a decoder has to get right.
+message Money {
+  string currency = 1;
+  int64 amount_cents = 2;
+}
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_PENDING = 1;
+  STATUS_SHIPPED = 2;
+}

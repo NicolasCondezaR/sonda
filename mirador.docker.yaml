@@ -1,0 +1,32 @@
+# Configuration used by compose.yaml. The only difference from
+# mirador.example.yaml is that addresses are container names on the compose
+# network instead of 127.0.0.1, and Mirador binds 0.0.0.0 so the published
+# ports reach it.
+
+api_listen: 0.0.0.0:9000
+database: /data/mirador.db
+max_body_bytes: 262144
+buffer_size: 1024
+
+retention:
+  max_calls: 50000
+  max_age: 24h
+  interval: 1m
+
+targets:
+  - name: echo
+    listen: 0.0.0.0:9101
+    upstream: http://echo:8081
+    protocol: http
+
+  - name: orders
+    listen: 0.0.0.0:9201
+    upstream: http://grpcdemo:8082
+    protocol: grpc
+
+  # To observe a service running natively on the host instead of in compose,
+  # point the upstream at host.docker.internal:
+  # - name: admin-api
+  #   listen: 0.0.0.0:9102
+  #   upstream: http://host.docker.internal:3000
+  #   protocol: http
