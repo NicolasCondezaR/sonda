@@ -8,3 +8,4 @@ mirador.yaml
 /mirador-tui.exe
 /echo
 /echo.exe
+*.log
