@@ -268,6 +268,55 @@ func TestInterimResponseIsNotRecordedAsTheStatus(t *testing.T) {
 	}
 }
 
+// An upstream is free to answer before it has read the request body — a 413 on
+// the headers is exactly that — and when it does, the transport is still
+// writing the body on its own goroutine while the handler reads the capture.
+//
+// That window is what the lock inside capture exists for. Without a test that
+// reaches it, `go test -race` passes either way and the lock is unverified
+// reasoning rather than a fix. Removing the lock makes this test report a data
+// race.
+func TestCaptureIsSafeWhenTheUpstreamAnswersBeforeReadingTheBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Deliberately does not read r.Body.
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	}))
+	defer upstream.Close()
+
+	rec := &collector{}
+	front := newProxy(t, upstream, 1<<20, rec)
+
+	// Large enough that the write is still in flight when the answer arrives.
+	body := bytes.Repeat([]byte("x"), 8<<20)
+
+	for range 5 {
+		req, err := http.NewRequest(http.MethodPost, front.URL+"/upload", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			// The upstream closing early can surface as a transport error on the
+			// client, which is a valid outcome here: the point is the capture,
+			// not the status.
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.calls) == 0 {
+		t.Fatal("nothing was captured")
+	}
+	for _, call := range rec.calls {
+		if call.Request.Size < 0 {
+			t.Errorf("negative request size %d, which means the counter was read mid-write", call.Request.Size)
+		}
+	}
+}
+
 // The recorder is allowed to lose calls; it is never allowed to hold up the
 // response. A blocking sink must not stall the proxy.
 func TestSlowRecorderDoesNotBlockTheResponse(t *testing.T) {
