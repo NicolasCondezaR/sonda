@@ -4,5 +4,7 @@ mirador.yaml
 *.db-wal
 /mirador
 /mirador.exe
+/mirador-tui
+/mirador-tui.exe
 /echo
 /echo.exe
