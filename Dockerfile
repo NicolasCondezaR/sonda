@@ -8,6 +8,10 @@ COPY . .
 # The SQLite driver is pure Go, so the image needs no cgo toolchain and the
 # binary runs on any machine.
 ENV CGO_ENABLED=0
+
+# .git is deliberately outside the build context, which keeps it at kilobytes;
+# the cost is that `mirador -version` reports no revision from inside the image
+# and says so rather than implying one.
 RUN go build -trimpath -ldflags="-s -w" -o /out/mirador ./cmd/mirador
 RUN go build -trimpath -ldflags="-s -w" -o /out/echo ./examples/echo
 RUN go build -trimpath -ldflags="-s -w" -o /out/grpcdemo ./examples/grpcdemo

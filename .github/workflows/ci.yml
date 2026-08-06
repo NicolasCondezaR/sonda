@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        run: go vet ./...
+
+      # The race detector needs cgo, which is why this runs here rather than on
+      # a Windows workstation: the SQLite driver is pure Go precisely so the
+      # project needs no C toolchain, and that leaves CI as the only place the
+      # detector runs at all. The proxy reads a request body on the transport's
+      # goroutine while the handler reads the capture, so this is not a
+      # formality.
+      - name: Test with the race detector
+        run: go test -race -count=1 ./...
+
+      - name: Build
+        run: go build ./...
+
+  protos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: Lint protos
+        run: buf lint
+
+      # The committed descriptor set is what decodes gRPC for services without
+      # reflection. If it drifts from the .proto it was built from, decoding
+      # goes quietly wrong instead of failing, so the check is that rebuilding
+      # it changes nothing.
+      - name: Descriptor set is current
+        run: |
+          buf build -o /tmp/descriptors.binpb
+          cmp /tmp/descriptors.binpb examples/grpcdemo/descriptors.binpb
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `docker compose up` is the documented way in, so the claim that it works
+      # is worth checking rather than asserting.
+      - name: Build the image
+        run: docker compose build
+
+      - name: The stack comes up and captures traffic
+        run: |
+          docker compose up -d
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:9000/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:9000/health
+          curl -fsS 'http://127.0.0.1:9101/fail?status=503' >/dev/null || true
+          sleep 1
+          curl -fsS 'http://127.0.0.1:9000/api/calls?failed=true' | grep -q '"status":503'
+          docker compose down

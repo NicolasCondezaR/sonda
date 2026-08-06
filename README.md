@@ -10,9 +10,15 @@ well for HTTP. Nothing solves it for gRPC — `grpcurl` and `grpcui` make calls,
 they do not observe the ones your services make to each other. That gap is what
 this is aimed at.
 
-> **Status: phase 3.** HTTP and gRPC capture, protobuf decoding, storage,
-> search, the query API and the operator interface all work. Replay and diff are
-> not built yet. See [Roadmap](#roadmap).
+[![CI](https://github.com/NicolasCondezaR/mirador/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasCondezaR/mirador/actions/workflows/ci.yml)
+
+*[Léeme en español](README.es.md).*
+
+![The event field: one lane per service, faults as full-height bars](docs/assets/mirador-field.jpg)
+
+> **Status: phase 5.** Capture, decoding, storage, search, the query API, the
+> operator interface, replay and structural diff all work, and the whole thing
+> runs from `docker compose up`. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -95,6 +101,12 @@ bytes. `/` focuses it, `Escape` closes the inspector.
 
 The whole interface is embedded in the binary — no Node, no build step, no
 network requests, no webfonts.
+
+![A gRPC failure: protobuf decoded through reflection, with the real status](docs/assets/mirador-grpc-inspector.jpg)
+
+Above: a gRPC call that returned `PermissionDenied`. The HTTP status is 200 —
+gRPC reports failure below HTTP — and the request is decoded to field names
+because the service serves reflection.
 
 ## PowerShell
 
@@ -199,6 +211,80 @@ grpcurl -plaintext <host>:<port> list
 - Reflection calls made *through* the proxy are captured like any other traffic.
   Filter them out with `?path=demo.v1` or whatever matches your own services.
 
+## Replay and diff
+
+Selecting a call in the inspector offers **REPLAY**. The request goes back out
+built from the bytes that were stored, so what reaches the service is what
+reached it the first time.
+
+It is sent **through Mirador**, not straight at the upstream, which means the
+replay is captured like any other traffic: it lands in the field, it is linked
+to the call it came from, and the two can be compared immediately.
+
+```bash
+# replay a call onto the channel it came from
+curl -X POST http://127.0.0.1:9000/api/calls/42/replay
+
+# or onto another configured channel, to ask the same request of a second instance
+curl -X POST http://127.0.0.1:9000/api/calls/42/replay \
+  -H 'Content-Type: application/json' -d '{"target":"orders-staging"}'
+
+curl 'http://127.0.0.1:9000/api/diff?a=42&b=43'
+```
+
+Replay only ever targets a **configured channel**. There is no arbitrary-URL
+mode: the useful case is asking the same request of another instance you are
+already observing, and anything wider turns a debugger into a request forge.
+
+**A truncated capture cannot be replayed, and Mirador refuses rather than
+trying.** Only the head of the body was stored, so what went out would not be
+what was captured, and the result would carry the word "replay" while being a
+different request. The refusal names the fix: raise `max_body_bytes` and capture
+it again.
+
+### The diff is structural
+
+Bodies are compared as parsed structures, not as text. Reordered keys and
+reindented blocks are not differences, so the answer is a short list of paths
+instead of a wall of red and green:
+
+```
+~ qty          a 3          b 7
++ nota                      b urgente
+```
+
+- Array order **is** a difference — position carries meaning in a protobuf
+  repeated field — while object key order is not.
+- `1290000` and `"1290000"` are the same value. protojson renders int64 as a
+  string, and reporting that would be a statement about encoding, not data.
+- gRPC streams are compared message by message, so message 3 of 5 can differ
+  while the rest match.
+- Duration is deliberately excluded: it changes on every replay and would bury
+  the differences that mean something.
+- When a side is not JSON, or has no schema, the diff says so and reports
+  whether the bytes match rather than inventing a structural comparison.
+
+## What Mirador stores, and what that means
+
+Mirador writes the bytes that crossed the wire into a SQLite file. **That
+includes whatever your traffic carries**: `Authorization` headers, session
+cookies, API keys, personal data. There is no redaction, and that is a
+deliberate choice rather than an oversight — redacting would mean the capture is
+no longer what was sent, which breaks both the fidelity the tool is built on and
+replay along with it.
+
+What follows from that:
+
+- **The database is a plain file with no encryption**, wherever `database:`
+  points. Treat it like a log file containing credentials, because it is one.
+- **Mirador has no authentication.** Anyone who can reach its port can read
+  every capture. Bind it to `127.0.0.1` — the shipped configuration does — and
+  do not publish the port.
+- **It is a local development tool.** Pointing it at production traffic is
+  outside what it was built for and outside what its threat model covers.
+- Retention bounds how long captures live, but it is a housekeeping limit, not a
+  security control.
+
 ## Configuration
 
 Copy `mirador.example.yaml` to `mirador.yaml` and add one entry per service.
@@ -238,6 +324,8 @@ host. See `mirador.docker.yaml`.
 | `GET /api/calls/{id}` | One capture with headers and bodies. |
 | `GET /api/targets` | The configured targets. |
 | `GET /api/schemas` | Per gRPC target: which schema source resolved, or why none did. |
+| `POST /api/calls/{id}/replay` | Send the call again, optionally onto another channel. |
+| `GET /api/diff?a=&b=` | Structural comparison of two calls. |
 | `GET /api/stats` | Capture count, time span, and calls dropped under load. |
 | `GET /health` | Liveness. |
 
@@ -276,9 +364,9 @@ operators.
 | 1 | HTTP capture, storage, search, query API | done |
 | 2 | gRPC: h2c, trailers, message framing, protobuf decoding | done |
 | 3 | Web UI with a live timeline | done |
-| 4 | Replay and structural diff | next |
-| 5 | Packaging and documentation | |
-| 6 | TUI, as a second client of the same API | |
+| 4 | Replay and structural diff | done |
+| 5 | Packaging and documentation | done |
+| 6 | TUI, as a second client of the same API | next |
 
 ### Limitations
 
@@ -286,16 +374,22 @@ operators.
 - No WebSocket or SSE capture.
 - Compressed gRPC messages are not decompressed.
 - The `Host` header is rewritten to the upstream, like any reverse proxy.
-- No replay and no diff yet.
+- A truncated capture cannot be replayed; the refusal is deliberate.
 - The interface has no cursors and no trigger — two devices a real instrument
-  has, and the obvious next reach after replay.
+  has, and the obvious next reach.
 
 ## Development
 
 ```bash
 go test ./...
 go vet ./...
+go run ./cmd/mirador -version   # the commit a binary came from
 ```
+
+The race detector needs cgo, and this project deliberately needs no C toolchain
+(the SQLite driver is pure Go), so `go test -race` runs in CI rather than on a
+Windows workstation. It is not a formality: the proxy reads a request body on
+the transport's goroutine while the handler reads the capture.
 
 Tests use real SQLite files, real HTTP servers and a real gRPC client and
 server; there are no mocks of any of them.

@@ -463,6 +463,61 @@ body {
   max-width: 48ch;
 }
 
+/* ------------------------------------------------------------ actions ---- */
+
+.actions {
+  display: flex;
+  gap: var(--tight);
+  padding: var(--tight) var(--base);
+  border-bottom: 1px solid var(--rule);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.actions__note { font-size: 11px; color: var(--ink-faint); }
+.actions__note--fault { color: var(--fault); }
+
+.switch__key[disabled] {
+  color: var(--ink-faint);
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------- diff ---- */
+
+/* Changed values sit in fixed columns so the eye runs down one edge instead of
+   hunting across ragged lines. */
+.chg {
+  display: grid;
+  grid-template-columns: 1.6ch minmax(0, 1fr);
+  gap: 2px var(--tight);
+  font-size: 12px;
+  align-items: baseline;
+}
+
+.chg__mark { color: var(--ink-faint); }
+.chg__mark[data-kind="added"] { color: var(--armed); }
+.chg__mark[data-kind="removed"] { color: var(--fault); }
+
+.chg__path { color: var(--ink); overflow-wrap: anywhere; }
+
+.chg__values {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: 3ch minmax(0, 1fr);
+  gap: 0 var(--tight);
+  margin-bottom: var(--tight);
+}
+
+.chg__side { color: var(--ink-faint); }
+.chg__a { color: var(--fault); overflow-wrap: anywhere; }
+.chg__b { color: var(--armed); overflow-wrap: anywhere; }
+
+.diff__same {
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
 /* ---------------------------------------------------------- inspector ---- */
 
 .inspector {

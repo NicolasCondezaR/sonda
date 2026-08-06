@@ -34,6 +34,27 @@ func h2cHandler(h http.Handler) http.Handler {
 	return h2c.NewHandler(h, &http2.Server{})
 }
 
+// ReplayHeader marks a request Mirador is sending on the operator's behalf.
+// The proxy strips it before forwarding, so the upstream receives exactly the
+// original request and the captured headers do not gain a field the real client
+// never sent — the replay is recorded as a link, not as a difference in the
+// traffic.
+const ReplayHeader = "X-Mirador-Replay-Of"
+
+// replayedFrom reads and removes the marker.
+func replayedFrom(h http.Header) *int64 {
+	raw := h.Get(ReplayHeader)
+	if raw == "" {
+		return nil
+	}
+	h.Del(ReplayHeader)
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &id
+}
+
 func isGRPCRequest(headers http.Header) bool {
 	return strings.HasPrefix(headers.Get("Content-Type"), "application/grpc")
 }

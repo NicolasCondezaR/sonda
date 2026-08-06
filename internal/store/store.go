@@ -51,6 +51,10 @@ type Call struct {
 	// meaningful value — it is OK — so it cannot double as "absent".
 	GRPCStatus  *int32
 	GRPCMessage string
+
+	// ReplayOf links a call back to the capture it was replayed from, which is
+	// what makes "did the fix work?" a diff rather than a memory exercise.
+	ReplayOf *int64
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -69,6 +73,7 @@ type Summary struct {
 	ResponseSize int64
 	GRPCStatus   *int32
 	GRPCMessage  string
+	ReplayOf     *int64
 }
 
 type Filter struct {
@@ -122,7 +127,8 @@ CREATE TABLE IF NOT EXISTS calls (
 	resp_truncated INTEGER NOT NULL,
 	resp_trailers  TEXT    NOT NULL DEFAULT '{}',
 	grpc_status    INTEGER,
-	grpc_message   TEXT    NOT NULL DEFAULT ''
+	grpc_message   TEXT    NOT NULL DEFAULT '',
+	replay_of      INTEGER
 );
 CREATE INDEX IF NOT EXISTS calls_started_at_idx ON calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS calls_target_idx     ON calls(target, id DESC);
@@ -136,6 +142,7 @@ var addedColumns = map[string]string{
 	"resp_trailers": `ALTER TABLE calls ADD COLUMN resp_trailers TEXT NOT NULL DEFAULT '{}'`,
 	"grpc_status":   `ALTER TABLE calls ADD COLUMN grpc_status INTEGER`,
 	"grpc_message":  `ALTER TABLE calls ADD COLUMN grpc_message TEXT NOT NULL DEFAULT ''`,
+	"replay_of":     `ALTER TABLE calls ADD COLUMN replay_of INTEGER`,
 }
 
 func migrate(db *sql.DB) error {
@@ -227,13 +234,13 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			target, protocol, method, path, status, client_addr, started_at,
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
-			resp_trailers, grpc_status, grpc_message
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			resp_trailers, grpc_status, grpc_message, replay_of
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
-		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage,
+		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -303,7 +310,8 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
-		       duration_us, error, req_size, resp_size, grpc_status, grpc_message
+		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
+		       replay_of
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -324,15 +332,18 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 			startedAt  int64
 			durationUS int64
 			grpcStatus sql.NullInt64
+			replayOf   sql.NullInt64
 		)
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
-			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage); err != nil {
+			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
+			&replayOf); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
 		s.Duration = time.Duration(durationUS) * time.Microsecond
 		s.GRPCStatus = int32OrNil(grpcStatus)
+		s.ReplayOf = int64OrNil(replayOf)
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -344,19 +355,19 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		startedAt, durationUS               int64
 		reqHeaders, respHeader, respTrailer string
 		reqTrunc, respTrunc                 int
-		grpcStatus                          sql.NullInt64
+		grpcStatus, replayOf                sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, target, protocol, method, path, status, client_addr, started_at,
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
-		       resp_trailers, grpc_status, grpc_message
+		       resp_trailers, grpc_status, grpc_message, replay_of
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage)
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +377,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 	c.Request.Truncated = reqTrunc != 0
 	c.Response.Truncated = respTrunc != 0
 	c.GRPCStatus = int32OrNil(grpcStatus)
+	c.ReplayOf = int64OrNil(replayOf)
 	if c.Request.Headers, err = decodeHeaders(reqHeaders); err != nil {
 		return nil, err
 	}
@@ -628,6 +640,21 @@ func nullableInt32(v *int32) any {
 		return nil
 	}
 	return *v
+}
+
+func nullableInt64(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+func int64OrNil(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
 }
 
 func int32OrNil(v sql.NullInt64) *int32 {

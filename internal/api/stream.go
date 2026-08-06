@@ -36,6 +36,7 @@ func (h *Hub) Publish(c *store.Call) {
 		Duration: c.Duration, Error: c.Error,
 		RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
 		GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
+		ReplayOf: c.ReplayOf,
 	}))
 	if err != nil {
 		return

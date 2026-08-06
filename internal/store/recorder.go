@@ -36,7 +36,10 @@ func NewRecorder(s *Store, buffer int) *Recorder {
 	}
 }
 
-// OnStored registers the live-view notification. Call it before Run.
+// OnStored registers the live-view notification. It must be called before Run:
+// the field is read on the recorder's goroutine with no synchronisation, which
+// is deliberate — a lock on every write to serve a value that never changes
+// after startup would be cost for nothing.
 func (r *Recorder) OnStored(fn func(*Call)) { r.stored = fn }
 
 func (r *Recorder) Record(c *Call) {
