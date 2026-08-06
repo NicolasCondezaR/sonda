@@ -16,6 +16,7 @@ import (
 
 	"mirador/internal/config"
 	"mirador/internal/proxy"
+	"mirador/internal/runtime"
 	"mirador/internal/store"
 )
 
@@ -82,7 +83,28 @@ func newLiveStack(t *testing.T) *liveStack {
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
 
-	stack.api = New(db, recorder, []config.Target{stack.target}, nil).Handler()
+	project, err := db.CreateProject(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SaveService(context.Background(), store.Service{
+		ProjectID: project.ID, Name: stack.target.Name,
+		Listen: stack.target.Listen, Upstream: stack.target.Upstream,
+		Protocol: stack.target.Protocol,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Activated so the API can resolve the channel, but the runtime is not
+	// reconciled: the proxy above already owns that port.
+	if err := db.ActivateProject(context.Background(), project.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := runtime.NewWithoutListeners(db, recorder, 1<<20)
+	if err := rt.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stack.api = New(db, recorder, rt).Handler()
 	return stack
 }
 
@@ -234,8 +256,7 @@ func TestReplayRefusesATruncatedCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	targets := []config.Target{{Name: "api", Listen: "127.0.0.1:1", Upstream: "http://127.0.0.1:1", Protocol: "http"}}
-	handler := New(db, noDrops{}, targets, nil).Handler()
+	handler := New(db, noDrops{}, emptyRuntime(t, db)).Handler()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/calls/"+strconv.FormatInt(id, 10)+"/replay", http.NoBody)
 	rec := httptest.NewRecorder()

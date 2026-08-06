@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -80,6 +81,42 @@ func Load(path string) (*Config, error) {
 	return Parse(raw)
 }
 
+// LoadOrDefaults reads the file when there is one and falls back to defaults
+// when there is not.
+//
+// Projects live in the database now, so a missing configuration file is an
+// ordinary first run rather than an error: the process still knows where to
+// listen and how much of a body to keep, and the interface supplies the rest.
+func LoadOrDefaults(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		c := &Config{}
+		c.applyDefaults()
+		if err := c.validateSettings(); err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	return Parse(raw)
+}
+
+// ProjectNameFor names the seeded project after the directory the
+// configuration lives in, which is nearly always the project's own name.
+func ProjectNameFor(configPath string) string {
+	dir, err := filepath.Abs(filepath.Dir(configPath))
+	if err != nil || filepath.Base(dir) == "." {
+		return "default"
+	}
+	name := filepath.Base(dir)
+	if name == "" || name == string(filepath.Separator) {
+		return "default"
+	}
+	return name
+}
+
 func Parse(raw []byte) (*Config, error) {
 	var c Config
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
@@ -124,6 +161,14 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
+	if err := c.validateSettings(); err != nil {
+		return err
+	}
+	return c.validateTargets()
+}
+
+// validateSettings covers what belongs to the process rather than to a project.
+func (c *Config) validateSettings() error {
 	if c.MaxBodyBytes < 0 {
 		return fmt.Errorf("max_body_bytes must not be negative")
 	}
@@ -147,11 +192,10 @@ func (c *Config) validate() error {
 	if c.Retention.interval <= 0 {
 		return fmt.Errorf("retention.interval must be greater than zero")
 	}
+	return nil
+}
 
-	if len(c.Targets) == 0 {
-		return fmt.Errorf("at least one target is required")
-	}
-
+func (c *Config) validateTargets() error {
 	names := map[string]bool{}
 	listens := map[string]bool{c.APIListen: true}
 	for i, t := range c.Targets {

@@ -132,6 +132,8 @@ body {
   padding: 7px 10px;
   cursor: pointer;
   position: relative;
+  /* A control label that wraps stops looking like a control. */
+  white-space: nowrap;
 }
 
 .switch__key:last-child { border-right: 0; }
@@ -630,6 +632,159 @@ body {
 .note--fault { color: var(--fault); }
 
 .insp-sec__body--loading { color: var(--ink-faint); font-size: 12px; }
+
+/* -------------------------------------------------------------- admin ---- */
+
+/* The configuration screen takes the whole instrument rather than sitting
+   beside it: setting up a project and watching traffic are different sittings,
+   and a panel squeezed next to the field would be too narrow for either. */
+.admin {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: var(--case);
+  display: flex;
+  flex-direction: column;
+}
+
+.admin__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--base);
+  height: var(--bar-h);
+  padding: 0 var(--base);
+  border-bottom: 1px solid var(--rule);
+}
+
+.admin__note { flex: 1 1 auto; font-size: 11px; color: var(--ink-faint); }
+.admin__note--fault { color: var(--fault); }
+.admin__note--ok { color: var(--armed); }
+
+.admin__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--loose);
+  display: flex;
+  flex-direction: column;
+  gap: var(--loose);
+  max-width: 1100px;
+  width: 100%;
+}
+
+.prj {
+  border: 1px solid var(--rule);
+}
+
+.prj__head {
+  display: flex;
+  align-items: center;
+  gap: var(--base);
+  padding: var(--tight) var(--base);
+  background: var(--raised);
+}
+
+.prj__name { font-size: 13px; color: var(--ink-dim); }
+.prj--active .prj__name { color: var(--ink); font-weight: 700; }
+.prj__count { font-size: 11px; color: var(--ink-faint); flex: 1 1 auto; }
+.prj__actions { display: flex; gap: var(--tight); }
+
+/* A running listener is stated, not implied by a colour alone: "listening" and
+   a port that never opened have to be distinguishable in a screenshot. */
+.prj__lamp { font-size: 10px; letter-spacing: 0.09em; }
+.prj__lamp--on { color: var(--armed); }
+.prj__lamp--off { color: var(--ink-faint); }
+
+.svc {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 5ch minmax(0, 1.2fr) minmax(0, 1.4fr) 11ch max-content;
+  gap: var(--tight);
+  align-items: center;
+  padding: var(--tight) var(--base);
+  border-top: 1px solid var(--grid);
+  font-size: 12px;
+}
+
+.svc__name { color: var(--ink); overflow-wrap: anywhere; }
+.svc__cell { color: var(--ink-dim); overflow-wrap: anywhere; }
+.svc__cell--faint { color: var(--ink-faint); }
+.svc__state { font-size: 10px; letter-spacing: 0.09em; }
+.svc__state--on { color: var(--armed); }
+.svc__state--off { color: var(--fault); }
+
+/* The line that makes the caller talk through Mirador. It is the one step no
+   configuration screen removes, so it is handed over rather than explained. */
+.svc__point {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: var(--tight);
+  font-size: 11px;
+  color: var(--ink-faint);
+  padding-left: var(--base);
+}
+
+.svc__command {
+  color: var(--ink-dim);
+  background: var(--field);
+  padding: 1px var(--tight);
+  overflow-wrap: anywhere;
+}
+
+.form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--tight);
+  padding: var(--base);
+  border-top: 1px solid var(--grid);
+  background: var(--field);
+}
+
+.form__field { display: flex; flex-direction: column; gap: 2px; }
+
+.form input[type="text"],
+.form select {
+  appearance: none;
+  border: 1px solid var(--rule);
+  background: var(--raised);
+  color: var(--ink);
+  font: 400 12px/1 var(--mono);
+  padding: 6px 8px;
+}
+
+.form input:focus, .form select:focus { outline: none; border-color: var(--ink-dim); }
+
+.form__row { grid-column: 1 / -1; display: flex; gap: var(--tight); align-items: center; }
+
+/* Its own block container, not a .form: that one is an auto-fit grid, and a
+   row nested inside it gets squeezed into a single 160px column — which
+   collapses every field into a one-character-wide stack. */
+.found-panel {
+  border-top: 1px solid var(--grid);
+  background: var(--field);
+  padding: var(--base);
+}
+
+.found-panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--tight);
+  margin-bottom: var(--tight);
+}
+
+.found {
+  display: grid;
+  grid-template-columns: 3ch minmax(0, 1.2fr) 5ch minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: var(--tight);
+  align-items: center;
+  padding: 3px var(--base);
+  font-size: 11px;
+  border-top: 1px solid var(--grid);
+}
+
+.found__source { color: var(--ink-faint); }
+.found__taken { color: var(--fault); }
 
 /* --------------------------------------------------------- responsive ---- */
 

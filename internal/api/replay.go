@@ -97,7 +97,7 @@ func (s *Server) replayCall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) target(name string) (config.Target, bool) {
-	for _, t := range s.targets {
+	for _, t := range s.targets() {
 		if t.Name == name {
 			return t, true
 		}

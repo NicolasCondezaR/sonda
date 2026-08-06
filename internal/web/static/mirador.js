@@ -51,6 +51,11 @@ const dom = {
   inspectorIdle: document.getElementById("inspector-idle"),
   inspectorBody: document.getElementById("inspector-body"),
   diffBody: document.getElementById("diff-body"),
+  admin: document.getElementById("admin"),
+  adminBody: document.getElementById("admin-body"),
+  adminNote: document.getElementById("admin-note"),
+  openProjects: document.getElementById("open-projects"),
+  closeAdmin: document.getElementById("close-admin"),
 };
 
 /* ------------------------------------------------------------- helpers -- */
@@ -861,6 +866,9 @@ function wireControls() {
     }, 220);
   });
 
+  dom.openProjects.addEventListener("click", openAdmin);
+  dom.closeAdmin.addEventListener("click", closeAdmin);
+
   dom.hold.addEventListener("click", () => {
     state.held = !state.held;
     dom.hold.setAttribute("aria-pressed", String(state.held));
@@ -870,6 +878,10 @@ function wireControls() {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && admin.open) {
+      closeAdmin();
+      return;
+    }
     if (event.key === "Escape") closeInspector();
     if (event.key === "/" && document.activeElement !== dom.search) {
       event.preventDefault();
@@ -927,6 +939,382 @@ async function boot() {
   await reload();
   connect();
   requestAnimationFrame(advance);
+}
+
+
+/* --------------------------------------------------------------- admin -- */
+
+/* The configuration screen. Everything here goes through the same API the rest
+ * of the page uses, and every mutation answers with the new state of every
+ * project — so the screen never has to guess what happened, it redraws what the
+ * server says is true. */
+
+const admin = {
+  open: false,
+  projects: [],
+  found: null,
+  target: null,   // project the import panel belongs to
+};
+
+async function loadProjects() {
+  const res = await fetch("api/projects");
+  if (!res.ok) throw new Error("could not read projects");
+  admin.projects = (await res.json()).projects;
+}
+
+function note(text, kind) {
+  const el = dom.adminNote;
+  el.textContent = text || "";
+  el.className = "admin__note" + (kind ? " admin__note--" + kind : "");
+}
+
+async function call(method, url, body, options) {
+  const init = { method, headers: {} };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = (options && options.contentType) || "application/json";
+    init.body = typeof body === "string" ? body : JSON.stringify(body);
+  }
+  const res = await fetch(url, init);
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+  if (!res.ok) throw new Error((parsed && parsed.error) || text || ("the API answered " + res.status));
+  return parsed;
+}
+
+async function mutate(fn, success) {
+  try {
+    note("working…");
+    const result = await fn();
+    if (result && result.projects) admin.projects = result.projects;
+    else await loadProjects();
+    note(success || "", "ok");
+    renderAdmin();
+    // Channels and captures belong to the project that is now listening.
+    await boot_reloadAfterProjectChange();
+  } catch (err) {
+    note(err.message, "fault");
+  }
+}
+
+function openAdmin() {
+  admin.open = true;
+  dom.admin.hidden = false;
+  loadProjects().then(renderAdmin).catch((err) => note(err.message, "fault"));
+}
+
+function closeAdmin() {
+  admin.open = false;
+  admin.found = null;
+  dom.admin.hidden = true;
+}
+
+function renderAdmin() {
+  const out = document.createDocumentFragment();
+
+  for (const project of admin.projects) {
+    out.appendChild(renderProject(project));
+  }
+  if (!admin.projects.length) {
+    out.appendChild(el("p", "note", "No projects yet. Create one, then add the services it talks to — or import them from a file the project already has."));
+  }
+  out.appendChild(renderNewProject());
+
+  dom.adminBody.replaceChildren(out);
+}
+
+function renderProject(project) {
+  const box = el("section", "prj" + (project.active ? " prj--active" : ""));
+
+  const head = el("div", "prj__head");
+  head.appendChild(el("span", "prj__name", project.name));
+
+  const listening = project.services.filter((s) => s.running).length;
+  const summary = project.active
+    ? `${project.services.length} services · ${listening} listening`
+    : `${project.services.length} services`;
+  head.appendChild(el("span", "prj__count", summary));
+
+  if (project.active) {
+    head.appendChild(el("span", "prj__lamp prj__lamp--on", "■ ACTIVE"));
+  } else {
+    head.appendChild(button("ACTIVATE", () =>
+      mutate(() => call("POST", `api/projects/${project.id}/activate`), `${project.name} is listening`)));
+  }
+
+  head.appendChild(button("RENAME", () => {
+    const name = prompt("New name for " + project.name, project.name);
+    if (name && name !== project.name) {
+      mutate(() => call("PATCH", `api/projects/${project.id}`, { name }), "renamed");
+    }
+  }));
+  head.appendChild(button("DELETE", () => {
+    if (confirm(`Delete ${project.name} and its ${project.services.length} services? Captures already taken are kept.`)) {
+      mutate(() => call("DELETE", `api/projects/${project.id}`), "deleted");
+    }
+  }));
+  box.appendChild(head);
+
+  for (const svc of project.services) {
+    box.appendChild(renderService(project, svc));
+  }
+
+  box.appendChild(renderServiceForm(project));
+  box.appendChild(renderProjectTools(project));
+  if (admin.target === project.id && admin.found) {
+    box.appendChild(renderFound(project));
+  }
+  return box;
+}
+
+function renderService(project, svc) {
+  const row = el("div", "svc");
+  row.append(
+    el("span", "svc__name", svc.name),
+    el("span", "svc__cell svc__cell--faint", svc.protocol),
+    el("span", "svc__cell", svc.listen),
+    el("span", "svc__cell svc__cell--faint", svc.upstream),
+  );
+
+  // What is really happening on the port, not what was configured.
+  const state = project.active
+    ? el("span", "svc__state " + (svc.running ? "svc__state--on" : "svc__state--off"),
+        svc.running ? "LISTENING" : "FAILED")
+    : el("span", "svc__state svc__cell--faint", "IDLE");
+  if (svc.error) state.title = svc.error;
+  row.appendChild(state);
+
+  row.appendChild(button("REMOVE", () => {
+    if (confirm(`Remove ${svc.name}?`)) {
+      mutate(() => call("DELETE", `api/services/${svc.id}`), "removed");
+    }
+  }));
+
+  const point = el("div", "svc__point");
+  point.append(
+    el("span", null, "point the caller here:"),
+    el("code", "svc__command", svc.point_at),
+    button("COPY", () => copy(svc.point_at)),
+  );
+  if (svc.error) {
+    point.appendChild(el("span", "found__taken", svc.error));
+  }
+  row.appendChild(point);
+  return row;
+}
+
+function renderServiceForm(project) {
+  const form = el("form", "form");
+
+  const name = field(form, "NAME", "text", "ms-auth");
+  const listen = field(form, "MIRADOR LISTENS ON", "text", "127.0.0.1:9152");
+  const upstream = field(form, "THE REAL SERVICE", "text", "http://127.0.0.1:50052");
+
+  const protoWrap = el("div", "form__field");
+  protoWrap.appendChild(el("span", "label", "PROTOCOL"));
+  const protocol = document.createElement("select");
+  for (const value of ["grpc", "http"]) {
+    const option = document.createElement("option");
+    option.value = option.textContent = value;
+    protocol.appendChild(option);
+  }
+  protoWrap.appendChild(protocol);
+  form.appendChild(protoWrap);
+
+  const row = el("div", "form__row");
+  const reflection = document.createElement("input");
+  reflection.type = "checkbox";
+  reflection.id = `refl-${project.id}`;
+  const reflLabel = el("label", "note", " ask this service for its schema (reflection)");
+  reflLabel.htmlFor = reflection.id;
+  row.append(reflection, reflLabel);
+  row.appendChild(submit("ADD SERVICE"));
+  form.appendChild(row);
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    mutate(() => call("POST", `api/projects/${project.id}/services`, {
+      name: name.value.trim(),
+      listen: listen.value.trim(),
+      upstream: upstream.value.trim(),
+      protocol: protocol.value,
+      reflection: reflection.checked,
+    }), "added");
+  });
+  return form;
+}
+
+function renderProjectTools(project) {
+  const row = el("div", "form");
+  const tools = el("div", "form__row");
+
+  // Reading the addresses out of a file the project already has beats asking
+  // for fifteen of them by hand, which is how a tool like this gets abandoned.
+  tools.appendChild(filePicker("IMPORT FROM A FILE", async (filename, text) => {
+    const result = await call("POST", `api/discover?filename=${encodeURIComponent(filename)}`,
+      text, { contentType: "text/plain" });
+    admin.target = project.id;
+    admin.found = result.found;
+    note(`${result.found.length} services found in ${filename}`, "ok");
+    renderAdmin();
+  }));
+
+  const descriptor = project.has_descriptor
+    ? `schemas: ${project.descriptor_name}`
+    : "no schemas uploaded";
+  tools.appendChild(el("span", "note", descriptor));
+
+  tools.appendChild(filePicker("UPLOAD SCHEMAS", async (filename, _text, bytes) => {
+    const result = await call("POST",
+      `api/projects/${project.id}/descriptor?name=${encodeURIComponent(filename)}`,
+      bytes, { contentType: "application/octet-stream" });
+    await loadProjects();
+    note(`${result.services} services in ${filename}`, "ok");
+    renderAdmin();
+  }, true));
+
+  row.appendChild(tools);
+  return row;
+}
+
+function renderFound(project) {
+  const box = el("div", "found-panel");
+  const head = el("div", "found-panel__head");
+  head.appendChild(el("span", "label", "FOUND — review before adding"));
+  head.appendChild(button("ADD ALL", () => addFound(project, admin.found.filter((f) => !f.port_taken))));
+  head.appendChild(button("DISCARD", () => { admin.found = null; renderAdmin(); }));
+  box.appendChild(head);
+
+  for (const f of admin.found) {
+    const row = el("div", "found");
+    row.append(
+      button("+", () => addFound(project, [f])),
+      el("span", "svc__name", f.name),
+      el("span", "svc__cell svc__cell--faint", f.protocol),
+      el("span", "svc__cell svc__cell--faint", f.upstream),
+      el("span", f.port_taken ? "found__taken" : "svc__cell", f.listen),
+      // Where it was read from, so a wrong reading is visible before saving.
+      el("span", "found__source", f.port_taken ? "port already in use" : f.source),
+    );
+    box.appendChild(row);
+  }
+  return box;
+}
+
+async function addFound(project, entries) {
+  if (!entries.length) {
+    note("nothing to add: every suggested port is already in use", "fault");
+    return;
+  }
+  await mutate(async () => {
+    let last = null;
+    for (const f of entries) {
+      last = await call("POST", `api/projects/${project.id}/services`, {
+        name: f.name, listen: f.listen, upstream: f.upstream,
+        protocol: f.protocol, reflection: false,
+      });
+    }
+    admin.found = null;
+    return last;
+  }, `${entries.length} services added`);
+}
+
+function renderNewProject() {
+  const form = el("form", "form");
+  const name = field(form, "NEW PROJECT", "text", "core-delpagroup");
+  const row = el("div", "form__row");
+  row.appendChild(submit("CREATE"));
+  form.appendChild(row);
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!name.value.trim()) return;
+    mutate(() => call("POST", "api/projects", { name: name.value.trim() }), "created");
+  });
+  return form;
+}
+
+/* ------------------------------------------------------- admin pieces -- */
+
+function field(form, label, type, placeholder) {
+  const wrap = el("div", "form__field");
+  wrap.appendChild(el("span", "label", label));
+  const input = document.createElement("input");
+  input.type = type;
+  input.placeholder = placeholder;
+  wrap.appendChild(input);
+  form.appendChild(wrap);
+  return input;
+}
+
+function button(label, onClick) {
+  const b = el("button", "switch__key switch__key--lone", label);
+  b.type = "button";
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function submit(label) {
+  const b = el("button", "switch__key switch__key--lone", label);
+  b.type = "submit";
+  return b;
+}
+
+function filePicker(label, handler, asBytes) {
+  const wrap = el("label", "switch__key switch__key--lone", label);
+  wrap.style.cursor = "pointer";
+  const input = document.createElement("input");
+  input.type = "file";
+  input.hidden = true;
+  input.addEventListener("change", async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      note("reading " + file.name + "…");
+      if (asBytes) {
+        await handler(file.name, null, await file.arrayBuffer());
+      } else {
+        await handler(file.name, await file.text());
+      }
+    } catch (err) {
+      note(err.message, "fault");
+    } finally {
+      input.value = "";
+    }
+  });
+  wrap.appendChild(input);
+  return wrap;
+}
+
+function copy(text) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(
+      () => note("copied", "ok"),
+      () => note("could not copy; select the line instead", "fault"));
+    return;
+  }
+  note("copying is not available here; select the line instead", "fault");
+}
+
+// After a project change the channels, the captures and the counts all belong
+// to a different system, so the field is rebuilt rather than filtered.
+async function boot_reloadAfterProjectChange() {
+  try {
+    const res = await fetch("api/targets");
+    const body = await res.json();
+    state.targets = body.targets;
+    state.byName = new Map(state.targets.map((t) => [t.name, t]));
+    state.selected = 0;
+    state.detail = null;
+    renderRail();
+    renderLanes();
+    dom.railFoot.textContent = state.targets.length === 1
+      ? "1 channel armed"
+      : state.targets.length + " channels armed";
+    await reload();
+  } catch (err) {
+    console.error("mirador: could not refresh after the project changed", err);
+  }
 }
 
 boot();

@@ -10,13 +10,29 @@ import (
 	"testing"
 	"time"
 
-	"mirador/internal/config"
+	"mirador/internal/runtime"
 	"mirador/internal/store"
 )
 
 type noDrops struct{}
 
 func (noDrops) Dropped() int64 { return 7 }
+
+// emptyRuntime is a runtime with no active project: enough for the endpoints
+// that only read captures, and it opens no ports.
+func emptyRuntime(t *testing.T, s *store.Store) *runtime.Runtime {
+	t.Helper()
+	rt := runtime.New(s, noRecorder{}, 1<<20)
+	if err := rt.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rt.Stop)
+	return rt
+}
+
+type noRecorder struct{}
+
+func (noRecorder) Record(*store.Call) {}
 
 func newServer(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
@@ -26,8 +42,7 @@ func newServer(t *testing.T) (http.Handler, *store.Store) {
 	}
 	t.Cleanup(func() { s.Close() })
 
-	targets := []config.Target{{Name: "api", Listen: "127.0.0.1:9101", Upstream: "http://127.0.0.1:3000", Protocol: "http"}}
-	return New(s, noDrops{}, targets, nil).Handler(), s
+	return New(s, noDrops{}, emptyRuntime(t, s)).Handler(), s
 }
 
 func insert(t *testing.T, s *store.Store, body []byte) int64 {

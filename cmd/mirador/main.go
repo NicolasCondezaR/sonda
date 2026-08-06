@@ -1,9 +1,15 @@
-// Command mirador runs one capturing proxy per configured target plus the
-// query API that serves what they captured.
+// Command mirador captures the traffic of the active project and serves the
+// interface that reads it.
+//
+// Which services are observed is not decided here. Projects live in the
+// database and are edited from the interface; the configuration file only
+// carries process-level settings and, on a fresh database, seeds the first
+// project.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -17,8 +23,7 @@ import (
 
 	"mirador/internal/api"
 	"mirador/internal/config"
-	"mirador/internal/protoschema"
-	"mirador/internal/proxy"
+	"mirador/internal/runtime"
 	"mirador/internal/store"
 	"mirador/internal/web"
 )
@@ -63,7 +68,7 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "mirador.yaml", "path to the configuration file")
+	configPath := flag.String("config", "mirador.yaml", "configuration file; its targets seed a fresh database")
 	showVersion := flag.Bool("version", false, "print the build this binary came from and exit")
 	flag.Parse()
 
@@ -72,7 +77,7 @@ func run() error {
 		return nil
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.LoadOrDefaults(*configPath)
 	if err != nil {
 		return err
 	}
@@ -83,20 +88,29 @@ func run() error {
 	}
 	defer db.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := seedFromConfig(ctx, db, cfg, *configPath); err != nil {
+		return err
+	}
+
 	recorder := store.NewRecorder(db, cfg.BufferSize)
-	resolvers := buildResolvers(cfg)
+	rt := runtime.New(db, recorder, cfg.MaxBodyBytes)
+	apiServer := api.New(db, recorder, rt)
 
 	// Wire the live view before anything starts reading from the recorder.
 	// Registering the hook once Run is already going is a data race on the
 	// field it writes, and the one place it would surface is under load.
-	apiServer := api.New(db, recorder, cfg.Targets, resolvers)
 	recorder.OnStored(apiServer.Hub().Publish)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if err := rt.Reconcile(ctx); err != nil {
+		return err
+	}
+	defer rt.Stop()
 
 	var wg sync.WaitGroup
-	fail := make(chan error, len(cfg.Targets)+1)
+	fail := make(chan error, 1)
 
 	wg.Add(1)
 	go func() {
@@ -110,16 +124,6 @@ func run() error {
 		pruneLoop(ctx, db, cfg.Retention)
 	}()
 
-	for _, target := range cfg.Targets {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := proxy.New(target, cfg.MaxBodyBytes, recorder).Serve(ctx); err != nil {
-				fail <- err
-			}
-		}()
-	}
-
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -128,7 +132,7 @@ func run() error {
 		}
 	}()
 
-	slog.Info("mirador ready", "ui", "http://"+cfg.APIListen, "api", cfg.APIListen, "targets", len(cfg.Targets), "database", cfg.Database)
+	slog.Info("mirador ready", "ui", "http://"+cfg.APIListen, "database", cfg.Database)
 
 	select {
 	case err := <-fail:
@@ -142,24 +146,64 @@ func run() error {
 	}
 }
 
-// buildResolvers creates one schema resolver per gRPC target. Resolution is
-// lazy: a service that is down when Mirador starts is the normal case, not an
-// error worth refusing to boot over.
-func buildResolvers(cfg *config.Config) api.Resolvers {
-	resolvers := api.Resolvers{}
-	for _, t := range cfg.Targets {
-		if t.Protocol != config.ProtocolGRPC {
+// seedFromConfig turns a configuration file into the first project, once.
+//
+// It runs only when the database holds no projects at all, so an edit made in
+// the interface is never undone by a stale file on the next restart. Two
+// sources of truth for the same thing is how a configuration screen stops
+// being trusted.
+func seedFromConfig(ctx context.Context, db *store.Store, cfg *config.Config, path string) error {
+	if len(cfg.Targets) == 0 {
+		return nil
+	}
+	projects, err := db.Projects(ctx)
+	if err != nil {
+		return err
+	}
+	if len(projects) > 0 {
+		return nil
+	}
+
+	project, err := db.CreateProject(ctx, config.ProjectNameFor(path))
+	if err != nil {
+		return fmt.Errorf("seed the first project: %w", err)
+	}
+
+	for i, target := range cfg.Targets {
+		if _, err := db.SaveService(ctx, store.Service{
+			ProjectID:  project.ID,
+			Name:       target.Name,
+			Listen:     target.Listen,
+			Upstream:   target.Upstream,
+			Protocol:   target.Protocol,
+			Reflection: target.ReflectionEnabled(),
+			Position:   i,
+		}); err != nil {
+			return fmt.Errorf("seed service %s: %w", target.Name, err)
+		}
+
+		if target.DescriptorSet == "" {
 			continue
 		}
-		var reflectionAddr string
-		if t.ReflectionEnabled() {
-			// Reflection goes straight to the service, not through the proxy:
-			// Mirador asking itself would capture its own bookkeeping.
-			reflectionAddr = t.UpstreamURL().Host
+		blob, err := os.ReadFile(target.DescriptorSet)
+		if err != nil {
+			slog.Warn("could not read the descriptor set named in the configuration",
+				"path", target.DescriptorSet, "error", err)
+			continue
 		}
-		resolvers[t.Name] = protoschema.NewResolver(t.DescriptorSet, reflectionAddr)
+		// The set belongs to the project: one system compiles to one set of
+		// descriptors, and the file repeated the same path on every service.
+		if err := db.SetDescriptorSet(ctx, project.ID, target.DescriptorSet, blob); err != nil {
+			return err
+		}
 	}
-	return resolvers
+
+	if err := db.ActivateProject(ctx, project.ID); err != nil {
+		return err
+	}
+	slog.Info("seeded the first project from the configuration file",
+		"project", project.Name, "services", len(cfg.Targets))
+	return nil
 }
 
 func serveAPI(ctx context.Context, cfg *config.Config, apiServer *api.Server) error {
@@ -183,7 +227,7 @@ func serveAPI(ctx context.Context, cfg *config.Config, apiServer *api.Server) er
 		_ = server.Shutdown(shutdown)
 	}()
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("api: %w", err)
 	}
 	return nil

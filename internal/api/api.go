@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"mirador/internal/config"
+	"mirador/internal/runtime"
 	"mirador/internal/store"
 )
 
@@ -26,19 +27,39 @@ type Dropper interface {
 }
 
 type Server struct {
-	store     *store.Store
-	dropped   Dropper
-	targets   []config.Target
-	resolvers Resolvers
-	hub       *Hub
+	store   *store.Store
+	dropped Dropper
+	hub     *Hub
+	rt      *runtime.Runtime
 }
 
-func New(s *store.Store, dropped Dropper, targets []config.Target, resolvers Resolvers) *Server {
-	return &Server{
-		store: s, dropped: dropped, targets: targets,
-		resolvers: resolvers, hub: NewHub(),
-	}
+func New(s *store.Store, dropped Dropper, rt *runtime.Runtime) *Server {
+	return &Server{store: s, dropped: dropped, rt: rt, hub: NewHub()}
 }
+
+// targets are the services of the project currently listening. Read from the
+// runtime on every call rather than held here: a second copy of what is
+// configured is a second thing that can be wrong.
+func (s *Server) targets() []config.Target {
+	active := s.rt.Active()
+	if active == nil {
+		return nil
+	}
+	out := make([]config.Target, 0, len(active.Services))
+	for _, svc := range active.Services {
+		out = append(out, config.Target{
+			Name: svc.Name, Listen: svc.Listen,
+			Upstream: svc.Upstream, Protocol: svc.Protocol,
+		})
+	}
+	return out
+}
+
+func (s *Server) resolvers() Resolvers { return s.rt.Resolvers() }
+
+// projectFilter scopes queries to the project whose ports are open, so a
+// listing never mixes one system's traffic into another's.
+func (s *Server) projectFilter() string { return s.rt.ActiveName() }
 
 // Hub is the live-view fan-out; wire it to the recorder with OnStored.
 func (s *Server) Hub() *Hub { return s.hub }
@@ -53,6 +74,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stream", s.stream)
 	mux.HandleFunc("POST /api/calls/{id}/replay", s.replayCall)
 	mux.HandleFunc("GET /api/diff", s.diffCalls)
+
+	mux.HandleFunc("GET /api/projects", s.listProjects)
+	mux.HandleFunc("POST /api/projects", s.createProject)
+	mux.HandleFunc("PATCH /api/projects/{id}", s.updateProject)
+	mux.HandleFunc("DELETE /api/projects/{id}", s.deleteProject)
+	mux.HandleFunc("POST /api/projects/{id}/activate", s.activateProject)
+	mux.HandleFunc("POST /api/projects/deactivate", s.deactivateProjects)
+	mux.HandleFunc("POST /api/projects/{id}/descriptor", s.uploadDescriptor)
+	mux.HandleFunc("POST /api/projects/{id}/services", s.saveService)
+	mux.HandleFunc("DELETE /api/services/{id}", s.deleteService)
+	mux.HandleFunc("POST /api/discover", s.discoverServices)
+	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -109,6 +142,7 @@ func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
 		Path:       q.Get("path"),
 		Protocol:   q.Get("protocol"),
 		Search:     q.Get("q"),
+		Project:    s.projectFilter(),
 		FailedOnly: q.Get("failed") == "true",
 	}
 
@@ -213,7 +247,7 @@ func (s *Server) listSchemas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := make([]schemaStatus, 0)
-	for _, t := range s.targets {
+	for _, t := range s.targets() {
 		if t.Protocol != config.ProtocolGRPC {
 			continue
 		}
@@ -222,7 +256,7 @@ func (s *Server) listSchemas(w http.ResponseWriter, r *http.Request) {
 			DescriptorSet: t.DescriptorSet,
 			Reflection:    t.ReflectionEnabled(),
 		}
-		if resolver := s.resolvers[t.Name]; resolver != nil {
+		if resolver := s.resolvers()[t.Name]; resolver != nil {
 			source, err := resolver.Status(r.Context())
 			entry.Source = string(source)
 			if err != nil {
@@ -268,8 +302,9 @@ func (s *Server) listTargets(w http.ResponseWriter, _ *http.Request) {
 		Color    string `json:"color"`
 		Hollow   bool   `json:"hollow"`
 	}
-	out := make([]targetJSON, 0, len(s.targets))
-	for i, t := range s.targets {
+	targets := s.targets()
+	out := make([]targetJSON, 0, len(targets))
+	for i, t := range targets {
 		color, hollow := channelFor(i)
 		out = append(out, targetJSON{t.Name, t.Listen, t.Upstream, t.Protocol, color, hollow})
 	}
@@ -277,7 +312,7 @@ func (s *Server) listTargets(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
-	st, err := s.store.Stats(r.Context())
+	st, err := s.store.Stats(r.Context(), s.projectFilter())
 	if err != nil {
 		slog.Error("stats", "error", err)
 		writeError(w, http.StatusInternalServerError, "could not read stats")

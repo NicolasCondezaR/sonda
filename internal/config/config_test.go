@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,49 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+// A file with no targets is an ordinary first run now, not an error: projects
+// live in the database and the interface fills them in.
+func TestAConfigWithNoTargetsIsValid(t *testing.T) {
+	c, err := Parse([]byte("api_listen: 127.0.0.1:9000\n"))
+	if err != nil {
+		t.Fatalf("a file with only settings should be accepted: %v", err)
+	}
+	if len(c.Targets) != 0 {
+		t.Errorf("targets = %v, want none", c.Targets)
+	}
+	if c.Database != defaultDatabase {
+		t.Errorf("defaults were not applied: database = %q", c.Database)
+	}
+}
+
+// And so is no file at all.
+func TestLoadOrDefaultsWithoutAFile(t *testing.T) {
+	c, err := LoadOrDefaults(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
+	if err != nil {
+		t.Fatalf("a missing file should fall back to defaults: %v", err)
+	}
+	if c.APIListen != defaultAPIListen || c.Retention.MaxAgeDuration() == 0 {
+		t.Errorf("defaults were not applied: %+v", c)
+	}
+
+	// A file that exists but cannot be read is still an error: silently
+	// starting with defaults would hide a typo in the path.
+	dir := t.TempDir()
+	if _, err := LoadOrDefaults(dir); err == nil {
+		t.Error("a directory given as the config path should be reported")
+	}
+}
+
+func TestProjectNameComesFromTheDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "core-delpagroup")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := ProjectNameFor(filepath.Join(dir, "mirador.yaml")); got != "core-delpagroup" {
+		t.Errorf("project name = %q, want the directory name", got)
+	}
+}
+
 func TestGRPCTargetDefaults(t *testing.T) {
 	c, err := Parse([]byte(`
 targets:
@@ -66,11 +111,6 @@ func TestValidationRejectsBadConfigs(t *testing.T) {
 		yaml    string
 		wantMsg string
 	}{
-		{
-			name:    "no targets",
-			yaml:    "api_listen: 127.0.0.1:9000\n",
-			wantMsg: "at least one target",
-		},
 		{
 			name: "duplicate name",
 			yaml: `
