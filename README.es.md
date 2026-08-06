@@ -16,10 +16,10 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/mirador-field.jpg)
 
-> **Estado: fase 5.** Captura, decodificación, almacenamiento, búsqueda, la API
-> de consulta, la interfaz de operación, el replay y el diff estructural
-> funcionan, y todo se levanta con `docker compose up`. Ver
-> [Hoja de ruta](#hoja-de-ruta).
+> **Estado: fase 6, funcionalmente completo.** Captura, decodificación,
+> almacenamiento, búsqueda, la API de consulta, la interfaz web, el replay, el
+> diff estructural y un cliente de terminal funcionan, y todo se levanta con
+> `docker compose up`. Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
 
@@ -110,6 +110,68 @@ peticiones de red y sin fuentes web.
 Arriba: una llamada gRPC que devolvió `PermissionDenied`. El estado HTTP es 200
 —gRPC reporta el fallo por debajo de HTTP— y la request aparece decodificada con
 nombres de campo porque el servicio sirve reflection.
+
+## El cliente de terminal
+
+El mismo instrumento, en una terminal. Es un segundo cliente de la API y no una
+segunda implementación: no captura ni guarda nada, lee un Mirador que ya está
+corriendo.
+
+```bash
+go build -o mirador-tui ./cmd/mirador-tui
+./mirador-tui                          # defaults to http://127.0.0.1:9000
+./mirador-tui -api http://host:9000
+
+docker compose run --rm tui            # or from the image
+```
+
+```
+M I R A D O R  ■ LIVE   FAULTS  ALL    1M  5M  30M                  19 CAPTURED  ·  2 FLAGGED
+CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -10M       -5M  NOW
+ ■ echo       7     1     │·············│···········│···········│···········│·········█·····
+▸■ orders     12    1     │·············│···········│···········│···········│·········█·····
+──────────────────────────┴─────────────────────────────────────────────────────────────────
+ POST /demo.v1.Orders/Fail
+ orders   gRPC   HTTP 200   1.72ms
+ gRPC 7 PermissionDenied — no tienes acceso a este pedido
+ demo.v1.Orders / Fail   schema from reflection
+ REQUEST  1 message(s)
+   {
+     "code": 7,
+     "message": "no tienes acceso a este pedido"
+   }
+ RESPONSE  0 message(s)
+ ↑↓ chan · ←→ call · ⏎ read · r replay · d diff · f faults · w window · h hold · / find · q quit
+```
+
+La traducción es casi directa: la monoespaciada es gratis acá, las líneas de un
+píxel pasan a caracteres de dibujo de cajas, y los colores de canal se mantienen
+iguales. Dos cosas necesitaron otra expresión:
+
+- No hay tamaños de tipografía, así que los cuatro roles pasan a ser peso y
+  atenuación.
+- Un carril mide una fila, así que un fallo no puede ser una barra más alta. Pasa
+  a ser un **bloque completo donde una llamada normal es medio bloque** (`█`
+  contra `▄`), con un tercer glifo para una celda que tiene ambos. La forma sigue
+  cargando el resultado antes que el color, que es la regla que importa.
+
+| Tecla | |
+|---|---|
+| `↑` `↓` | elegir canal |
+| `←` `→` | recorrerlo, llamada por llamada |
+| `enter` | leer la llamada seleccionada |
+| `r` | reenviarla |
+| `d` | comparar un reenvío contra su original |
+| `f` | solo fallos, o todo |
+| `w` | cambiar el barrido |
+| `h` | congelar el trazo |
+| `/` | buscar |
+| `q` | salir |
+
+El recorrido avanza llamada por llamada y no celda por celda: una celda vacía no
+es algo a lo que apuntar. `h` congela el trazo por la misma razón por la que el
+cliente web congela el campo bajo el puntero — una marca que se desliza mientras
+le apuntas no se puede seleccionar.
 
 ## PowerShell
 
@@ -381,7 +443,7 @@ leerse como operadores de consulta.
 | 3 | Interfaz web con línea de tiempo en vivo | listo |
 | 4 | Replay y diff estructural | listo |
 | 5 | Empaquetado y documentación | listo |
-| 6 | TUI, como segundo cliente de la misma API | siguiente |
+| 6 | TUI, como segundo cliente de la misma API | listo |
 
 ### Limitaciones
 

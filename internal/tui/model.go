@@ -1,0 +1,304 @@
+package tui
+
+import (
+	"context"
+	"sort"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// Windows are the sweeps, each with the number of divisions that puts every
+// axis tick on a round figure.
+var windows = []struct {
+	Span      time.Duration
+	Divisions int
+	Label     string
+}{
+	{time.Minute, 4, "1M"},
+	{5 * time.Minute, 5, "5M"},
+	{30 * time.Minute, 6, "30M"},
+}
+
+const (
+	// The trace advances on this beat. Fast enough to read as motion, slow
+	// enough that an idle terminal is not burning a core to redraw dots.
+	tickInterval = 500 * time.Millisecond
+
+	// A periodic reload catches what the stream could not: retention removing
+	// old rows, and payload matches for a search the terminal cannot evaluate
+	// on a summary.
+	reloadInterval = 5 * time.Second
+
+	pageLimit = 1000
+)
+
+type focus int
+
+const (
+	focusField focus = iota
+	focusSearch
+)
+
+type Model struct {
+	client *Client
+	ctx    context.Context
+
+	width, height int
+	ready         bool
+
+	targets []Target
+	stats   Stats
+	calls   []Call
+	detail  *CallDetail
+	diff    *Diff
+
+	failedOnly bool
+	windowIdx  int
+	search     textinput.Model
+	focus      focus
+	held       bool
+
+	// Pick the trace, then move the cursor along it — the way you point at
+	// something on an instrument. The cursor holds a call id, not a column,
+	// because the trace advances and a column would drift onto its neighbour.
+	lane     int
+	selected int64
+
+	status    string
+	statusErr bool
+	live      bool
+	err       error
+
+	events <-chan Call
+	now    time.Time
+}
+
+func New(ctx context.Context, client *Client, events <-chan Call) Model {
+	input := textinput.New()
+	input.Placeholder = "path, id, payload text"
+	input.Prompt = ""
+	input.CharLimit = 120
+
+	return Model{
+		client: client,
+		ctx:    ctx,
+		// Faults first: it is why the tool gets opened.
+		failedOnly: true,
+		windowIdx:  1,
+		search:     input,
+		events:     events,
+		now:        time.Now(),
+	}
+}
+
+func (m Model) window() time.Duration { return windows[m.windowIdx].Span }
+func (m Model) divisions() int        { return windows[m.windowIdx].Divisions }
+
+/* ------------------------------------------------------------- messages -- */
+
+type tickMsg time.Time
+type reloadMsg time.Time
+type loadedMsg struct {
+	calls []Call
+	stats Stats
+	err   error
+}
+type targetsMsg struct {
+	targets []Target
+	err     error
+}
+type detailMsg struct {
+	detail *CallDetail
+	err    error
+}
+type diffMsg struct {
+	diff *Diff
+	err  error
+}
+type replayMsg struct {
+	result *ReplayResult
+	err    error
+}
+type streamMsg Call
+
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(m.loadTargets(), m.load(), tick(), reloadEvery(), m.waitForEvent())
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(tickInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func reloadEvery() tea.Cmd {
+	return tea.Tick(reloadInterval, func(t time.Time) tea.Msg { return reloadMsg(t) })
+}
+
+func (m Model) waitForEvent() tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case call, ok := <-m.events:
+			if !ok {
+				return nil
+			}
+			return streamMsg(call)
+		case <-m.ctx.Done():
+			return nil
+		}
+	}
+}
+
+func (m Model) loadTargets() tea.Cmd {
+	return func() tea.Msg {
+		targets, err := m.client.Targets(m.ctx)
+		return targetsMsg{targets: targets, err: err}
+	}
+}
+
+func (m Model) load() tea.Cmd {
+	failed, search, window := m.failedOnly, m.search.Value(), m.window()
+	return func() tea.Msg {
+		calls, err := m.client.Calls(m.ctx, failed, search, window, pageLimit)
+		if err != nil {
+			return loadedMsg{err: err}
+		}
+		stats, err := m.client.Stats(m.ctx)
+		return loadedMsg{calls: calls, stats: stats, err: err}
+	}
+}
+
+func (m Model) loadDetail(id int64) tea.Cmd {
+	return func() tea.Msg {
+		detail, err := m.client.Detail(m.ctx, id)
+		return detailMsg{detail: detail, err: err}
+	}
+}
+
+func (m Model) loadDiff(a, b int64) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := m.client.Diff(m.ctx, a, b)
+		return diffMsg{diff: diff, err: err}
+	}
+}
+
+func (m Model) replay(id int64) tea.Cmd {
+	return func() tea.Msg {
+		result, err := m.client.Replay(m.ctx, id)
+		return replayMsg{result: result, err: err}
+	}
+}
+
+/* --------------------------------------------------------------- update -- */
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.ready = true
+		return m, nil
+
+	case tickMsg:
+		if !m.held {
+			m.now = time.Time(msg)
+		}
+		return m, tick()
+
+	case reloadMsg:
+		if m.held {
+			return m, reloadEvery()
+		}
+		return m, tea.Batch(m.load(), reloadEvery())
+
+	case streamMsg:
+		call := Call(msg)
+		if !m.held && m.admits(call) {
+			m.calls = append(windowCalls(m.calls, m.now), call)
+			m.stats.Calls++
+			m.bumpTarget(call)
+		}
+		return m, m.waitForEvent()
+
+	case targetsMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.targets = msg.targets
+		m.err = nil
+		return m, nil
+
+	case loadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.live = false
+			return m, nil
+		}
+		// Oldest first, so appending a streamed call keeps the order.
+		sort.Slice(msg.calls, func(i, j int) bool { return msg.calls[i].ID < msg.calls[j].ID })
+		m.calls, m.stats, m.err, m.live = msg.calls, msg.stats, nil, true
+		return m, nil
+
+	case detailMsg:
+		if msg.err != nil {
+			return m.withError(msg.err), nil
+		}
+		m.detail, m.diff = msg.detail, nil
+		return m, nil
+
+	case diffMsg:
+		if msg.err != nil {
+			return m.withError(msg.err), nil
+		}
+		m.diff = msg.diff
+		return m, nil
+
+	case replayMsg:
+		if msg.err != nil {
+			// The server's refusal explains itself, so it is shown as written.
+			return m.withError(msg.err), nil
+		}
+		m.status = "replayed onto " + msg.result.SentTo
+		m.statusErr = false
+		return m, m.load()
+
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+	}
+
+	return m, nil
+}
+
+func (m Model) withError(err error) Model {
+	m.status = err.Error()
+	m.statusErr = true
+	return m
+}
+
+func (m Model) admits(call Call) bool {
+	if m.failedOnly && !call.Fault() {
+		return false
+	}
+	// A search matches payload text the terminal never received, so a live
+	// event can only be judged on its path. The periodic reload is what makes
+	// the rest appear.
+	return matchesPath(call.Path, m.search.Value())
+}
+
+func (m *Model) bumpTarget(call Call) {
+	for i := range m.stats.ByTarget {
+		if m.stats.ByTarget[i].Target == call.Target {
+			m.stats.ByTarget[i].Calls++
+			if call.Fault() {
+				m.stats.ByTarget[i].Faults++
+			}
+			return
+		}
+	}
+	stat := TargetStat{Target: call.Target, Calls: 1}
+	if call.Fault() {
+		stat.Faults = 1
+	}
+	m.stats.ByTarget = append(m.stats.ByTarget, stat)
+}
