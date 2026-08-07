@@ -16,7 +16,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 8.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 9.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management
 > and an [MCP server for coding agents](#agents) all work, and the whole thing
 > runs from `docker compose up`. See [Roadmap](#roadmap).
@@ -497,10 +497,47 @@ that is already running, so it is still the same data:
 | `list_services` | What is being observed, on which ports, and whether it is listening |
 | `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
+| `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it |
+| `configure_service` | Add or fix one service |
+| `activate_project` | Open the ports. Asks first |
+| `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
 
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
 the agent makes a change, triggers the action, and waits for what should have
 gone over the wire. Nothing arriving is also an answer.
+
+### Connecting a project by asking
+
+> *"Connect the monorepo to Sonda."*
+
+The agent reads the project's own `.env` or compose file and hands the contents
+to `connect_project`. Sonda finds the services, assigns a proxy port to each,
+creates the project — and returns the exact edit to apply:
+
+```json
+{
+  "project": "core-delpagroup",
+  "services": 21,
+  "active": false,
+  "changes": {
+    "MS_AUTH_GRPC_URL":  { "from": "localhost:50052", "to": "127.0.0.1:9152" },
+    "MS_ADMIN_GRPC_URL": { "from": "localhost:50053", "to": "127.0.0.1:9153" }
+  }
+}
+```
+
+That last part is the whole design. **Sonda cannot repoint a caller** — it is an
+explicit proxy, and it sees nothing until something is told to talk to it. The
+agent can: it has the filesystem and it can restart a process. So Sonda knows
+the mapping and the agent has the hands.
+
+`disconnect_project` returns the inverse. Without it, an agent that repointed a
+`.env` and then stopped would leave the environment aimed at ports nobody is
+listening on.
+
+Creating configuration disturbs nobody, so those tools run freely. Opening and
+closing ports can pull the floor out from under you mid-debug, so those ask
+first.
 
 ### Credentials do not leave
 
@@ -609,6 +646,7 @@ operators.
 | 6 | TUI, as a second client of the same API | done |
 | 7 | Projects: grouped services, configured from the interface, imported from a file | done |
 | 8 | MCP server, so a coding agent reads the captures itself | done |
+| 9 | Configuration over MCP: connect a whole project by asking | done |
 
 ### Limitations
 

@@ -116,9 +116,30 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 	resp := send(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 
 	tools := resp.Result.(map[string]any)["tools"].([]map[string]any)
-	if len(tools) != 7 {
-		t.Errorf("%d tools listed, want 7", len(tools))
+
+	// Named rather than counted: a test that only counts passes when a tool is
+	// renamed out from under every client that was calling it.
+	want := map[string]bool{
+		"recent_failures": true, "search_calls": true, "get_call": true,
+		"diff_calls": true, "list_services": true, "wait_for_call": true,
+		"replay_call": true, "connect_project": true, "configure_service": true,
+		"activate_project": true, "disconnect_project": true,
 	}
+	got := map[string]bool{}
+	for _, tool := range tools {
+		got[tool["name"].(string)] = true
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("%s is not listed", name)
+		}
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("%s is listed but not expected — add it here on purpose", name)
+		}
+	}
+
 	for _, tool := range tools {
 		name, _ := tool["name"].(string)
 		if name == "" {
@@ -133,9 +154,20 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 	}
 }
 
-// replay_call really hits a service. The annotation is the only way a client
-// knows to ask before running it.
-func TestReplayIsTheOnlyToolMarkedDestructive(t *testing.T) {
+// The annotation is the only way a client knows to ask first, so exactly which
+// tools carry it is a decision, not an accident.
+//
+//	replay_call         really hits a service
+//	activate_project    opens ports and can pull the floor out mid-debug
+//	disconnect_project  closes them
+//
+// Everything else either reads, or writes configuration that disturbs nobody
+// until a project is activated.
+func TestOnlyTheToolsThatChangeWhatIsRunningAskFirst(t *testing.T) {
+	shouldAsk := map[string]bool{
+		"replay_call": true, "activate_project": true, "disconnect_project": true,
+	}
+
 	s := New(&fakeAPI{}, "test")
 	tools := send(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`).
 		Result.(map[string]any)["tools"].([]map[string]any)
@@ -148,11 +180,11 @@ func TestReplayIsTheOnlyToolMarkedDestructive(t *testing.T) {
 			continue
 		}
 		destructive, _ := ann["destructiveHint"].(bool)
-		if name == "replay_call" && !destructive {
-			t.Error("replay_call is not marked destructive, so clients will run it without asking")
+		if shouldAsk[name] && !destructive {
+			t.Errorf("%s changes what is running but is not marked destructive, so clients will run it without asking", name)
 		}
-		if name != "replay_call" && destructive {
-			t.Errorf("%s is marked destructive but only replay_call changes anything", name)
+		if !shouldAsk[name] && destructive {
+			t.Errorf("%s is marked destructive but changes nothing that is running", name)
 		}
 	}
 }

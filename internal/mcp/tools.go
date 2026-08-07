@@ -78,6 +78,10 @@ func prop(kind, description string) map[string]any {
 var readOnly = map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": false}
 
 func allTools() []Tool {
+	return append(readTools(), configureTools()...)
+}
+
+func readTools() []Tool {
 	return []Tool{
 		{
 			Name:        "recent_failures",

@@ -31,6 +31,15 @@ type Found struct {
 	// real port, prefixed, so the correspondence reads itself.
 	Listen string `json:"listen"`
 	Source string `json:"source"`
+
+	// Key and Original are the variable this came from and its value exactly as
+	// written. Source already says both, but as prose meant for a person to
+	// read. Making the caller parse "línea 12: MS_AUTH_GRPC_URL" back apart is
+	// how you get a tool that breaks when the wording changes — and the whole
+	// point of connecting a project is handing back the edit to make, which
+	// needs the name and the old value verbatim.
+	Key      string `json:"key,omitempty"`
+	Original string `json:"original,omitempty"`
 }
 
 // envLine matches the shape every one of these files uses: a name, an equals
@@ -85,6 +94,8 @@ func FromEnv(r io.Reader) ([]Found, error) {
 			Protocol: protocolFor(key),
 			Listen:   suggestListen(port),
 			Source:   fmt.Sprintf("línea %d: %s", line, key),
+			Key:      key,
+			Original: value,
 		})
 	}
 	if err := scanner.Err(); err != nil {
