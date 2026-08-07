@@ -156,6 +156,24 @@ func readTools() []Tool {
 		},
 
 		{
+			Name:  "trace_call",
+			Title: "The whole request a call belonged to",
+			Description: "Show every call that was part of the same request, arranged as a tree, with timings and which one failed. Answers \"where did it break and who was slow\" for an action that touched several services — the question a flat list cannot answer. " +
+				"Calls are grouped by a trace id when the request carried one, and by timing when it did not; the answer says which, and a shape that was guessed is marked as guessed.",
+			Schema: obj(map[string]any{
+				"id": prop("integer", "Any call in the request. Usually the one that failed."),
+			}, "id"),
+			Annotations: readOnly,
+			Run: func(ctx context.Context, s *Server, a args) (any, error) {
+				id := a.num("id", 0)
+				if id <= 0 {
+					return nil, fmt.Errorf("id is required and must be a call id")
+				}
+				return s.get(ctx, "/api/trace?call="+strconv.Itoa(id), false)
+			},
+		},
+
+		{
 			Name:        "diff_calls",
 			Title:       "Compare two calls",
 			Description: "Structurally compare two captured calls and report what changed: headers, bodies, status, timing. Answers \"this one worked and this one did not, why\" without you having to hold both payloads in context.",

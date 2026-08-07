@@ -16,7 +16,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 9.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 10.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos y un [servidor MCP para agentes de
 > código](#agentes) funcionan, y todo se levanta con `docker compose up`.
@@ -507,6 +507,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `search_calls` | Por servicio, método, ruta, estado o texto en los cuerpos |
 | `get_call` | Una llamada completa, decodificada |
 | `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
+| `trace_call` | Todas las llamadas que fueron parte de la misma petición, como árbol |
 | `list_services` | Qué se está observando, en qué puertos, y si está escuchando |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
@@ -610,6 +611,7 @@ en el host. Ver `sonda.docker.yaml`.
 | `GET /api/schemas` | Por cada target gRPC: qué fuente de esquema resolvió, o por qué ninguna. |
 | `POST /api/calls/{id}/replay` | Reenvía la llamada, opcionalmente a otro canal. |
 | `GET /api/diff?a=&b=` | Comparación estructural de dos llamadas. |
+| `GET /api/trace?call=` | La petición completa a la que perteneció una llamada, como árbol. |
 | `GET /api/projects` | Los proyectos, sus servicios y qué está escuchando de verdad. |
 | `POST /api/projects` | Crear uno. `PATCH`/`DELETE /api/projects/{id}` renombran y borran. |
 | `POST /api/projects/{id}/activate` | Cierra los puertos del proyecto actual y abre los de este. |
@@ -664,6 +666,7 @@ leerse como operadores de consulta.
 | 7 | Proyectos: servicios agrupados, configurados desde la interfaz, importados de un archivo | listo |
 | 8 | Servidor MCP, para que un agente de código lea las capturas por su cuenta | listo |
 | 9 | Configuración por MCP: conectar un proyecto entero pidiéndolo | listo |
+| 10 | Correlación: las llamadas de una petición, ordenadas como árbol | listo |
 
 ### Limitaciones
 

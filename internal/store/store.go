@@ -59,6 +59,11 @@ type Call struct {
 	// Project is the group the capture was taken under. Without it, switching
 	// projects would pour one system's traffic into another's field.
 	Project string
+
+	// TraceID is whatever the request carried to identify the wider operation
+	// it belongs to. Read, never invented: an id Sonda made up would group
+	// calls by nothing and look exactly as authoritative as a real one.
+	TraceID string
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -79,6 +84,7 @@ type Summary struct {
 	GRPCMessage  string
 	ReplayOf     *int64
 	Project      string
+	TraceID      string
 }
 
 type Filter struct {
@@ -151,6 +157,7 @@ var addedColumns = map[string]string{
 	"grpc_message":  `ALTER TABLE calls ADD COLUMN grpc_message TEXT NOT NULL DEFAULT ''`,
 	"replay_of":     `ALTER TABLE calls ADD COLUMN replay_of INTEGER`,
 	"project":       `ALTER TABLE calls ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
+	"trace_id":      `ALTER TABLE calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`,
 }
 
 func migrate(db *sql.DB) error {
@@ -242,14 +249,14 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			target, protocol, method, path, status, client_addr, started_at,
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
-			resp_trailers, grpc_status, grpc_message, replay_of, project
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
-		c.Project,
+		c.Project, c.TraceID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -323,7 +330,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of, project
+		       replay_of, project, trace_id
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -349,7 +356,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
-			&replayOf, &s.Project); err != nil {
+			&replayOf, &s.Project, &s.TraceID); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
@@ -373,13 +380,13 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		SELECT id, target, protocol, method, path, status, client_addr, started_at,
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
-		       resp_trailers, grpc_status, grpc_message, replay_of, project
+		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project)
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID)
 	if err != nil {
 		return nil, err
 	}

@@ -121,7 +121,7 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 	// renamed out from under every client that was calling it.
 	want := map[string]bool{
 		"recent_failures": true, "search_calls": true, "get_call": true,
-		"diff_calls": true, "list_services": true, "wait_for_call": true,
+		"diff_calls": true, "trace_call": true, "list_services": true, "wait_for_call": true,
 		"replay_call": true, "connect_project": true, "configure_service": true,
 		"activate_project": true, "disconnect_project": true,
 	}
@@ -216,6 +216,7 @@ func TestToolsQueryTheExpectedEndpoints(t *testing.T) {
 		{"search_calls", `{"text":"ORD-9","limit":999}`, []string{"q=ORD-9", "limit=200"}},
 		{"get_call", `{"id":42}`, []string{"GET /api/calls/42"}},
 		{"diff_calls", `{"a":1,"b":2}`, []string{"GET /api/diff?a=1&b=2"}},
+		{"trace_call", `{"id":42}`, []string{"GET /api/trace?call=42"}},
 		{"list_services", `{}`, []string{"GET /api/projects"}},
 		{"replay_call", `{"id":42}`, []string{"POST /api/calls/42/replay"}},
 	}

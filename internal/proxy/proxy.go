@@ -19,6 +19,7 @@ import (
 
 	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/trace"
 )
 
 // Recorder is the sink for captured calls. It is an interface so the proxy can
@@ -125,6 +126,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Duration:   time.Since(started),
 		Error:      errorText(ex.err),
 		ReplayOf:   replayOf,
+		// Read from the request, never invented. An id Sonda made up would
+		// group calls by nothing while looking just as authoritative.
+		TraceID: trace.ID(requestHeaders),
 		Request: store.Message{
 			Headers:   requestHeaders,
 			Body:      ex.request.bytes(),

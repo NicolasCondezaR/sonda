@@ -16,7 +16,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 9.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 10.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management
 > and an [MCP server for coding agents](#agents) all work, and the whole thing
 > runs from `docker compose up`. See [Roadmap](#roadmap).
@@ -494,6 +494,7 @@ that is already running, so it is still the same data:
 | `search_calls` | By service, method, path, status, or text in the bodies |
 | `get_call` | One call in full, decoded |
 | `diff_calls` | "This one worked and this one did not — what changed?" |
+| `trace_call` | Every call that was part of the same request, as a tree |
 | `list_services` | What is being observed, on which ports, and whether it is listening |
 | `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
@@ -596,6 +597,7 @@ host. See `sonda.docker.yaml`.
 | `GET /api/schemas` | Per gRPC target: which schema source resolved, or why none did. |
 | `POST /api/calls/{id}/replay` | Send the call again, optionally onto another channel. |
 | `GET /api/diff?a=&b=` | Structural comparison of two calls. |
+| `GET /api/trace?call=` | The whole request a call belonged to, as a tree. |
 | `GET /api/projects` | Projects, their services, and what is really listening. |
 | `POST /api/projects` | Create one. `PATCH`/`DELETE /api/projects/{id}` rename and remove. |
 | `POST /api/projects/{id}/activate` | Close the current project's ports and open this one's. |
@@ -647,6 +649,7 @@ operators.
 | 7 | Projects: grouped services, configured from the interface, imported from a file | done |
 | 8 | MCP server, so a coding agent reads the captures itself | done |
 | 9 | Configuration over MCP: connect a whole project by asking | done |
+| 10 | Correlation: the calls of one request, arranged as a tree | done |
 
 ### Limitations
 
