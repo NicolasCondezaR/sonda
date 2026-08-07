@@ -139,6 +139,13 @@ release:
   # A tag with a hyphen (v0.2.0-rc1) is marked as a prerelease; a plain one is
   # not. Nothing to remember at tag time.
   prerelease: auto
+
+  # Makes a retry work. A release publishes the archives before it writes the
+  # taps, so anything that fails in between — an expired token, a network
+  # blip — leaves a release whose assets already exist. The default
+  # keep-existing then refuses to upload them again and the retry dies on the
+  # step that already succeeded, never reaching the one that failed.
+  mode: replace
   footer: |
     ---
 
