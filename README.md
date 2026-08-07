@@ -51,26 +51,34 @@ image is 50 MB.
 
 | | |
 |---|---|
+| **macOS** | `brew install NicolasCondezaR/tap/sonda` |
+| **Windows** | `scoop bucket add nicolascondezar https://github.com/NicolasCondezaR/scoop-bucket`<br>`scoop install sonda` |
 | **Go** | `go install github.com/NicolasCondezaR/sonda/cmd/sonda@latest` |
 | **Docker** | `docker run -p 9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
 | **Binary** | Download from [Releases](https://github.com/NicolasCondezaR/sonda/releases), unpack, run |
 | **Source** | `git clone` and `go build ./cmd/sonda` |
 
+On Linux, use `go install`, the image, or the tarball: Homebrew casks are macOS
+only.
+
 The release archives carry four binaries, not one: `sonda`, the terminal client
 `sonda-tui`, and the two toy services `echo` and `grpcdemo` that the quick start
-below uses — so there is something to capture without wiring up your own.
+below uses — so there is something to capture without wiring up your own. The
+package managers install only the first two, since a binary named `echo` on the
+PATH has no business shadowing the system one.
 
 ```bash
-./sonda            # the proxy and the interface, on http://127.0.0.1:9000
-./sonda -version   # which build this is
-./sonda-tui        # the terminal client
+sonda            # the proxy and the interface, on http://127.0.0.1:9000
+sonda -version   # which build this is
+sonda-tui        # the terminal client
 ```
 
-On macOS, Gatekeeper quarantines binaries downloaded from a browser. Either
-fetch them with `curl`, or clear it once:
+Downloading the tarball by hand on macOS has one extra step: Gatekeeper
+quarantines anything unsigned that arrives through a browser. Either fetch it
+with `curl`, or clear the flag once. Homebrew does this for you.
 
 ```bash
-xattr -d com.apple.quarantine sonda sonda-tui echo grpcdemo
+xattr -dr com.apple.quarantine sonda sonda-tui echo grpcdemo
 ```
 
 ## Quick start

@@ -52,27 +52,34 @@ sean estáticos y la imagen pese 50 MB.
 
 | | |
 |---|---|
+| **macOS** | `brew install NicolasCondezaR/tap/sonda` |
+| **Windows** | `scoop bucket add nicolascondezar https://github.com/NicolasCondezaR/scoop-bucket`<br>`scoop install sonda` |
 | **Go** | `go install github.com/NicolasCondezaR/sonda/cmd/sonda@latest` |
 | **Docker** | `docker run -p 9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
 | **Binario** | Descárgalo desde [Releases](https://github.com/NicolasCondezaR/sonda/releases), descomprime y ejecuta |
 | **Fuente** | `git clone` y `go build ./cmd/sonda` |
 
+En Linux usa `go install`, la imagen o el tarball: las casks de Homebrew son
+solo para macOS.
+
 Los archivos del release traen cuatro binarios, no uno: `sonda`, el cliente de
 terminal `sonda-tui`, y los dos servicios de juguete `echo` y `grpcdemo` que usa
 el inicio rápido de abajo — para tener algo que capturar sin levantar nada
-propio.
+propio. Los gestores de paquetes instalan solo los dos primeros: un binario
+llamado `echo` en el PATH no tiene por qué tapar al del sistema.
 
 ```bash
-./sonda            # el proxy y la interfaz, en http://127.0.0.1:9000
-./sonda -version   # qué build es este
-./sonda-tui        # el cliente de terminal
+sonda            # el proxy y la interfaz, en http://127.0.0.1:9000
+sonda -version   # qué build es este
+sonda-tui        # el cliente de terminal
 ```
 
-En macOS, Gatekeeper pone en cuarentena los binarios descargados desde el
-navegador. O los bajas con `curl`, o lo limpias una vez:
+Bajar el tarball a mano en macOS tiene un paso extra: Gatekeeper pone en
+cuarentena cualquier binario sin firmar que llegue por el navegador. O lo bajas
+con `curl`, o limpias la marca una vez. Homebrew lo hace por ti.
 
 ```bash
-xattr -d com.apple.quarantine sonda sonda-tui echo grpcdemo
+xattr -dr com.apple.quarantine sonda sonda-tui echo grpcdemo
 ```
 
 ## Inicio rápido

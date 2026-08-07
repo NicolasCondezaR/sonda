@@ -76,6 +76,61 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Both taps live in repositories of their own, so the workflow needs a token
+# that reaches beyond this one. GITHUB_TOKEN cannot, by design.
+#
+# A cask rather than a formula: GoReleaser deprecated formulas for binaries,
+# and this is the supported path. The cost is that casks are macOS only —
+# Linux keeps `go install`, the image and the tarball, which is no loss.
+homebrew_casks:
+  - name: sonda
+    repository:
+      owner: NicolasCondezaR
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/NicolasCondezaR/sonda"
+    description: "Proxy depurador de tráfico de desarrollo: HTTP y gRPC, con protobuf decodificado y los trailers preservados"
+    license: MIT
+
+    # Only the two tools go on the PATH. The archive also carries `echo` and
+    # `grpcdemo` for the quick start, and Homebrew puts its bin directory
+    # *before* /usr/bin — so installing a binary named `echo` there would
+    # shadow the system one for every script on the machine. A debugging tool
+    # has no business doing that.
+    binaries:
+      - sonda
+      - sonda-tui
+
+    # The binaries are not signed, and macOS quarantines anything unsigned that
+    # arrives from the network. Without this, `brew install` would appear to
+    # succeed and then produce a binary the system refuses to run — the worst
+    # possible failure, because it looks like the tool is broken rather than
+    # unsigned.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sonda"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sonda-tui"]
+          end
+
+scoops:
+  - name: sonda
+    repository:
+      owner: NicolasCondezaR
+      name: scoop-bucket
+      branch: main
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: "https://github.com/NicolasCondezaR/sonda"
+    description: "Proxy depurador de tráfico de desarrollo: HTTP y gRPC, con protobuf decodificado y los trailers preservados"
+    license: MIT
+    # Scoop shims every binary in the archive and there is no way to select a
+    # subset. It is harmless here: `echo` is an internal command in both cmd
+    # and PowerShell, so an echo.exe on the PATH is never what gets run.
+
 changelog:
   use: github
   sort: asc
