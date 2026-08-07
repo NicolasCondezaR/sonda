@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"mirador/internal/store"
+	"sonda/internal/store"
 )
 
 // Hub fans captured calls out to the live view.

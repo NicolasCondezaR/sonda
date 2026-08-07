@@ -1,13 +1,13 @@
 services:
-  mirador:
+  sonda:
     build: .
     ports:
       - "9000:9000" # query API
       - "9101:9101" # proxy in front of the echo service
       - "9201:9201" # proxy in front of the gRPC service
     volumes:
-      - ./mirador.docker.yaml:/etc/mirador/mirador.yaml:ro
-      - mirador-data:/data
+      - ./sonda.docker.yaml:/etc/sonda/sonda.yaml:ro
+      - sonda-data:/data
     # busybox wget, already in the base image, so the healthcheck adds nothing
     # to the container.
     healthcheck:
@@ -21,7 +21,7 @@ services:
       - grpcdemo
 
   # Toy upstreams so the stack does something on the first run. Their ports are
-  # not published on purpose: traffic is supposed to arrive through Mirador.
+  # not published on purpose: traffic is supposed to arrive through Sonda.
   echo:
     build: .
     entrypoint: ["echo"]
@@ -37,12 +37,12 @@ services:
   tui:
     build: .
     profiles: ["tui"]
-    entrypoint: ["mirador-tui"]
-    command: ["-api", "http://mirador:9000"]
+    entrypoint: ["sonda-tui"]
+    command: ["-api", "http://sonda:9000"]
     tty: true
     stdin_open: true
     depends_on:
-      - mirador
+      - sonda
 
 volumes:
-  mirador-data:
+  sonda-data:

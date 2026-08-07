@@ -35,7 +35,7 @@ const (
 )
 
 // retryAfter bounds how often a failed resolution is retried. Services are
-// routinely down when Mirador starts, so giving up permanently would be wrong;
+// routinely down when Sonda starts, so giving up permanently would be wrong;
 // retrying on every request would hammer a service that is already struggling.
 const retryAfter = 30 * time.Second
 

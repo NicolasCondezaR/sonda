@@ -15,11 +15,11 @@ import (
 	"strings"
 	"sync"
 
-	"mirador/internal/config"
-	"mirador/internal/protoschema"
-	"mirador/internal/proxy"
-	"mirador/internal/store"
-	"mirador/internal/supervisor"
+	"sonda/internal/config"
+	"sonda/internal/protoschema"
+	"sonda/internal/proxy"
+	"sonda/internal/store"
+	"sonda/internal/supervisor"
 )
 
 type Runtime struct {
@@ -147,7 +147,7 @@ func (r *Runtime) buildResolvers(project *store.Project) map[string]*protoschema
 		var reflectionAddr string
 		if svc.Reflection {
 			// Reflection goes straight to the service, not through the proxy:
-			// Mirador asking itself would capture its own bookkeeping.
+			// Sonda asking itself would capture its own bookkeeping.
 			reflectionAddr = strings.TrimPrefix(strings.TrimPrefix(svc.Upstream, "http://"), "https://")
 		}
 		out[svc.Name] = protoschema.NewResolverWithBytes(

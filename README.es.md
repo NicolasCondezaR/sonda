@@ -1,6 +1,6 @@
-# Mirador
+# Sonda
 
-Un proxy que captura el tráfico de desarrollo local. Apunta un cliente a Mirador
+Un proxy que captura el tráfico de desarrollo local. Apunta un cliente a Sonda
 en vez de al servicio con el que habla, y cada request y cada response que lo
 cruza queda disponible para buscar.
 
@@ -10,11 +10,11 @@ para HTTP. Para gRPC no hay nada que lo resuelva: `grpcurl` y `grpcui` hacen
 llamadas, no observan las que tus servicios se hacen entre sí. Ese es el hueco
 al que apunta.
 
-[![CI](https://github.com/NicolasCondezaR/mirador/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasCondezaR/mirador/actions/workflows/ci.yml)
+[![CI](https://github.com/NicolasCondezaR/sonda/actions/workflows/ci.yml/badge.svg)](https://github.com/NicolasCondezaR/sonda/actions/workflows/ci.yml)
 
 *[Read me in English](README.md).*
 
-![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/mirador-field.jpg)
+![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
 > **Estado: fase 7.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
@@ -23,12 +23,12 @@ al que apunta.
 
 ## Cómo funciona
 
-Mirador es un proxy explícito: un puerto de escucha por cada servicio observado.
+Sonda es un proxy explícito: un puerto de escucha por cada servicio observado.
 Nada se intercepta a tus espaldas, y un servicio que no está configurado no se
 captura.
 
 ```
-cliente ──▶ mirador :9101 ──▶ tu servicio :3000
+cliente ──▶ sonda :9101 ──▶ tu servicio :3000
                 │
                 └──▶ SQLite ──▶ API de consulta :9000
 ```
@@ -52,35 +52,35 @@ Dos propiedades sostienen el diseño:
 docker compose up -d
 ```
 
-Esto levanta Mirador más dos servicios de juguete para tener algo que capturar:
+Esto levanta Sonda más dos servicios de juguete para tener algo que capturar:
 `echo` en HTTP y `grpcdemo` en gRPC. Sus propios puertos no se publican a
 propósito: el tráfico debe llegar a través del proxy.
 
 Abre **http://127.0.0.1:9000** y mándale algo:
 
 ```bash
-curl http://127.0.0.1:9101/ok                 # HTTP, through Mirador
+curl http://127.0.0.1:9101/ok                 # HTTP, through Sonda
 curl 'http://127.0.0.1:9101/fail?status=503'  # a fault, to see one flagged
 grpcurl -plaintext -d '{"order_id":"ORD-1"}' \
-  127.0.0.1:9201 demo.v1.Orders/GetOrder      # gRPC, through Mirador
+  127.0.0.1:9201 demo.v1.Orders/GetOrder      # gRPC, through Sonda
 ```
 
 ### Sin Docker
 
 ```bash
-go build -o mirador ./cmd/mirador
+go build -o sonda ./cmd/sonda
 go build -o echo ./examples/echo
 go build -o grpcdemo ./examples/grpcdemo
 
-cp mirador.example.yaml mirador.yaml
+cp sonda.example.yaml sonda.yaml
 ./echo -addr 127.0.0.1:8081 &
 ./grpcdemo -addr 127.0.0.1:8082 &
-./mirador -config mirador.yaml
+./sonda -config sonda.yaml
 ```
 
 ## La interfaz
 
-Mirador se lee como un analizador lógico y no como una tabla de requests, porque
+Sonda se lee como un analizador lógico y no como una tabla de requests, porque
 una tabla responde "qué pasó" y nunca "qué estaba pasando al mismo tiempo", que
 es la pregunta cuando hablan quince servicios y uno se rompió.
 
@@ -99,13 +99,13 @@ Arranca filtrada a fallos, porque ese es el motivo por el que la abriste. `ALL`
 cambia al campo completo. Dejar el puntero sobre el campo **congela el trazo**,
 para que una marca deje de deslizarse mientras le apuntas; al salir, se reanuda.
 
-`FIND` busca en rutas y en el texto de los payloads, incluidos los que Mirador
+`FIND` busca en rutas y en el texto de los payloads, incluidos los que Sonda
 solo tiene como bytes. `/` enfoca el buscador y `Escape` cierra el inspector.
 
 La interfaz completa va embebida en el binario: sin Node, sin paso de build, sin
 peticiones de red y sin fuentes web.
 
-![Un fallo gRPC: protobuf decodificado por reflection, con el estado real](docs/assets/mirador-grpc-inspector.jpg)
+![Un fallo gRPC: protobuf decodificado por reflection, con el estado real](docs/assets/sonda-grpc-inspector.jpg)
 
 Arriba: una llamada gRPC que devolvió `PermissionDenied`. El estado HTTP es 200
 —gRPC reporta el fallo por debajo de HTTP— y la request aparece decodificada con
@@ -153,8 +153,8 @@ primera se guarda y se proxea, la segunda se nota.
 
 ### El paso que ninguna pantalla elimina
 
-Mirador es un proxy explícito. No ve nada hasta que a quien hace la llamada se
-le dice que llame a Mirador — y eso no lo cambia ninguna pantalla de
+Sonda es un proxy explícito. No ve nada hasta que a quien hace la llamada se
+le dice que llame a Sonda — y eso no lo cambia ninguna pantalla de
 configuración, porque es el que llama quien decide a dónde van sus requests.
 
 Por eso cada servicio te entrega la línea exacta, lista para copiar:
@@ -168,7 +168,7 @@ No cambia nada en disco, y sacar la variable lo deja como estaba.
 
 ### El archivo de configuración
 
-`mirador.yaml` sigue cargando los ajustes del proceso: dónde escucha la API,
+`sonda.yaml` sigue cargando los ajustes del proceso: dónde escucha la API,
 cuánto cuerpo se guarda, cuánto viven las capturas. Sus `targets` son solo una
 **semilla**: se convierten en el primer proyecto la primera vez que se crea una
 base de datos, y después se ignoran, así una edición hecha en la interfaz nunca
@@ -178,13 +178,13 @@ primer uso normal.
 ## El cliente de terminal
 
 El mismo instrumento, en una terminal. Es un segundo cliente de la API y no una
-segunda implementación: no captura ni guarda nada, lee un Mirador que ya está
+segunda implementación: no captura ni guarda nada, lee un Sonda que ya está
 corriendo.
 
 ```bash
-go build -o mirador-tui ./cmd/mirador-tui
-./mirador-tui                          # defaults to http://127.0.0.1:9000
-./mirador-tui -api http://host:9000
+go build -o sonda-tui ./cmd/sonda-tui
+./sonda-tui                          # defaults to http://127.0.0.1:9000
+./sonda-tui -api http://host:9000
 
 docker compose run --rm tui            # or from the image
 ```
@@ -250,7 +250,7 @@ curl.exe -X POST -H "Content-Type: application/json" -d '{"sku":"ABC-9"}' http:/
 Usa `Invoke-RestMethod`, o pon el cuerpo en un archivo:
 
 ```powershell
-# Sends a body, and reads what Mirador captured
+# Sends a body, and reads what Sonda captured
 $body = @{ sku = 'ABC-9'; qty = 3 } | ConvertTo-Json -Compress
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:9101/echo -ContentType 'application/json' -Body $body
 
@@ -268,13 +268,13 @@ curl.exe -X POST -H "Content-Type: application/json" --data-binary '@body.json' 
 
 ## gRPC
 
-Pon `protocol: grpc` en un target y apúntalo al puerto del servicio. Mirador le
+Pon `protocol: grpc` en un target y apúntalo al puerto del servicio. Sonda le
 habla HTTP/2 en claro, reenvía la llamada intacta —trailers incluidos, que es
 donde gRPC reporta si la llamada realmente funcionó— y decodifica los mensajes
 cuando encuentra un esquema.
 
 ```bash
-# through Mirador, not straight at the service
+# through Sonda, not straight at the service
 grpcurl -plaintext -d '{"order_id":"ORD-777"}' 127.0.0.1:9201 demo.v1.Orders/GetOrder
 
 # only the calls that failed, across HTTP status, gRPC status and transport errors
@@ -285,7 +285,7 @@ curl 'http://127.0.0.1:9000/api/calls?failed=true'
 
 Tres fuentes, probadas en orden, cada una degradando en la siguiente:
 
-1. **Reflection.** Si el servicio la sirve, Mirador pregunta y no necesita nada
+1. **Reflection.** Si el servicio la sirve, Sonda pregunta y no necesita nada
    más. Le pregunta al servicio directamente y no a través del proxy, para que
    su propia contabilidad no termine en tu línea de tiempo.
 2. **Un descriptor set en disco.** Para servicios sin reflection, compila los
@@ -350,7 +350,7 @@ Al seleccionar una llamada, el inspector ofrece **REPLAY**. La request sale de
 nuevo construida desde los bytes que se guardaron, así que lo que llega al
 servicio es lo mismo que llegó la primera vez.
 
-Se envía **a través de Mirador** y no directo al upstream, lo que significa que
+Se envía **a través de Sonda** y no directo al upstream, lo que significa que
 el reenvío se captura como cualquier otro tráfico: aparece en el campo, queda
 enlazado a la llamada de la que salió, y ambas se pueden comparar de inmediato.
 
@@ -370,7 +370,7 @@ arbitraria: el caso útil es hacerle la misma request a otra instancia que ya
 estás observando, y cualquier cosa más amplia convierte un depurador en un
 forjador de requests.
 
-**Una captura truncada no se puede reenviar, y Mirador se niega en vez de
+**Una captura truncada no se puede reenviar, y Sonda se niega en vez de
 intentarlo.** Solo se guardó la cabeza del cuerpo, así que lo que saldría no
 sería lo que se capturó, y el resultado llevaría la palabra "replay" siendo una
 request distinta. La negativa nombra el arreglo: subir `max_body_bytes` y volver
@@ -399,9 +399,9 @@ de rutas en vez de un muro de rojo y verde:
 - Cuando un lado no es JSON, o no tiene esquema, el diff lo dice e informa si
   los bytes coinciden, en vez de inventar una comparación estructural.
 
-## Qué guarda Mirador, y qué implica eso
+## Qué guarda Sonda, y qué implica eso
 
-Mirador escribe en un archivo SQLite los bytes que cruzaron el cable. **Eso
+Sonda escribe en un archivo SQLite los bytes que cruzaron el cable. **Eso
 incluye lo que sea que lleve tu tráfico**: cabeceras `Authorization`, cookies de
 sesión, claves de API, datos personales. No hay redacción, y es una decisión
 deliberada y no un descuido: redactar significaría que la captura ya no es lo
@@ -413,7 +413,7 @@ Lo que se desprende de eso:
 - **La base de datos es un archivo plano sin cifrado**, donde sea que apunte
   `database:`. Trátalo como un archivo de logs con credenciales adentro, porque
   eso es.
-- **Mirador no tiene autenticación.** Cualquiera que alcance su puerto puede
+- **Sonda no tiene autenticación.** Cualquiera que alcance su puerto puede
   leer todas las capturas. Déjalo en `127.0.0.1` —así viene configurado— y no
   publiques el puerto.
 - **Es una herramienta de desarrollo local.** Apuntarla a tráfico de producción
@@ -424,13 +424,13 @@ Lo que se desprende de eso:
 
 ## Configuración
 
-Copia `mirador.example.yaml` a `mirador.yaml` y agrega una entrada por servicio.
+Copia `sonda.example.yaml` a `sonda.yaml` y agrega una entrada por servicio.
 Una clave desconocida es un error de arranque y no un valor por defecto
 silencioso, así que una errata no se convierte en una hora de confusión.
 
 ```yaml
 api_listen: 127.0.0.1:9000
-database: mirador.db
+database: sonda.db
 max_body_bytes: 262144   # kept per body; the full body always reaches its destination
 buffer_size: 1024        # captures buffered in memory before they are written
 
@@ -452,7 +452,7 @@ servicios corriendo de forma nativa, que es justamente el punto: un stack local
 de verdad suele ser las dos cosas.
 
 Dentro de Docker, usa `host.docker.internal` para alcanzar un servicio que corre
-en el host. Ver `mirador.docker.yaml`.
+en el host. Ver `sonda.docker.yaml`.
 
 ## API
 
@@ -497,7 +497,7 @@ leerse como operadores de consulta.
   servicio que nunca arregló su charset no vuelve inencontrable la llamada; el
   índice se sanea mientras los bytes guardados quedan exactos. Los payloads
   realmente binarios no se indexan.
-- **Un upstream inalcanzable también se captura.** Mirador responde 502 y
+- **Un upstream inalcanzable también se captura.** Sonda responde 502 y
   registra el error de transporte, así que el fallo está en la línea de tiempo
   en vez de faltar. Un 502 que vino del upstream mismo tiene el campo `error`
   vacío.
@@ -533,7 +533,7 @@ leerse como operadores de consulta.
 ```bash
 go test ./...
 go vet ./...
-go run ./cmd/mirador -version   # the commit a binary came from
+go run ./cmd/sonda -version   # the commit a binary came from
 ```
 
 El detector de carreras necesita cgo, y este proyecto deliberadamente no

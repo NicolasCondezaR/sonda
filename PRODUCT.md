@@ -16,7 +16,7 @@ crossed the wire.
 
 Two usage scenes, both confirmed:
 
-- **Ambient.** Mirador is open on a second monitor while he works, glanced at
+- **Ambient.** Sonda is open on a second monitor while he works, glanced at
   rather than read.
 - **Deliberate.** He opens it *because* something broke, and the first thing he
   wants is what failed — not the full stream.
@@ -27,7 +27,7 @@ built this understands distributed systems.
 
 ## Product Purpose
 
-Replace log-reading as the way to debug traffic between local services. Mirador
+Replace log-reading as the way to debug traffic between local services. Sonda
 sits in front of a service, forwards every call untouched, and makes the request
 and response inspectable: HTTP with JSON, and gRPC with protobuf decoded to
 field names.
@@ -39,7 +39,7 @@ reconstruct one interaction, and instead sees the interaction itself.
 
 For HTTP, `mitmproxy` already does this well. For gRPC nothing does: `grpcurl`
 and `grpcui` *make* calls, they do not observe the ones services make to each
-other. Mirador's specific claim is capturing gRPC traffic it did not originate —
+other. Sonda's specific claim is capturing gRPC traffic it did not originate —
 deframing the messages, preserving the trailers where the real status lives, and
 decoding protobuf through reflection, a descriptor set, or failing both, the
 wire format itself.
@@ -93,7 +93,7 @@ upstream only, or against an arbitrary one.
 
 ## Brand Commitments
 
-Name: Mirador — provisional, chosen by the author, not yet final. Spanish for a
+Name: Sonda — provisional, chosen by the author, not yet final. Spanish for a
 vantage point, which is the whole idea. No logo, no colors, no typography have
 been committed. The API and all code, comments and documentation are in English;
 the author is a Chilean Spanish speaker and payloads routinely contain Spanish
@@ -116,7 +116,7 @@ may be invented.
 ## Product Principles
 
 1. **Fidelity before features.** A debugger that alters the traffic invalidates
-   every conclusion drawn from it. Nothing in the interface may imply Mirador
+   every conclusion drawn from it. Nothing in the interface may imply Sonda
    changed what crossed the wire.
 2. **Never say "I can't show you that."** Missing schema, bad encoding, binary
    payloads and truncated captures all degrade to a lesser view, never to a

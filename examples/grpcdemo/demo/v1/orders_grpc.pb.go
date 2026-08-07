@@ -29,7 +29,7 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// Orders is the toy service Mirador is developed and demoed against. Its
+// Orders is the toy service Sonda is developed and demoed against. Its
 // methods exist to produce the four shapes a gRPC proxy has to survive: a
 // plain unary call, a server stream, a client stream, and a failure that
 // answers with a non-zero status and no message at all.
@@ -110,7 +110,7 @@ func (c *ordersClient) Fail(ctx context.Context, in *FailRequest, opts ...grpc.C
 // All implementations must embed UnimplementedOrdersServer
 // for forward compatibility.
 //
-// Orders is the toy service Mirador is developed and demoed against. Its
+// Orders is the toy service Sonda is developed and demoed against. Its
 // methods exist to produce the four shapes a gRPC proxy has to survive: a
 // plain unary call, a server stream, a client stream, and a failure that
 // answers with a non-zero status and no message at all.

@@ -1,5 +1,5 @@
 // Package config loads and validates the declarative target list that tells
-// Mirador which local services to sit in front of.
+// Sonda which local services to sit in front of.
 package config
 
 import (
@@ -54,7 +54,7 @@ type Target struct {
 	Reflection *bool `yaml:"reflection"`
 }
 
-// ReflectionEnabled reports whether Mirador should ask the service for its
+// ReflectionEnabled reports whether Sonda should ask the service for its
 // schema. It defaults to on: asking costs one call and fails harmlessly.
 func (t Target) ReflectionEnabled() bool {
 	return t.Reflection == nil || *t.Reflection
@@ -65,7 +65,7 @@ const (
 	ProtocolGRPC = "grpc"
 
 	defaultAPIListen    = "127.0.0.1:9000"
-	defaultDatabase     = "mirador.db"
+	defaultDatabase     = "sonda.db"
 	defaultMaxBodyBytes = 256 << 10
 	defaultBufferSize   = 1024
 	defaultMaxCalls     = 50_000

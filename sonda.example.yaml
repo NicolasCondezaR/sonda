@@ -1,13 +1,13 @@
-# Mirador — configuration for running against services on this machine.
+# Sonda — configuration for running against services on this machine.
 #
 # One target per service you want to observe. Point the client at `listen`
-# instead of the real address and Mirador forwards to `upstream`, capturing
+# instead of the real address and Sonda forwards to `upstream`, capturing
 # both halves on the way through.
 #
-# Copy this file to mirador.yaml and edit it.
+# Copy this file to sonda.yaml and edit it.
 
 api_listen: 127.0.0.1:9000
-database: mirador.db
+database: sonda.db
 
 # Bytes kept per body. The whole body always reaches its destination; this
 # only caps what is stored.
@@ -33,7 +33,7 @@ targets:
     listen: 127.0.0.1:9201
     upstream: http://127.0.0.1:8082
     protocol: grpc
-    # Reflection defaults to on. When the service serves it, Mirador discovers
+    # Reflection defaults to on. When the service serves it, Sonda discovers
     # the schema by itself and nothing else is needed.
     #
     # When it does not, compile the protos and point at the result:

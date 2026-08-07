@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"mirador/internal/runtime"
-	"mirador/internal/store"
+	"sonda/internal/runtime"
+	"sonda/internal/store"
 )
 
 type noDrops struct{}

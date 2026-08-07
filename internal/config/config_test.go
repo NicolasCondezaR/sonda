@@ -75,7 +75,7 @@ func TestProjectNameComesFromTheDirectory(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := ProjectNameFor(filepath.Join(dir, "mirador.yaml")); got != "core-delpagroup" {
+	if got := ProjectNameFor(filepath.Join(dir, "sonda.yaml")); got != "core-delpagroup" {
 		t.Errorf("project name = %q, want the directory name", got)
 	}
 }
@@ -187,7 +187,7 @@ targets:
 		{
 			name: "unknown key",
 			yaml: `
-databse: mirador.db
+databse: sonda.db
 targets:
   - {name: api, listen: 127.0.0.1:9101, upstream: "http://127.0.0.1:3000"}
 `,

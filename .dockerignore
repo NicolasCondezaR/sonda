@@ -3,9 +3,9 @@
 *.db
 *.db-shm
 *.db-wal
-mirador.yaml
-mirador
-mirador.exe
+sonda.yaml
+sonda
+sonda.exe
 echo
 echo.exe
 README.md

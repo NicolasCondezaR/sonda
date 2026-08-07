@@ -17,10 +17,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	demov1 "mirador/examples/grpcdemo/demo/v1"
-	"mirador/examples/grpcdemo/ordersvc"
-	"mirador/internal/config"
-	"mirador/internal/grpcwire"
+	demov1 "sonda/examples/grpcdemo/demo/v1"
+	"sonda/examples/grpcdemo/ordersvc"
+	"sonda/internal/config"
+	"sonda/internal/grpcwire"
 )
 
 // startUpstream runs the demo gRPC service and returns its address.
@@ -37,7 +37,7 @@ func startUpstream(t *testing.T) string {
 	return listener.Addr().String()
 }
 
-// startGRPCProxy puts Mirador in front of an upstream and returns a connected
+// startGRPCProxy puts Sonda in front of an upstream and returns a connected
 // client plus the recorder holding whatever was captured.
 func startGRPCProxy(t *testing.T, upstreamAddr string) (demov1.OrdersClient, *collector) {
 	t.Helper()

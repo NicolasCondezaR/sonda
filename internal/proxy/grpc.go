@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mirador/internal/config"
+	"sonda/internal/config"
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -34,12 +34,12 @@ func h2cHandler(h http.Handler) http.Handler {
 	return h2c.NewHandler(h, &http2.Server{})
 }
 
-// ReplayHeader marks a request Mirador is sending on the operator's behalf.
+// ReplayHeader marks a request Sonda is sending on the operator's behalf.
 // The proxy strips it before forwarding, so the upstream receives exactly the
 // original request and the captured headers do not gain a field the real client
 // never sent — the replay is recorded as a link, not as a difference in the
 // traffic.
-const ReplayHeader = "X-Mirador-Replay-Of"
+const ReplayHeader = "X-Sonda-Replay-Of"
 
 // replayedFrom reads and removes the marker.
 func replayedFrom(h http.Header) *int64 {
@@ -70,11 +70,11 @@ func isGRPCRequest(headers http.Header) bool {
 func explainUpstreamFailure(target config.Target, upstream string, err error) string {
 	if target.Protocol == config.ProtocolGRPC && strings.Contains(err.Error(), "looked like an HTTP/1.1 header") {
 		return fmt.Sprintf(
-			"mirador: target %q is configured as grpc, but %s answered HTTP/1.1. "+
+			"sonda: target %q is configured as grpc, but %s answered HTTP/1.1. "+
 				"Either point it at the gRPC port, or set protocol: http for this target. (%v)",
 			target.Name, upstream, err)
 	}
-	return fmt.Sprintf("mirador: upstream %s unreachable: %v", upstream, err)
+	return fmt.Sprintf("sonda: upstream %s unreachable: %v", upstream, err)
 }
 
 // grpcOutcome reads the real result of a gRPC call.

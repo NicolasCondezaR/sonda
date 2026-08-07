@@ -1,11 +1,11 @@
-mirador.yaml
+sonda.yaml
 *.db
 *.db-shm
 *.db-wal
-/mirador
-/mirador.exe
-/mirador-tui
-/mirador-tui.exe
+/sonda
+/sonda.exe
+/sonda-tui
+/sonda-tui.exe
 /echo
 /echo.exe
 *.log

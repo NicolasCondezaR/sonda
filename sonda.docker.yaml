@@ -1,10 +1,10 @@
 # Configuration used by compose.yaml. The only difference from
-# mirador.example.yaml is that addresses are container names on the compose
-# network instead of 127.0.0.1, and Mirador binds 0.0.0.0 so the published
+# sonda.example.yaml is that addresses are container names on the compose
+# network instead of 127.0.0.1, and Sonda binds 0.0.0.0 so the published
 # ports reach it.
 
 api_listen: 0.0.0.0:9000
-database: /data/mirador.db
+database: /data/sonda.db
 max_body_bytes: 262144
 buffer_size: 1024
 

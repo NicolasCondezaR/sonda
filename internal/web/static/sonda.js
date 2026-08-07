@@ -1,4 +1,4 @@
-/* Mirador — the instrument face.
+/* Sonda — the instrument face.
  *
  * The field is a coordinate space in milliseconds: every event keeps a static x
  * derived from its timestamp, and the whole track is translated once per frame
@@ -368,7 +368,7 @@ async function reload() {
     refreshReadout();
   } catch (err) {
     setAcquisition("lost", "LOAD FAILED");
-    console.error("mirador: could not load calls", err);
+    console.error("sonda: could not load calls", err);
   }
 }
 
@@ -416,7 +416,7 @@ function connect() {
     try {
       ingest(JSON.parse(event.data));
     } catch (err) {
-      console.error("mirador: bad event", err);
+      console.error("sonda: bad event", err);
     }
   });
   stream.addEventListener("error", () => {
@@ -924,9 +924,9 @@ async function boot() {
   } catch (err) {
     setAcquisition("lost", "NO API");
     dom.emptyHeadline.textContent = "NO CONNECTION";
-    dom.emptyNote.textContent = "Mirador's API did not answer. Is the process still running?";
+    dom.emptyNote.textContent = "Sonda's API did not answer. Is the process still running?";
     dom.empty.hidden = false;
-    console.error("mirador: could not read targets", err);
+    console.error("sonda: could not read targets", err);
     return;
   }
 
@@ -1107,7 +1107,7 @@ function renderServiceForm(project) {
   const form = el("form", "form");
 
   const name = field(form, "NAME", "text", "ms-auth");
-  const listen = field(form, "MIRADOR LISTENS ON", "text", "127.0.0.1:9152");
+  const listen = field(form, "SONDA LISTENS ON", "text", "127.0.0.1:9152");
   const upstream = field(form, "THE REAL SERVICE", "text", "http://127.0.0.1:50052");
 
   const protoWrap = el("div", "form__field");
@@ -1313,7 +1313,7 @@ async function boot_reloadAfterProjectChange() {
       : state.targets.length + " channels armed";
     await reload();
   } catch (err) {
-    console.error("mirador: could not refresh after the project changed", err);
+    console.error("sonda: could not refresh after the project changed", err);
   }
 }
 
