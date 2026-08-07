@@ -16,10 +16,11 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 7.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 8.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
-> terminal y la gestión de proyectos funcionan, y todo se levanta con
-> `docker compose up`. Ver [Hoja de ruta](#hoja-de-ruta).
+> terminal, la gestión de proyectos y un [servidor MCP para agentes de
+> código](#agentes) funcionan, y todo se levanta con `docker compose up`.
+> Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
 
@@ -441,10 +442,13 @@ de rutas en vez de un muro de rojo y verde:
 
 Sonda escribe en un archivo SQLite los bytes que cruzaron el cable. **Eso
 incluye lo que sea que lleve tu tráfico**: cabeceras `Authorization`, cookies de
-sesión, claves de API, datos personales. No hay redacción, y es una decisión
-deliberada y no un descuido: redactar significaría que la captura ya no es lo
-que se envió, lo que rompe tanto la fidelidad sobre la que está construida la
-herramienta como el replay junto con ella.
+sesión, claves de API, datos personales. Nada se redacta al entrar, y es una
+decisión deliberada y no un descuido: redactar la captura significaría que ya no
+es lo que se envió, lo que rompe tanto la fidelidad sobre la que está construida
+la herramienta como el replay junto con ella.
+
+El único lugar donde las credenciales sí se retienen es [el servidor
+MCP](#agentes), porque ahí las respuestas salen de la máquina.
 
 Lo que se desprende de eso:
 
@@ -459,6 +463,73 @@ Lo que se desprende de eso:
   amenazas.
 - La retención acota cuánto viven las capturas, pero es un límite de aseo, no un
   control de seguridad.
+
+## Agentes
+
+Sonda habla el [Model Context Protocol](https://modelcontextprotocol.io), así que
+un agente de código puede leer las capturas por su cuenta en vez de que se las
+cuenten.
+
+El bucle que reemplaza es el tedioso: el agente escribe código, tú lo corres,
+copias un log, se lo pegas, y el agente adivina. Con esto el agente corre el
+código y después pregunta qué cruzó de verdad por el cable — decodificado, y sin
+pasar por el filtro de lo que alguien decidió loguear.
+
+### Cómo conectarlo
+
+Dos puertas, el mismo servidor detrás.
+
+**Una URL**, si tu cliente acepta una. Nada que instalar, y varios agentes
+apuntados a la misma Sonda ven las mismas capturas:
+
+```
+http://127.0.0.1:9000/mcp
+```
+
+**Un comando**, para clientes que solo hablan por tubería. Reenvía a la Sonda que
+ya está corriendo, así que siguen siendo los mismos datos:
+
+```json
+{
+  "mcpServers": {
+    "sonda": { "command": "sonda", "args": ["mcp"] }
+  }
+}
+```
+
+Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
+
+### Las herramientas
+
+| Herramienta | Qué responde |
+|---|---|
+| `recent_failures` | "¿Qué se rompió recién?" — casi siempre la primera pregunta |
+| `search_calls` | Por servicio, método, ruta, estado o texto en los cuerpos |
+| `get_call` | Una llamada completa, decodificada |
+| `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
+| `list_services` | Qué se está observando, en qué puertos, y si está escuchando |
+| `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
+| `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
+
+`wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
+visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
+cruzado. Que no llegue nada también es una respuesta.
+
+### Las credenciales no salen
+
+Todo lo anterior se filtra antes de salir. `Authorization`, `Cookie`,
+`X-Api-Key`, `password`, `client_secret` y sus distintas grafías vuelven como
+`[redacted by Sonda]` — en cabeceras, en cuerpos, y dentro de un JSON anidado en
+un cuerpo. **No hay opción para desactivarlo**, a propósito: una bandera para eso
+se enciende probando contra un proyecto de juguete y se olvida encendida contra
+uno real. La interfaz web sigue mostrando todo, porque ahí el que lee eres tú.
+
+Los cuerpos además vienen acortados por defecto; `get_call` acepta `detail` para
+traerlos enteros. `detail` **no** revela credenciales, y eso lo cubre un test.
+
+El endpoint HTTP rechaza las peticiones que traen un `Origin` ajeno, que es lo
+que impide que una página abierta en tu propio navegador llegue hasta él por DNS
+rebinding y lea tus capturas.
 
 ## Configuración
 
@@ -554,6 +625,7 @@ leerse como operadores de consulta.
 | 5 | Empaquetado y documentación | listo |
 | 6 | TUI, como segundo cliente de la misma API | listo |
 | 7 | Proyectos: servicios agrupados, configurados desde la interfaz, importados de un archivo | listo |
+| 8 | Servidor MCP, para que un agente de código lea las capturas por su cuenta | listo |
 
 ### Limitaciones
 

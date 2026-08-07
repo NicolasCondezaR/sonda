@@ -16,10 +16,10 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 7.** Capture, decoding, storage, search, the query API, the
-> web interface, replay, structural diff, a terminal client and project
-> management all work, and the whole thing runs from `docker compose up`. See
-> [Roadmap](#roadmap).
+> **Status: phase 8.** Capture, decoding, storage, search, the query API, the
+> web interface, replay, structural diff, a terminal client, project management
+> and an [MCP server for coding agents](#agents) all work, and the whole thing
+> runs from `docker compose up`. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -432,10 +432,13 @@ instead of a wall of red and green:
 
 Sonda writes the bytes that crossed the wire into a SQLite file. **That
 includes whatever your traffic carries**: `Authorization` headers, session
-cookies, API keys, personal data. There is no redaction, and that is a
-deliberate choice rather than an oversight — redacting would mean the capture is
-no longer what was sent, which breaks both the fidelity the tool is built on and
-replay along with it.
+cookies, API keys, personal data. Nothing is redacted on the way in, and that is
+a deliberate choice rather than an oversight — redacting the capture would mean
+it is no longer what was sent, which breaks both the fidelity the tool is built
+on and replay along with it.
+
+The one place credentials are held back is [the MCP server](#agents), because
+there the answers leave the machine.
 
 What follows from that:
 
@@ -448,6 +451,72 @@ What follows from that:
   outside what it was built for and outside what its threat model covers.
 - Retention bounds how long captures live, but it is a housekeeping limit, not a
   security control.
+
+## Agents
+
+Sonda speaks the [Model Context Protocol](https://modelcontextprotocol.io), so a
+coding agent can read the captures itself instead of being told about them.
+
+The loop it replaces is the tedious one: agent writes code, you run it, you copy
+a log, you paste it back, the agent guesses. With this, the agent runs the code
+and then asks what actually crossed the wire — decoded, and not filtered through
+whatever somebody chose to log.
+
+### Connecting
+
+Two ways in, same server behind both.
+
+**A URL**, if your client accepts one. Nothing to install, and several agents
+pointed at the same Sonda see the same captures:
+
+```
+http://127.0.0.1:9000/mcp
+```
+
+**A command**, for clients that only speak over a pipe. It forwards to the Sonda
+that is already running, so it is still the same data:
+
+```json
+{
+  "mcpServers": {
+    "sonda": { "command": "sonda", "args": ["mcp"] }
+  }
+}
+```
+
+`sonda mcp --api http://127.0.0.1:9000` points it somewhere else.
+
+### The tools
+
+| Tool | What it answers |
+|---|---|
+| `recent_failures` | "What just broke?" — the first question, usually |
+| `search_calls` | By service, method, path, status, or text in the bodies |
+| `get_call` | One call in full, decoded |
+| `diff_calls` | "This one worked and this one did not — what changed?" |
+| `list_services` | What is being observed, on which ports, and whether it is listening |
+| `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
+| `replay_call` | Send a capture again. Marked destructive, so clients ask first |
+
+`wait_for_call` is the one that turns Sonda into a check rather than a viewer:
+the agent makes a change, triggers the action, and waits for what should have
+gone over the wire. Nothing arriving is also an answer.
+
+### Credentials do not leave
+
+Everything above is filtered before it goes out. `Authorization`, `Cookie`,
+`X-Api-Key`, `password`, `client_secret` and their various spellings come back
+as `[redacted by Sonda]` — in headers, in bodies, and inside JSON nested in a
+body. **There is no setting to turn this off**, deliberately: a flag for it
+would be switched on against a toy project and then forgotten against a real
+one. The web interface still shows everything, because there the reader is you.
+
+Bodies are also shortened by default; `get_call` takes `detail` for the whole
+thing. `detail` does not reveal credentials — that is covered by a test.
+
+The HTTP endpoint refuses requests carrying a foreign `Origin`, which is what
+stops a page in your own browser from reaching it through DNS rebinding and
+reading your captures.
 
 ## Configuration
 
@@ -539,6 +608,7 @@ operators.
 | 5 | Packaging and documentation | done |
 | 6 | TUI, as a second client of the same API | done |
 | 7 | Projects: grouped services, configured from the interface, imported from a file | done |
+| 8 | MCP server, so a coding agent reads the captures itself | done |
 
 ### Limitations
 

@@ -24,6 +24,7 @@ import (
 
 	"github.com/NicolasCondezaR/sonda/internal/api"
 	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/mcp"
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
 	"github.com/NicolasCondezaR/sonda/internal/web"
@@ -42,6 +43,29 @@ var release string
 func version() string {
 	info, _ := debug.ReadBuildInfo()
 	return formatVersion(release, info)
+}
+
+// buildVersion is the bare version, for a machine reading a handshake: the tag
+// when there is one, the commit when there is not. version() is a sentence for
+// a person looking at a terminal, and "sonda sonda v0.2.3 … go1.26" is what
+// comes out when the two get confused.
+func buildVersion() string {
+	if release != "" {
+		return release
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" && len(setting.Value) >= 12 {
+			return setting.Value[:12]
+		}
+	}
+	return "unknown"
 }
 
 // formatVersion is separate from version() only so it can be handed a build
@@ -98,10 +122,46 @@ func formatVersion(release string, info *debug.BuildInfo) string {
 }
 
 func main() {
+	// `sonda mcp` is a different program wearing the same binary: it speaks
+	// the Model Context Protocol on stdin and stdout and forwards to a Sonda
+	// that is already running. Agents that only support the pipe transport
+	// start it themselves; the ones that can take a URL use /mcp instead and
+	// need none of this.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCP(os.Args[2:]); err != nil {
+			slog.Error("sonda mcp stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		slog.Error("sonda stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runMCP(argv []string) error {
+	fs := flag.NewFlagSet("sonda mcp", flag.ExitOnError)
+	addr := fs.String("api", "http://127.0.0.1:9000", "address of the running Sonda whose captures to expose")
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+
+	// stdout carries protocol messages and nothing else. A stray log line
+	// there corrupts the stream, and the client reports a parse error with no
+	// hint about where it came from.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	remote, err := mcp.NewRemote(*addr)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return mcp.New(remote, buildVersion()).ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
 func run() error {
@@ -247,6 +307,12 @@ func serveAPI(ctx context.Context, cfg *config.Config, apiServer *api.Server) er
 	mux := http.NewServeMux()
 	mux.Handle("/api/", apiServer.Handler())
 	mux.Handle("/health", apiServer.Handler())
+
+	// One more endpoint and any agent can read the captures: no install, no
+	// child process, and several agents pointed here see the same Sonda. The
+	// tools run against the API handler directly, in this process.
+	mux.Handle("/mcp", mcp.New(mcp.Local{Handler: apiServer.Handler()}, buildVersion()).Handler())
+
 	mux.Handle("/", web.Handler())
 
 	server := &http.Server{
