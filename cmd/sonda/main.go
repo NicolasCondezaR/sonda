@@ -40,15 +40,37 @@ var release string
 // at build time, so a binary copied onto another machine can still say what it
 // is. The revision needs no ldflags and no generated file to keep in sync.
 func version() string {
-	parts := []string{"sonda"}
-	if release != "" {
-		parts = append(parts, release)
-	}
+	info, _ := debug.ReadBuildInfo()
+	return formatVersion(release, info)
+}
 
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
+// formatVersion is separate from version() only so it can be handed a build
+// info that never existed. There is no way to fake the real one, and the
+// interesting cases — installed from the module proxy, built from a checkout,
+// built inside the image — differ precisely in what it contains.
+func formatVersion(release string, info *debug.BuildInfo) string {
+	parts := []string{"sonda"}
+
+	if info == nil {
+		if release != "" {
+			parts = append(parts, release)
+		}
 		return strings.Join(append(parts, "(unknown build)"), " ")
 	}
+
+	// Two sources know the tag and neither covers the other. The release build
+	// passes it in through ldflags; `go install` never sees those, but Go
+	// records the module version it fetched — which is how a binary nobody
+	// built from a checkout still knows what it is. "(devel)" is what a local
+	// build reports, and it is not a version.
+	tag := release
+	if tag == "" && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		tag = info.Main.Version
+	}
+	if tag != "" {
+		parts = append(parts, tag)
+	}
+
 	var revision, modified string
 	for _, setting := range info.Settings {
 		switch setting.Key {
