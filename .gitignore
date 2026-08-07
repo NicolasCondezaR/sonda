@@ -9,3 +9,4 @@ sonda.yaml
 /echo
 /echo.exe
 *.log
+/dist/

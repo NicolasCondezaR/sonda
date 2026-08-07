@@ -45,6 +45,23 @@ Two properties drive the design:
 
 ## Quick start
 
+### From a release
+
+Download the archive for your platform from
+[Releases](https://github.com/NicolasCondezaR/sonda/releases) and unpack it.
+There is nothing to install: the binaries are static, with no Go toolchain and
+no system SQLite to provide.
+
+```bash
+./sonda            # the proxy and the interface, on http://127.0.0.1:9000
+./sonda -version   # which build this is
+./sonda-tui        # the terminal client
+```
+
+The archive also carries `echo` and `grpcdemo`, the two toy services the rest of
+this quick start uses, so there is something to capture without wiring up your
+own.
+
 ### With Docker
 
 ```bash
