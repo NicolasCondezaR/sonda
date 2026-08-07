@@ -2,7 +2,9 @@
 
 Un proxy que captura el tráfico de desarrollo local. Apunta un cliente a Sonda
 en vez de al servicio con el que habla, y cada request y cada response que lo
-cruza queda disponible para buscar.
+cruza queda disponible para buscar — ordenada dentro de la petición a la que
+perteneció, reenviable, comparable, y legible tanto por ti como por un agente de
+código.
 
 Existe porque depurar entre servicios suele significar leer logs de varios
 contenedores, y ninguno contiene el payload. `mitmproxy` resuelve esto muy bien
@@ -18,8 +20,9 @@ al que apunta.
 
 > **Estado: fase 11.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
-> terminal, la gestión de proyectos y un [servidor MCP para agentes de
-> código](#agentes) funcionan, y todo se levanta con `docker compose up`.
+> terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
+> [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
+> funcionan, y todo se levanta con `docker compose up`.
 > Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
@@ -661,11 +664,13 @@ en el host. Ver `sonda.docker.yaml`.
 | `GET /api/projects` | Los proyectos, sus servicios y qué está escuchando de verdad. |
 | `POST /api/projects` | Crear uno. `PATCH`/`DELETE /api/projects/{id}` renombran y borran. |
 | `POST /api/projects/{id}/activate` | Cierra los puertos del proyecto actual y abre los de este. |
+| `POST /api/projects/deactivate` | Cierra todos los puertos. No borra nada, y activar lo devuelve todo. |
 | `POST /api/projects/{id}/descriptor` | Sube los esquemas compilados de todo el proyecto. |
 | `POST /api/projects/{id}/services` | Agrega o actualiza un servicio. `DELETE /api/services/{id}` quita uno. |
 | `POST /api/discover` | Lee servicios de un `.env` o un compose sin guardar nada. |
 | `GET /api/runtime` | Qué proyecto está activo y qué está escuchando de verdad. |
 | `GET /api/stats` | Cantidad de capturas, rango de tiempo y llamadas descartadas bajo carga. |
+| `GET /api/stream` | Eventos server-sent: cada captura en el momento en que se guarda. Es lo que lee el campo en vivo. |
 | `GET /health` | Liveness. |
 
 El listado no lleva cuerpos a propósito: unos cientos de llamadas con payloads
@@ -725,6 +730,10 @@ leerse como operadores de consulta.
 - Una captura truncada no se puede reenviar; la negativa es deliberada.
 - La interfaz no tiene cursores ni trigger, dos dispositivos que un instrumento
   real sí tiene, y el siguiente alcance evidente.
+- La interfaz web todavía no dibuja el árbol de la petición ni marca una
+  respuesta servida desde stub. Las dos cosas están en la API y en las
+  herramientas MCP; el campo sigue mostrando una lista plana, y eso es un hueco,
+  no una decisión.
 
 ## Desarrollo
 
