@@ -12,8 +12,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
-	demov1 "sonda/examples/grpcdemo/demo/v1"
-	"sonda/examples/grpcdemo/ordersvc"
+	demov1 "github.com/NicolasCondezaR/sonda/examples/grpcdemo/demo/v1"
+	"github.com/NicolasCondezaR/sonda/examples/grpcdemo/ordersvc"
 )
 
 // descriptorSetPath is produced by `buf build -o examples/grpcdemo/descriptors.binpb`

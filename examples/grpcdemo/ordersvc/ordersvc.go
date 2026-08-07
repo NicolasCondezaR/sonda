@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
 
-	demov1 "sonda/examples/grpcdemo/demo/v1"
+	demov1 "github.com/NicolasCondezaR/sonda/examples/grpcdemo/demo/v1"
 )
 
 type Server struct {

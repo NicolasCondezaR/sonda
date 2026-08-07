@@ -17,9 +17,9 @@ import (
 
 	"google.golang.org/grpc/codes"
 
-	"sonda/internal/config"
-	"sonda/internal/runtime"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/runtime"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 type Dropper interface {

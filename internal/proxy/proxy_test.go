@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"sonda/internal/config"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 type collector struct {

@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"sonda/internal/config"
-	"sonda/internal/proxy"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/proxy"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 const replayTimeout = 60 * time.Second

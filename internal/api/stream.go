@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 // Hub fans captured calls out to the live view.
