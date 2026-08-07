@@ -16,7 +16,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 8.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 9.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos y un [servidor MCP para agentes de
 > código](#agentes) funcionan, y todo se levanta con `docker compose up`.
@@ -510,10 +510,47 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `list_services` | Qué se está observando, en qué puertos, y si está escuchando |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
+| `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella |
+| `configure_service` | Agrega o corrige un servicio |
+| `activate_project` | Abre los puertos. Pregunta antes |
+| `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
 cruzado. Que no llegue nada también es una respuesta.
+
+### Conectar un proyecto pidiéndolo
+
+> *"Conéctame el monorepo a Sonda."*
+
+El agente lee el `.env` o el compose del proyecto y le pasa el contenido a
+`connect_project`. Sonda encuentra los servicios, le asigna un puerto a cada uno,
+crea el proyecto — y devuelve la edición exacta a aplicar:
+
+```json
+{
+  "project": "core-delpagroup",
+  "services": 21,
+  "active": false,
+  "changes": {
+    "MS_AUTH_GRPC_URL":  { "from": "localhost:50052", "to": "127.0.0.1:9152" },
+    "MS_ADMIN_GRPC_URL": { "from": "localhost:50053", "to": "127.0.0.1:9153" }
+  }
+}
+```
+
+Esa última parte es todo el diseño. **Sonda no puede reapuntar a quien llama** —
+es un proxy explícito y no ve nada hasta que a alguien le dicen que le hable. El
+agente sí puede: tiene el sistema de archivos y puede reiniciar un proceso. Así
+que Sonda sabe el mapeo y el agente tiene las manos.
+
+`disconnect_project` devuelve el inverso. Sin eso, un agente que reapuntó un
+`.env` y después paró dejaría el entorno mirando a puertos donde no escucha
+nadie.
+
+Crear configuración no molesta a nadie, así que esas herramientas corren
+libremente. Abrir y cerrar puertos te puede cambiar la sesión debajo de los pies,
+así que esas preguntan antes.
 
 ### Las credenciales no salen
 
@@ -626,6 +663,7 @@ leerse como operadores de consulta.
 | 6 | TUI, como segundo cliente de la misma API | listo |
 | 7 | Proyectos: servicios agrupados, configurados desde la interfaz, importados de un archivo | listo |
 | 8 | Servidor MCP, para que un agente de código lea las capturas por su cuenta | listo |
+| 9 | Configuración por MCP: conectar un proyecto entero pidiéndolo | listo |
 
 ### Limitaciones
 
