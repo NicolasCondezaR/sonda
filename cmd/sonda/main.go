@@ -22,11 +22,11 @@ import (
 	"syscall"
 	"time"
 
-	"sonda/internal/api"
-	"sonda/internal/config"
-	"sonda/internal/runtime"
-	"sonda/internal/store"
-	"sonda/internal/web"
+	"github.com/NicolasCondezaR/sonda/internal/api"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/runtime"
+	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/web"
 )
 
 // release is the tag this binary was cut from, set only by the release build

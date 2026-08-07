@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"sonda/internal/config"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 // Recorder is the sink for captured calls. It is an interface so the proxy can

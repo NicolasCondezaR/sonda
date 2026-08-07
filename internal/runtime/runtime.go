@@ -15,11 +15,11 @@ import (
 	"strings"
 	"sync"
 
-	"sonda/internal/config"
-	"sonda/internal/protoschema"
-	"sonda/internal/proxy"
-	"sonda/internal/store"
-	"sonda/internal/supervisor"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/protoschema"
+	"github.com/NicolasCondezaR/sonda/internal/proxy"
+	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/supervisor"
 )
 
 type Runtime struct {

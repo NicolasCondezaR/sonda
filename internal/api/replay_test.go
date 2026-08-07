@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"sonda/internal/config"
-	"sonda/internal/proxy"
-	"sonda/internal/runtime"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/proxy"
+	"github.com/NicolasCondezaR/sonda/internal/runtime"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 // liveStack wires a real proxy in front of a real upstream and a real API, so a

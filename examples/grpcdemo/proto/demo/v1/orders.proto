@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package demo.v1;
 
-option go_package = "sonda/examples/grpcdemo/demo/v1";
+option go_package = "github.com/NicolasCondezaR/sonda/examples/grpcdemo/demo/v1";
 
 // Orders is the toy service Sonda is developed and demoed against. Its
 // methods exist to produce the four shapes a gRPC proxy has to survive: a

@@ -17,10 +17,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 
-	demov1 "sonda/examples/grpcdemo/demo/v1"
-	"sonda/examples/grpcdemo/ordersvc"
-	"sonda/internal/config"
-	"sonda/internal/grpcwire"
+	demov1 "github.com/NicolasCondezaR/sonda/examples/grpcdemo/demo/v1"
+	"github.com/NicolasCondezaR/sonda/examples/grpcdemo/ordersvc"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/grpcwire"
 )
 
 // startUpstream runs the demo gRPC service and returns its address.

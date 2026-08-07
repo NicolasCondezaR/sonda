@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"sonda/internal/calldiff"
-	"sonda/internal/config"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/calldiff"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 type diffResult struct {

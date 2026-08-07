@@ -15,7 +15,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"sonda/examples/grpcdemo/ordersvc"
+	"github.com/NicolasCondezaR/sonda/examples/grpcdemo/ordersvc"
 )
 
 func main() {

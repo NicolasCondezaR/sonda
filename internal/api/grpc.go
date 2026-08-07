@@ -7,9 +7,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"sonda/internal/grpcwire"
-	"sonda/internal/protoschema"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/grpcwire"
+	"github.com/NicolasCondezaR/sonda/internal/protoschema"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 // Resolvers maps a target name to the schema resolver for that service.

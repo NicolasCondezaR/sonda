@@ -43,14 +43,22 @@ Two properties drive the design:
   fields and reorder keys, which is what makes replay meaningless — and it lets
   a capture become readable later, once its schema is available.
 
-## Quick start
+## Install
 
-### From a release
+Pick whichever you already have. Nothing here needs a C toolchain or a system
+SQLite: the driver is pure Go, which is also why the binaries are static and the
+image is 50 MB.
 
-Download the archive for your platform from
-[Releases](https://github.com/NicolasCondezaR/sonda/releases) and unpack it.
-There is nothing to install: the binaries are static, with no Go toolchain and
-no system SQLite to provide.
+| | |
+|---|---|
+| **Go** | `go install github.com/NicolasCondezaR/sonda/cmd/sonda@latest` |
+| **Docker** | `docker run -p 9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
+| **Binary** | Download from [Releases](https://github.com/NicolasCondezaR/sonda/releases), unpack, run |
+| **Source** | `git clone` and `go build ./cmd/sonda` |
+
+The release archives carry four binaries, not one: `sonda`, the terminal client
+`sonda-tui`, and the two toy services `echo` and `grpcdemo` that the quick start
+below uses — so there is something to capture without wiring up your own.
 
 ```bash
 ./sonda            # the proxy and the interface, on http://127.0.0.1:9000
@@ -58,9 +66,14 @@ no system SQLite to provide.
 ./sonda-tui        # the terminal client
 ```
 
-The archive also carries `echo` and `grpcdemo`, the two toy services the rest of
-this quick start uses, so there is something to capture without wiring up your
-own.
+On macOS, Gatekeeper quarantines binaries downloaded from a browser. Either
+fetch them with `curl`, or clear it once:
+
+```bash
+xattr -d com.apple.quarantine sonda sonda-tui echo grpcdemo
+```
+
+## Quick start
 
 ### With Docker
 

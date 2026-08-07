@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/config"
 
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"sonda/internal/config"
-	"sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
 // These tests cover the seam, not the pieces. The store is tested against its

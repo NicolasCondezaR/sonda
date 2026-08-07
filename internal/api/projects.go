@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
-	"sonda/internal/discover"
-	"sonda/internal/protoschema"
-	"sonda/internal/store"
-	"sonda/internal/supervisor"
+	"github.com/NicolasCondezaR/sonda/internal/discover"
+	"github.com/NicolasCondezaR/sonda/internal/protoschema"
+	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/supervisor"
 )
 
 // maxDescriptorSet bounds an upload. A real descriptor set for a large monorepo

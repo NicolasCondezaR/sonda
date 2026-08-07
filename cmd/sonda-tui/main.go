@@ -15,7 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"sonda/internal/tui"
+	"github.com/NicolasCondezaR/sonda/internal/tui"
 )
 
 func main() {

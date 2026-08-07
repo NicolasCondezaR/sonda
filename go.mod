@@ -1,4 +1,4 @@
-module sonda
+module github.com/NicolasCondezaR/sonda
 
 go 1.26.0
 
