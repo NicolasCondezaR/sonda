@@ -16,9 +16,9 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"mirador/internal/config"
-	"mirador/internal/proxy"
-	"mirador/internal/store"
+	"sonda/internal/config"
+	"sonda/internal/proxy"
+	"sonda/internal/store"
 )
 
 const replayTimeout = 60 * time.Second
@@ -105,7 +105,7 @@ func (s *Server) target(name string) (config.Target, bool) {
 	return config.Target{}, false
 }
 
-// send replays through Mirador's own listener rather than straight at the
+// send replays through Sonda's own listener rather than straight at the
 // upstream. The replay is then captured like any other traffic: it appears in
 // the field, and it can be diffed against the call it came from.
 func (s *Server) send(ctx context.Context, call *store.Call, target config.Target) replayResponse {

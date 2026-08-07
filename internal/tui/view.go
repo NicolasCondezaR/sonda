@@ -50,12 +50,12 @@ func (m Model) View() string {
 
 func (m Model) renderUnreachable() string {
 	return lipgloss.JoinVertical(lipgloss.Left,
-		styleMasthead.Render("MIRADOR"),
+		styleMasthead.Render("SONDA"),
 		"",
 		styleFault.Render("Cannot reach the API."),
 		styleFaint.Render(m.err.Error()),
 		"",
-		styleFaint.Render("Is mirador running? Point this at it with -api."),
+		styleFaint.Render("Is sonda running? Point this at it with -api."),
 		"",
 		styleFaint.Render("q  quit"),
 	)

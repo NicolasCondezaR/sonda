@@ -1,4 +1,4 @@
-// Command mirador captures the traffic of the active project and serves the
+// Command sonda captures the traffic of the active project and serves the
 // interface that reads it.
 //
 // Which services are observed is not decided here. Projects live in the
@@ -21,11 +21,11 @@ import (
 	"syscall"
 	"time"
 
-	"mirador/internal/api"
-	"mirador/internal/config"
-	"mirador/internal/runtime"
-	"mirador/internal/store"
-	"mirador/internal/web"
+	"sonda/internal/api"
+	"sonda/internal/config"
+	"sonda/internal/runtime"
+	"sonda/internal/store"
+	"sonda/internal/web"
 )
 
 // version reports the revision Go already embeds at build time, so a binary
@@ -34,7 +34,7 @@ import (
 func version() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "mirador (unknown build)"
+		return "sonda (unknown build)"
 	}
 	var revision, modified string
 	for _, setting := range info.Settings {
@@ -52,23 +52,23 @@ func version() string {
 	// megabytes — so there is no revision to report there. Saying so beats
 	// printing a Go version alone and looking truncated.
 	if revision == "" {
-		return "mirador (built without VCS information) " + info.GoVersion
+		return "sonda (built without VCS information) " + info.GoVersion
 	}
 	if len(revision) > 12 {
 		revision = revision[:12]
 	}
-	return "mirador " + revision + modified + " " + info.GoVersion
+	return "sonda " + revision + modified + " " + info.GoVersion
 }
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("mirador stopped", "error", err)
+		slog.Error("sonda stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	configPath := flag.String("config", "mirador.yaml", "configuration file; its targets seed a fresh database")
+	configPath := flag.String("config", "sonda.yaml", "configuration file; its targets seed a fresh database")
 	showVersion := flag.Bool("version", false, "print the build this binary came from and exit")
 	flag.Parse()
 
@@ -132,7 +132,7 @@ func run() error {
 		}
 	}()
 
-	slog.Info("mirador ready", "ui", "http://"+cfg.APIListen, "database", cfg.Database)
+	slog.Info("sonda ready", "ui", "http://"+cfg.APIListen, "database", cfg.Database)
 
 	select {
 	case err := <-fail:

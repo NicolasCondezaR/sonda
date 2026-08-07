@@ -1,4 +1,4 @@
-/* Mirador — the instrument face. See DESIGN.md for the system this implements. */
+/* Sonda — the instrument face. See DESIGN.md for the system this implements. */
 
 :root {
   --case: #14171c;
@@ -713,7 +713,7 @@ body {
 .svc__state--on { color: var(--armed); }
 .svc__state--off { color: var(--fault); }
 
-/* The line that makes the caller talk through Mirador. It is the one step no
+/* The line that makes the caller talk through Sonda. It is the one step no
    configuration screen removes, so it is handed over rather than explained. */
 .svc__point {
   grid-column: 1 / -1;

@@ -1,7 +1,7 @@
 // Package proxy sits between a local client and one upstream service, forwards
 // the exchange untouched, and hands a copy to the recorder.
 //
-// Forwarding fidelity comes first. Mirador is a debugger: if it alters what the
+// Forwarding fidelity comes first. Sonda is a debugger: if it alters what the
 // upstream receives or what the client sees, every conclusion drawn from it is
 // worthless. Capture is a side effect of the copy, never a step in it.
 package proxy
@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"mirador/internal/config"
-	"mirador/internal/store"
+	"sonda/internal/config"
+	"sonda/internal/store"
 )
 
 // Recorder is the sink for captured calls. It is an interface so the proxy can
@@ -65,7 +65,7 @@ func New(target config.Target, maxBody int64, recorder Recorder) *Proxy {
 			if ex := exchangeFrom(r.Context()); ex != nil {
 				ex.err = err
 			}
-			// 502 is Mirador's answer, not the upstream's. The recorded call
+			// 502 is Sonda's answer, not the upstream's. The recorded call
 			// carries the transport error so the distinction survives.
 			http.Error(w, explainUpstreamFailure(target, upstream.String(), err), http.StatusBadGateway)
 		},
@@ -267,7 +267,7 @@ func (b *capturingBody) Read(p []byte) (int, error) {
 func (b *capturingBody) Close() error { return b.source.Close() }
 
 // statusRecorder remembers the status line so the captured call reports what
-// the client actually received, including the 502 Mirador writes itself.
+// the client actually received, including the 502 Sonda writes itself.
 type statusRecorder struct {
 	http.ResponseWriter
 	status  int

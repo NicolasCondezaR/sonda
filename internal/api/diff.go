@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"mirador/internal/calldiff"
-	"mirador/internal/config"
-	"mirador/internal/store"
+	"sonda/internal/calldiff"
+	"sonda/internal/config"
+	"sonda/internal/store"
 )
 
 type diffResult struct {

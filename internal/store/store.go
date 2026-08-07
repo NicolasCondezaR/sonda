@@ -20,7 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Message is one side of an exchange: the headers, the bytes Mirador kept, and
+// Message is one side of an exchange: the headers, the bytes Sonda kept, and
 // how many bytes actually crossed the wire.
 type Message struct {
 	Headers   http.Header

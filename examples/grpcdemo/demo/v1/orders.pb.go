@@ -501,7 +501,7 @@ const file_demo_v1_orders_proto_rawDesc = "" +
 	"\n" +
 	"ListOrders\x12\x1a.demo.v1.ListOrdersRequest\x1a\x0e.demo.v1.Order0\x01\x12>\n" +
 	"\fCreateOrders\x12\x0e.demo.v1.Order\x1a\x1c.demo.v1.CreateOrdersSummary(\x01\x12,\n" +
-	"\x04Fail\x12\x14.demo.v1.FailRequest\x1a\x0e.demo.v1.OrderB#Z!mirador/examples/grpcdemo/demo/v1b\x06proto3"
+	"\x04Fail\x12\x14.demo.v1.FailRequest\x1a\x0e.demo.v1.OrderB!Z\x1fsonda/examples/grpcdemo/demo/v1b\x06proto3"
 
 var (
 	file_demo_v1_orders_proto_rawDescOnce sync.Once

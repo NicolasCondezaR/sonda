@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"mirador/internal/config"
-	"mirador/internal/proxy"
-	"mirador/internal/runtime"
-	"mirador/internal/store"
+	"sonda/internal/config"
+	"sonda/internal/proxy"
+	"sonda/internal/runtime"
+	"sonda/internal/store"
 )
 
 // liveStack wires a real proxy in front of a real upstream and a real API, so a
@@ -186,7 +186,7 @@ func TestReplaySendsTheOriginalRequestByteForByte(t *testing.T) {
 		if got := req.Header.Get("X-Request-Id"); got != "original" {
 			t.Errorf("original headers were not carried over: X-Request-Id = %q", got)
 		}
-		// The marker Mirador adds must never reach the upstream.
+		// The marker Sonda adds must never reach the upstream.
 		if got := req.Header.Get(proxy.ReplayHeader); got != "" {
 			t.Errorf("the replay marker leaked to the upstream: %q", got)
 		}

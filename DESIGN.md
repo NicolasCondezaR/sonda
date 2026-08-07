@@ -1,5 +1,5 @@
 ---
-name: Mirador
+name: Sonda
 description: A logic analyzer for service traffic — calls are events on per-service channels against a live time axis.
 colors:
   case: "#14171c"
@@ -80,7 +80,7 @@ components:
 
 ## Overview
 
-Mirador is an instrument, and the interface is the instrument's face. The
+Sonda is an instrument, and the interface is the instrument's face. The
 organizing metaphor is a **logic analyzer**: each observed service is a channel,
 each captured call is an event on that channel, and everything is plotted
 against a live time axis that advances on its own.

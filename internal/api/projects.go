@@ -9,10 +9,10 @@ import (
 	"strconv"
 	"strings"
 
-	"mirador/internal/discover"
-	"mirador/internal/protoschema"
-	"mirador/internal/store"
-	"mirador/internal/supervisor"
+	"sonda/internal/discover"
+	"sonda/internal/protoschema"
+	"sonda/internal/store"
+	"sonda/internal/supervisor"
 )
 
 // maxDescriptorSet bounds an upload. A real descriptor set for a large monorepo
@@ -43,7 +43,7 @@ type serviceJSON struct {
 	Running bool   `json:"running"`
 	Error   string `json:"error,omitempty"`
 
-	// PointAt is the line that makes the caller talk through Mirador. Handing
+	// PointAt is the line that makes the caller talk through Sonda. Handing
 	// it over beats explaining it: the address is the one thing a person cannot
 	// derive without reading the configuration back.
 	PointAt string `json:"point_at"`
@@ -96,7 +96,7 @@ func toProjectJSON(p store.Project, status map[string]supervisor.Status) project
 
 // pointAt writes the environment variable that redirects the caller.
 //
-// Mirador is an explicit proxy: it sees nothing until whoever makes the call is
+// Sonda is an explicit proxy: it sees nothing until whoever makes the call is
 // told to call it instead. That is the one step no amount of configuration
 // screen removes, so the least it can do is hand over the exact line.
 func pointAt(svc store.Service) string {

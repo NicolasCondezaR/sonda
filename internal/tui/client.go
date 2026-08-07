@@ -283,7 +283,7 @@ func (c *Client) Replay(ctx context.Context, id int64) (*ReplayResult, error) {
 
 // Stream follows the live feed and pushes each call onto the channel. It
 // reconnects on its own: the point of the terminal client is to be left open,
-// and a restarted Mirador should not leave it silently dead.
+// and a restarted Sonda should not leave it silently dead.
 func (c *Client) Stream(ctx context.Context, out chan<- Call) {
 	for ctx.Err() == nil {
 		c.streamOnce(ctx, out)

@@ -17,9 +17,9 @@ import (
 
 	"google.golang.org/grpc/codes"
 
-	"mirador/internal/config"
-	"mirador/internal/runtime"
-	"mirador/internal/store"
+	"sonda/internal/config"
+	"sonda/internal/runtime"
+	"sonda/internal/store"
 )
 
 type Dropper interface {
@@ -236,7 +236,7 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 // listSchemas reports what each gRPC target's schema resolution produced. It
 // answers the question the tool would otherwise leave hanging: field names are
 // missing, and is that because reflection is off, the descriptor set is stale,
-// or the service was down when Mirador asked?
+// or the service was down when Sonda asked?
 func (s *Server) listSchemas(w http.ResponseWriter, r *http.Request) {
 	type schemaStatus struct {
 		Target        string `json:"target"`

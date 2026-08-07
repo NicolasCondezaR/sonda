@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"mirador/internal/config"
-	"mirador/internal/store"
+	"sonda/internal/config"
+	"sonda/internal/store"
 )
 
 type collector struct {

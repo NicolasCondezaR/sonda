@@ -5,7 +5,7 @@
 // and that framing does not line up with HTTP/2 frames — one HTTP/2 DATA frame
 // can hold several messages, or a fraction of one. Deframe recovers the message
 // boundaries. Explain then reads a single message straight off the wire format,
-// which is what lets Mirador show something useful even when no schema is
+// which is what lets Sonda show something useful even when no schema is
 // available.
 package grpcwire
 
@@ -24,7 +24,7 @@ import (
 const headerSize = 5
 
 type Frame struct {
-	// Compressed reports the frame's compression flag. Mirador does not
+	// Compressed reports the frame's compression flag. Sonda does not
 	// decompress: the encoding lives in the grpc-encoding header and is
 	// negotiated per call, so a compressed payload is reported honestly rather
 	// than guessed at.

@@ -10,18 +10,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestAgainstLiveAPI renders a frame from a running mirador.
+// TestAgainstLiveAPI renders a frame from a running sonda.
 //
 // Every other test in this package feeds the model hand-made structs, which
 // proves the rendering but not the part most likely to be wrong: that the JSON
 // coming off the API actually lands in the fields this package reads. Set
-// MIRADOR_API to run it.
+// SONDA_API to run it.
 //
-//	MIRADOR_API=http://127.0.0.1:9000 go test ./internal/tui/ -run Live -v
+//	SONDA_API=http://127.0.0.1:9000 go test ./internal/tui/ -run Live -v
 func TestAgainstLiveAPI(t *testing.T) {
-	base := os.Getenv("MIRADOR_API")
+	base := os.Getenv("SONDA_API")
 	if base == "" {
-		t.Skip("set MIRADOR_API to check the terminal client against a running mirador")
+		t.Skip("set SONDA_API to check the terminal client against a running sonda")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
