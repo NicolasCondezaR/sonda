@@ -46,6 +46,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Writing the cask and the Scoop manifest means committing to
+          # homebrew-tap and scoop-bucket, which are other repositories.
+          # GITHUB_TOKEN is scoped to this one by design, so it cannot.
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
 
   image:
     needs: test
