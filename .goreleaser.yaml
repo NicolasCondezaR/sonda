@@ -1,0 +1,106 @@
+# Release build.
+#
+# Every binary here is pure Go — the SQLite driver is `modernc.org/sqlite`,
+# chosen precisely so there is no cgo — which is why six platforms cross-compile
+# from one runner without a C toolchain in sight.
+#
+# The archives carry all four binaries, not just the proxy. The quick start in
+# the README builds `echo` and `grpcdemo` from source to have something to
+# capture; shipping them means someone who downloaded a zip can follow it
+# without installing Go, which is the whole point of publishing binaries.
+version: 2
+
+project_name: sonda
+
+before:
+  hooks:
+    # Download, not tidy: a release must build what the tag says, and a hook
+    # that can rewrite go.mod mid-release is a way to ship something the tag
+    # never contained.
+    - go mod download
+
+builds:
+  - id: sonda
+    main: ./cmd/sonda
+    binary: sonda
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    # Only this binary carries the tag: it is the one with -version, and
+    # setting a symbol the others do not define would be noise.
+    ldflags:
+      - -s -w -X main.release={{ .Tag }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+  - id: sonda-tui
+    main: ./cmd/sonda-tui
+    binary: sonda-tui
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+  - id: echo
+    main: ./examples/echo
+    binary: echo
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+  - id: grpcdemo
+    main: ./examples/grpcdemo
+    binary: grpcdemo
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: sonda
+    ids: [sonda, sonda-tui, echo, grpcdemo]
+    name_template: "sonda_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - README.es.md
+      - LICENSE
+      - sonda.example.yaml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  # A tag with a hyphen (v0.2.0-rc1) is marked as a prerelease; a plain one is
+  # not. Nothing to remember at tag time.
+  prerelease: auto
+  footer: |
+    ---
+
+    ## Instalación
+
+    Descarga el archivo de tu plataforma, descomprímelo y ejecuta `sonda`. No
+    hay nada que instalar: los binarios son estáticos y no dependen de Go ni de
+    una biblioteca de SQLite en el sistema.
+
+    ```
+    ./sonda            # el proxy y la interfaz, en http://127.0.0.1:9000
+    ./sonda -version   # qué build es este
+    ./sonda-tui        # el cliente de terminal
+    ```
+
+    El archivo trae también `echo` y `grpcdemo`, los dos servicios de ejemplo
+    que usa el arranque rápido del README, para poder ver tráfico capturado sin
+    tener que levantar nada propio.
+
+    Verifica la descarga con `checksums.txt`.

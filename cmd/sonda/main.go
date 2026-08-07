@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,13 +29,25 @@ import (
 	"sonda/internal/web"
 )
 
-// version reports the revision Go already embeds at build time, so a binary
-// copied onto another machine can still say which commit it is. No ldflags to
-// remember and no generated file to keep in sync.
+// release is the tag this binary was cut from, set only by the release build
+// with -ldflags="-X main.release=v0.1.0". A plain `go build` leaves it empty,
+// which is the honest answer: a build off a working tree is not a release, and
+// a binary that claims a version it was not cut from is worse than one that
+// admits it does not know.
+var release string
+
+// version reports the tag when there is one and the revision Go already embeds
+// at build time, so a binary copied onto another machine can still say what it
+// is. The revision needs no ldflags and no generated file to keep in sync.
 func version() string {
+	parts := []string{"sonda"}
+	if release != "" {
+		parts = append(parts, release)
+	}
+
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return "sonda (unknown build)"
+		return strings.Join(append(parts, "(unknown build)"), " ")
 	}
 	var revision, modified string
 	for _, setting := range info.Settings {
@@ -52,12 +65,14 @@ func version() string {
 	// megabytes — so there is no revision to report there. Saying so beats
 	// printing a Go version alone and looking truncated.
 	if revision == "" {
-		return "sonda (built without VCS information) " + info.GoVersion
+		parts = append(parts, "(built without VCS information)")
+	} else {
+		if len(revision) > 12 {
+			revision = revision[:12]
+		}
+		parts = append(parts, revision+modified)
 	}
-	if len(revision) > 12 {
-		revision = revision[:12]
-	}
-	return "sonda " + revision + modified + " " + info.GoVersion
+	return strings.Join(append(parts, info.GoVersion), " ")
 }
 
 func main() {

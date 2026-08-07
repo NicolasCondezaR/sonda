@@ -46,6 +46,23 @@ Dos propiedades sostienen el diseño:
 
 ## Inicio rápido
 
+### Desde un release
+
+Descarga el archivo de tu plataforma desde
+[Releases](https://github.com/NicolasCondezaR/sonda/releases) y descomprímelo.
+No hay nada que instalar: los binarios son estáticos, no necesitan Go ni una
+biblioteca de SQLite en el sistema.
+
+```bash
+./sonda            # el proxy y la interfaz, en http://127.0.0.1:9000
+./sonda -version   # qué build es este
+./sonda-tui        # el cliente de terminal
+```
+
+El archivo trae también `echo` y `grpcdemo`, los dos servicios de juguete que
+usa el resto de este inicio rápido, para tener algo que capturar sin levantar
+nada propio.
+
 ### Con Docker
 
 ```bash
