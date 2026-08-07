@@ -2,7 +2,8 @@
 
 A capturing proxy for local development traffic. Point a client at Sonda
 instead of the service it talks to, and every request and response that crosses
-it becomes searchable.
+it becomes searchable — arranged into the request it belonged to, replayable,
+comparable, and readable by a coding agent as well as by you.
 
 It exists because debugging between services usually means reading logs from
 several containers, none of which contain the payload. `mitmproxy` solves this
@@ -17,9 +18,10 @@ this is aimed at.
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
 > **Status: phase 11.** Capture, decoding, storage, search, the query API, the
-> web interface, replay, structural diff, a terminal client, project management
-> and an [MCP server for coding agents](#agents) all work, and the whole thing
-> runs from `docker compose up`. See [Roadmap](#roadmap).
+> web interface, replay, structural diff, a terminal client, project management,
+> [request trees](#agents), [stub mode](#stub-mode) and an
+> [MCP server for coding agents](#agents) all work, and the whole thing runs
+> from `docker compose up`. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -646,11 +648,13 @@ host. See `sonda.docker.yaml`.
 | `GET /api/projects` | Projects, their services, and what is really listening. |
 | `POST /api/projects` | Create one. `PATCH`/`DELETE /api/projects/{id}` rename and remove. |
 | `POST /api/projects/{id}/activate` | Close the current project's ports and open this one's. |
+| `POST /api/projects/deactivate` | Close every port. Nothing is deleted and activating brings it all back. |
 | `POST /api/projects/{id}/descriptor` | Upload the compiled schemas for the whole project. |
 | `POST /api/projects/{id}/services` | Add or update a service. `DELETE /api/services/{id}` removes one. |
 | `POST /api/discover` | Read services out of a `.env` or compose file without saving anything. |
 | `GET /api/runtime` | Which project is active and what is really listening. |
 | `GET /api/stats` | Capture count, time span, and calls dropped under load. |
+| `GET /api/stream` | Server-sent events: every capture the moment it is stored. What the live field reads. |
 | `GET /health` | Liveness. |
 
 The listing deliberately carries no bodies — a few hundred calls with payloads
@@ -706,6 +710,9 @@ operators.
 - A truncated capture cannot be replayed; the refusal is deliberate.
 - The interface has no cursors and no trigger — two devices a real instrument
   has, and the obvious next reach.
+- The web interface does not yet draw the request tree or flag a stubbed
+  answer. Both are in the API and in the MCP tools; the field still shows a flat
+  list, which is a gap and not a decision.
 
 ## Development
 
