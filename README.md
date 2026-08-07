@@ -16,7 +16,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 10.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 11.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management
 > and an [MCP server for coding agents](#agents) all work, and the whole thing
 > runs from `docker compose up`. See [Roadmap](#roadmap).
@@ -502,6 +502,7 @@ that is already running, so it is still the same data:
 | `configure_service` | Add or fix one service |
 | `activate_project` | Open the ports. Asks first |
 | `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
+| `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
 
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
 the agent makes a change, triggers the action, and waits for what should have
@@ -556,6 +557,48 @@ The HTTP endpoint refuses requests carrying a foreign `Origin`, which is what
 stops a page in your own browser from reaching it through DNS rebinding and
 reading your captures.
 
+## Stub mode
+
+Sonda already holds the exact bytes of every response a service ever gave. Handing
+them back instead of forwarding turns the same tool into something else:
+
+- Work on the front while its backend is down
+- Run a test without twenty-one processes
+- Reproduce a bug from a capture, on a laptop, without the environment that made it
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/stub   -d '{"service":"ms-rates","enabled":true}'
+```
+
+From an agent, `set_stub` does the same. It asks first — a service quietly
+answering from last week is exactly the kind of surprise worth confirming.
+
+### Why it cannot be mistaken for the real thing
+
+A recorded answer that passes for a live one is the failure this feature has to
+avoid, so four things make that hard to do by accident:
+
+- Every stubbed response carries **`X-Sonda-Stub: <call id>`**
+- The exchange is still captured, linked back to the recording it came from, so
+  the field never shows traffic that never happened as though it had
+- **Stubbing is forgotten when Sonda restarts.** It is never written to the
+  database: a stub that outlives a restart is one nobody remembers turning on
+- A request with no recording gets a **501 that explains itself**, not an
+  invented answer and not a silent empty 200
+
+### Which recording answers
+
+An identical request body wins outright — that is the difference between
+replaying *the answer to GetOrder* and *the answer to GetOrder(ORD-1)*, and a
+test handed somebody else's order is worse off than one handed an error. Failing
+that, the most recent call to the same method and path.
+
+Captures that were themselves stubbed are never reused. Without that, leaving
+stubbing on would slowly feed Sonda its own answers.
+
+gRPC works too: the recorded trailers are replayed, so the client gets the real
+`grpc-status` instead of waiting for one that never comes.
+
 ## Configuration
 
 Copy `sonda.example.yaml` to `sonda.yaml` and add one entry per service.
@@ -598,6 +641,8 @@ host. See `sonda.docker.yaml`.
 | `POST /api/calls/{id}/replay` | Send the call again, optionally onto another channel. |
 | `GET /api/diff?a=&b=` | Structural comparison of two calls. |
 | `GET /api/trace?call=` | The whole request a call belonged to, as a tree. |
+| `GET /api/stub` | Which services are answering from recordings. |
+| `POST /api/stub` | Turn stubbing on or off for a service, or clear it. |
 | `GET /api/projects` | Projects, their services, and what is really listening. |
 | `POST /api/projects` | Create one. `PATCH`/`DELETE /api/projects/{id}` rename and remove. |
 | `POST /api/projects/{id}/activate` | Close the current project's ports and open this one's. |
@@ -650,6 +695,7 @@ operators.
 | 8 | MCP server, so a coding agent reads the captures itself | done |
 | 9 | Configuration over MCP: connect a whole project by asking | done |
 | 10 | Correlation: the calls of one request, arranged as a tree | done |
+| 11 | Stub mode: answer from a recording instead of forwarding | done |
 
 ### Limitations
 

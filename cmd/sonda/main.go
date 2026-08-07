@@ -27,6 +27,7 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/mcp"
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/stub"
 	"github.com/NicolasCondezaR/sonda/internal/web"
 )
 
@@ -193,8 +194,9 @@ func run() error {
 	}
 
 	recorder := store.NewRecorder(db, cfg.BufferSize)
-	rt := runtime.New(db, recorder, cfg.MaxBodyBytes)
-	apiServer := api.New(db, recorder, rt)
+	stubs := stub.New(db)
+	rt := runtime.New(db, recorder, cfg.MaxBodyBytes).WithStubs(stubs)
+	apiServer := api.New(db, recorder, rt).WithStubs(stubs)
 
 	// Wire the live view before anything starts reading from the recorder.
 	// Registering the hook once Run is already going is a data race on the

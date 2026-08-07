@@ -92,6 +92,23 @@ func configureTools() []Tool {
 		},
 
 		{
+			Name:  "set_stub",
+			Title: "Answer for a service from recordings",
+			Description: "Stop forwarding to a service and answer from what Sonda already recorded of it. Use it to work while that service is down, to make a test deterministic, or to reproduce something without the environment that produced it. " +
+				"A request with no recording gets a 501 saying so rather than an invented answer. Every stubbed answer carries an X-Sonda-Stub header, and stubbing is forgotten when Sonda restarts.",
+			Schema: obj(map[string]any{
+				"service": prop("string", "Service name. Leave it out together with clear:true to put everything back to live traffic."),
+				"enabled": prop("boolean", "True to answer from recordings, false to forward again."),
+				"clear":   prop("boolean", "Put every service back to live traffic at once."),
+			}),
+			// Not destructive in the sense of deleting anything, but a service
+			// quietly answering from last week is exactly the surprise worth
+			// asking about first.
+			Annotations: changing,
+			Run:         setStub,
+		},
+
+		{
 			Name:  "disconnect_project",
 			Title: "Close the ports and undo the pointing",
 			Description: "Stop observing: closes every port and returns the variable changes that put things back the way they were, so whatever you repointed can be pointed at the real services again. " +
@@ -378,3 +395,21 @@ func projectID(ctx context.Context, s *Server, name string) (int64, error) {
 }
 
 func quote(s string) string { return strconv.Quote(s) }
+
+func setStub(ctx context.Context, s *Server, a args) (any, error) {
+	if a.boolean("clear") {
+		return s.post(ctx, "/api/stub", []byte(`{"clear":true}`))
+	}
+	service := a.str("service")
+	if service == "" {
+		return nil, fmt.Errorf("which service? pass its name, or clear:true to put everything back")
+	}
+	if !a.has("enabled") {
+		return nil, fmt.Errorf("pass enabled:true to answer from recordings, or enabled:false to forward again")
+	}
+	body, err := json.Marshal(map[string]any{"service": service, "enabled": a.boolean("enabled")})
+	if err != nil {
+		return nil, err
+	}
+	return s.post(ctx, "/api/stub", body)
+}

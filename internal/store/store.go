@@ -64,6 +64,12 @@ type Call struct {
 	// it belongs to. Read, never invented: an id Sonda made up would group
 	// calls by nothing and look exactly as authoritative as a real one.
 	TraceID string
+
+	// StubOf points at the capture this answer was replayed from, when the
+	// service was not called at all. It is the difference between a recording
+	// and a fact, and everything that displays a call has to be able to tell
+	// them apart.
+	StubOf *int64
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -85,6 +91,7 @@ type Summary struct {
 	ReplayOf     *int64
 	Project      string
 	TraceID      string
+	StubOf       *int64
 }
 
 type Filter struct {
@@ -158,6 +165,7 @@ var addedColumns = map[string]string{
 	"replay_of":     `ALTER TABLE calls ADD COLUMN replay_of INTEGER`,
 	"project":       `ALTER TABLE calls ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
 	"trace_id":      `ALTER TABLE calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`,
+	"stub_of":       `ALTER TABLE calls ADD COLUMN stub_of INTEGER`,
 }
 
 func migrate(db *sql.DB) error {
@@ -249,14 +257,15 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			target, protocol, method, path, status, client_addr, started_at,
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
-			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
+			stub_of
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
-		c.Project, c.TraceID,
+		c.Project, c.TraceID, nullableInt64(c.StubOf),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -330,7 +339,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of, project, trace_id
+		       replay_of, project, trace_id, stub_of
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -352,17 +361,19 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 			durationUS int64
 			grpcStatus sql.NullInt64
 			replayOf   sql.NullInt64
+			stubOf     sql.NullInt64
 		)
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
-			&replayOf, &s.Project, &s.TraceID); err != nil {
+			&replayOf, &s.Project, &s.TraceID, &stubOf); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
 		s.Duration = time.Duration(durationUS) * time.Microsecond
 		s.GRPCStatus = int32OrNil(grpcStatus)
 		s.ReplayOf = int64OrNil(replayOf)
+		s.StubOf = int64OrNil(stubOf)
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -374,19 +385,20 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		startedAt, durationUS               int64
 		reqHeaders, respHeader, respTrailer string
 		reqTrunc, respTrunc                 int
-		grpcStatus, replayOf                sql.NullInt64
+		grpcStatus, replayOf, stubOf        sql.NullInt64
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, target, protocol, method, path, status, client_addr, started_at,
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
-		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id
+		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
+		       stub_of
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID)
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf)
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +409,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 	c.Response.Truncated = respTrunc != 0
 	c.GRPCStatus = int32OrNil(grpcStatus)
 	c.ReplayOf = int64OrNil(replayOf)
+	c.StubOf = int64OrNil(stubOf)
 	if c.Request.Headers, err = decodeHeaders(reqHeaders); err != nil {
 		return nil, err
 	}
@@ -687,4 +700,34 @@ func int32OrNil(v sql.NullInt64) *int32 {
 	}
 	n := int32(v.Int64)
 	return &n
+}
+
+// MatchForStub finds a recorded answer for a request the service is not going
+// to be asked.
+//
+// The ordering is the whole design. An identical request body wins outright,
+// because that is the difference between replaying "the response to GetOrder"
+// and replaying "the response to GetOrder(ORD-1)" — and a test that gets the
+// wrong order back is worse off than one that got an error. Failing that, the
+// most recent call to the same method and path is the best available guess.
+//
+// Captures that were themselves stubbed are excluded. Without that, turning
+// stubbing on and leaving it on would slowly feed Sonda its own answers, and
+// the recording would drift from anything a service ever really said.
+func (s *Store) MatchForStub(ctx context.Context, target, method, path string, body []byte) (*Call, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM calls
+		WHERE target = ? AND method = ? AND path = ? AND stub_of IS NULL
+		ORDER BY (req_body = ?) DESC, id DESC
+		LIMIT 1`,
+		target, method, path, body,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("look for a recorded answer: %w", err)
+	}
+	return s.Get(ctx, id)
 }
