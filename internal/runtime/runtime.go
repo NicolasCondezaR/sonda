@@ -32,11 +32,19 @@ type Runtime struct {
 	// project, for callers that own their own sockets.
 	listenersDisabled bool
 
+	// stubs decides, per service, whether to answer from a recording instead
+	// of forwarding. Nil means always forward.
+	stubs proxy.Stubs
+
 	mu        sync.RWMutex
 	active    *store.Project
 	resolvers map[string]*protoschema.Resolver
 	status    []supervisor.Status
 }
+
+// WithStubs lets the runtime answer for services from recordings. Separate
+// from New because stubbing is an opt-in state, not part of being a runtime.
+func (r *Runtime) WithStubs(s proxy.Stubs) *Runtime { r.stubs = s; return r }
 
 func New(db *store.Store, recorder proxy.Recorder, maxBody int64) *Runtime {
 	return &Runtime{
@@ -114,7 +122,7 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 		p := proxy.New(target, r.maxBody, taggedRecorder{
 			inner:   r.recorder,
 			project: project.Name,
-		})
+		}, r.stubs)
 		desired = append(desired, supervisor.Desired{
 			// Keyed by service id, so renaming a service does not close its
 			// port and moving it to another port does.

@@ -20,6 +20,7 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/stub"
 )
 
 type Dropper interface {
@@ -31,7 +32,14 @@ type Server struct {
 	dropped Dropper
 	hub     *Hub
 	rt      *runtime.Runtime
+
+	// stubs is nil when nothing wired one in, which is how every test that
+	// does not care about stubbing keeps working.
+	stubs *stub.Registry
 }
+
+// WithStubs gives the server control of which services answer from recordings.
+func (s *Server) WithStubs(r *stub.Registry) *Server { s.stubs = r; return s }
 
 func New(s *store.Store, dropped Dropper, rt *runtime.Runtime) *Server {
 	return &Server{store: s, dropped: dropped, rt: rt, hub: NewHub()}
@@ -75,6 +83,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/calls/{id}/replay", s.replayCall)
 	mux.HandleFunc("GET /api/diff", s.diffCalls)
 	mux.HandleFunc("GET /api/trace", s.traceForCall)
+	mux.HandleFunc("GET /api/stub", s.stubState)
+	mux.HandleFunc("POST /api/stub", s.setStub)
 
 	mux.HandleFunc("GET /api/projects", s.listProjects)
 	mux.HandleFunc("POST /api/projects", s.createProject)

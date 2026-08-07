@@ -32,8 +32,12 @@ type Proxy struct {
 	target   config.Target
 	maxBody  int64
 	recorder Recorder
-	reverse  *httputil.ReverseProxy
-	handler  http.Handler
+
+	// stubs is nil unless something wired one in, and a nil one never stubs:
+	// forwarding is what a proxy does until told otherwise.
+	stubs   Stubs
+	reverse *httputil.ReverseProxy
+	handler http.Handler
 }
 
 // exchange collects both halves of one call while it is in flight.
@@ -46,8 +50,8 @@ type exchange struct {
 
 type ctxKey struct{}
 
-func New(target config.Target, maxBody int64, recorder Recorder) *Proxy {
-	p := &Proxy{target: target, maxBody: maxBody, recorder: recorder}
+func New(target config.Target, maxBody int64, recorder Recorder, stubs Stubs) *Proxy {
+	p := &Proxy{target: target, maxBody: maxBody, recorder: recorder, stubs: stubs}
 	upstream := target.UpstreamURL()
 
 	p.reverse = &httputil.ReverseProxy{
@@ -100,6 +104,13 @@ func (p *Proxy) Handler() http.Handler { return p.handler }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+
+	// Answering from a recording happens before anything else: there is no
+	// upstream request to capture, so none of the machinery below applies.
+	if p.serveFromCapture(w, r, started) {
+		return
+	}
+
 	ex := &exchange{
 		request:  newCapture(p.maxBody),
 		response: newCapture(p.maxBody),

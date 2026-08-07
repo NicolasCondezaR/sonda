@@ -48,7 +48,7 @@ func startGRPCProxy(t *testing.T, upstreamAddr string) (demov1.OrdersClient, *co
 		Upstream: "http://" + upstreamAddr,
 		Protocol: config.ProtocolGRPC,
 	}
-	front := httptest.NewServer(New(target, 1<<20, rec).Handler())
+	front := httptest.NewServer(New(target, 1<<20, rec, nil).Handler())
 	t.Cleanup(front.Close)
 
 	conn, err := grpc.NewClient(front.Listener.Addr().String(),
@@ -290,7 +290,7 @@ func TestGRPCTargetClassifiesPlainHTTPByContentType(t *testing.T) {
 		Upstream: upstream.URL,
 		Protocol: config.ProtocolGRPC,
 	}
-	front := httptest.NewServer(New(target, 1024, rec).Handler())
+	front := httptest.NewServer(New(target, 1024, rec, nil).Handler())
 	defer front.Close()
 
 	resp, err := front.Client().Get(front.URL + "/healthz")
@@ -325,7 +325,7 @@ func TestGRPCTargetPointedAtAnHTTP1UpstreamSaysSo(t *testing.T) {
 		Upstream: upstream.URL,
 		Protocol: config.ProtocolGRPC,
 	}
-	front := httptest.NewServer(New(target, 1024, rec).Handler())
+	front := httptest.NewServer(New(target, 1024, rec, nil).Handler())
 	defer front.Close()
 
 	resp, err := front.Client().Get(front.URL + "/anything")

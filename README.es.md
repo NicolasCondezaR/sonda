@@ -16,7 +16,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 10.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 11.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos y un [servidor MCP para agentes de
 > código](#agentes) funcionan, y todo se levanta con `docker compose up`.
@@ -515,6 +515,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `configure_service` | Agrega o corrige un servicio |
 | `activate_project` | Abre los puertos. Pregunta antes |
 | `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
+| `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
@@ -569,6 +570,49 @@ El endpoint HTTP rechaza las peticiones que traen un `Origin` ajeno, que es lo
 que impide que una página abierta en tu propio navegador llegue hasta él por DNS
 rebinding y lea tus capturas.
 
+## Modo stub
+
+Sonda ya tiene los bytes exactos de cada respuesta que un servicio dio alguna vez.
+Devolverlos en vez de reenviar convierte la misma herramienta en otra cosa:
+
+- Trabajar en el front con su backend apagado
+- Correr un test sin levantar veintiún procesos
+- Reproducir un bug desde una captura, en un portátil, sin el entorno que lo produjo
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/stub   -d '{"service":"ms-rates","enabled":true}'
+```
+
+Desde un agente, `set_stub` hace lo mismo. Pregunta antes: un servicio
+respondiendo calladamente desde la semana pasada es justo la sorpresa que
+conviene confirmar.
+
+### Por qué no se puede confundir con lo real
+
+Una respuesta grabada que pasa por viva es el fallo que esta función tiene que
+evitar, así que cuatro cosas lo hacen difícil por accidente:
+
+- Toda respuesta desde stub lleva **`X-Sonda-Stub: <id de la captura>`**
+- El intercambio se captura igual, enlazado a la grabación de la que salió, así
+  el campo nunca muestra como ocurrido un tráfico que no ocurrió
+- **El stub se olvida al reiniciar Sonda.** Nunca se escribe en la base: un stub
+  que sobrevive a un reinicio es uno que nadie recuerda haber encendido
+- Una petición sin grabación recibe un **501 que se explica**, no una respuesta
+  inventada ni un 200 vacío en silencio
+
+### Qué grabación responde
+
+Un cuerpo de request idéntico gana de plano — esa es la diferencia entre
+reproducir *la respuesta a GetOrder* y *la respuesta a GetOrder(ORD-1)*, y un
+test al que le entregan el pedido de otro está peor que uno al que le entregan un
+error. Si no hay ninguno, la llamada más reciente al mismo método y ruta.
+
+Las capturas que fueron ellas mismas un stub nunca se reutilizan. Sin eso, dejar
+el stub encendido iría alimentando a Sonda con sus propias respuestas.
+
+gRPC también funciona: los trailers grabados se reproducen, así el cliente recibe
+el `grpc-status` real en vez de esperar uno que no llega.
+
 ## Configuración
 
 Copia `sonda.example.yaml` a `sonda.yaml` y agrega una entrada por servicio.
@@ -612,6 +656,8 @@ en el host. Ver `sonda.docker.yaml`.
 | `POST /api/calls/{id}/replay` | Reenvía la llamada, opcionalmente a otro canal. |
 | `GET /api/diff?a=&b=` | Comparación estructural de dos llamadas. |
 | `GET /api/trace?call=` | La petición completa a la que perteneció una llamada, como árbol. |
+| `GET /api/stub` | Qué servicios están respondiendo desde grabaciones. |
+| `POST /api/stub` | Activar o desactivar el stub de un servicio, o limpiarlo todo. |
 | `GET /api/projects` | Los proyectos, sus servicios y qué está escuchando de verdad. |
 | `POST /api/projects` | Crear uno. `PATCH`/`DELETE /api/projects/{id}` renombran y borran. |
 | `POST /api/projects/{id}/activate` | Cierra los puertos del proyecto actual y abre los de este. |
@@ -667,6 +713,7 @@ leerse como operadores de consulta.
 | 8 | Servidor MCP, para que un agente de código lea las capturas por su cuenta | listo |
 | 9 | Configuración por MCP: conectar un proyecto entero pidiéndolo | listo |
 | 10 | Correlación: las llamadas de una petición, ordenadas como árbol | listo |
+| 11 | Modo stub: responder desde una grabación en vez de reenviar | listo |
 
 ### Limitaciones
 
