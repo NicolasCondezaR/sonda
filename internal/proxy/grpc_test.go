@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -338,13 +339,63 @@ func TestGRPCTargetPointedAtAnHTTP1UpstreamSaysSo(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", resp.StatusCode)
 	}
+	if !strings.Contains(string(body), upstream.URL) {
+		t.Errorf("the error should name the upstream, got: %s", body)
+	}
+	call := rec.only(t)
+	if call.Error == "" {
+		t.Error("the transport error should still be recorded")
+	}
+
+	// The hint is only as good as its evidence, and the evidence can be lost in
+	// transit. An HTTP/1.1 upstream answers the HTTP/2 preface with a 400 and
+	// then closes with the rest of that preface still unread, which turns the
+	// close into an RST — and a receiver may discard data it has already
+	// buffered when an RST arrives. Windows does; Linux usually does not. About
+	// one run in twenty-five here, the HTTP/2 client therefore never sees the
+	// HTTP/1.1 bytes and reports a bare connection reset, which names no
+	// protocol and cannot be classified by anything.
+	//
+	// So the wording is asserted end to end only when the evidence survived.
+	// The classification itself is guaranteed by TestHTTP1UpstreamErrorIsNamed,
+	// which feeds the error in directly and cannot lose it.
+	if !strings.Contains(call.Error, "looked like an HTTP/1.1 header") {
+		t.Logf("upstream reset before its HTTP/1.1 reply could be read, nothing to classify: %s", call.Error)
+		return
+	}
 	for _, want := range []string{"configured as grpc", "protocol: http"} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("the error should mention %q, got: %s", want, body)
 		}
 	}
-	if call := rec.only(t); call.Error == "" {
-		t.Error("the transport error should still be recorded")
+}
+
+// The end-to-end test above can only check the hint when the upstream's reply
+// survives the reset that follows it. This one always can: the transport error
+// is the input, so nothing about it is timing dependent.
+func TestHTTP1UpstreamErrorIsNamed(t *testing.T) {
+	grpcTarget := config.Target{Name: "wrong-port", Protocol: config.ProtocolGRPC}
+	h2Failure := errors.New("http2: failed reading the frame payload: http2: frame too large, " +
+		"note that the frame header looked like an HTTP/1.1 header")
+
+	got := explainUpstreamFailure(grpcTarget, "http://127.0.0.1:9000", h2Failure)
+	for _, want := range []string{"configured as grpc", "protocol: http", "wrong-port", "127.0.0.1:9000"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the hint should mention %q, got: %s", want, got)
+		}
+	}
+
+	// A reset carries no evidence of anything, so claiming the upstream spoke
+	// HTTP/1.1 would be a guess dressed up as a diagnosis.
+	reset := errors.New("read tcp 127.0.0.1:1->127.0.0.1:2: wsarecv: An existing connection was forcibly closed by the remote host.")
+	if got := explainUpstreamFailure(grpcTarget, "http://127.0.0.1:9000", reset); strings.Contains(got, "configured as grpc") {
+		t.Errorf("an unclassifiable error must not be reported as an HTTP/1.1 upstream: %s", got)
+	}
+
+	// The same HTTP/1.1 evidence against an http target is not a mistake.
+	httpTarget := config.Target{Name: "plain", Protocol: config.ProtocolHTTP}
+	if got := explainUpstreamFailure(httpTarget, "http://127.0.0.1:9000", h2Failure); strings.Contains(got, "configured as grpc") {
+		t.Errorf("an http target should not be told to set protocol: http: %s", got)
 	}
 }
 

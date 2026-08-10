@@ -130,6 +130,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Forwarding reads the request body and writes the response at the same
+	// time, which is precisely what full duplex means. Without it the HTTP/1
+	// server drains and closes the request body the moment the response
+	// headers go out, while the transport is still finishing its own write of
+	// that same body — the transport then sees "invalid Read on closed Body"
+	// and tears down the upstream connection mid-response, so the client gets a
+	// truncated reply. It needs the upstream to answer within the instant
+	// between the transport's last body read and its trailing length check, so
+	// it hit roughly one large POST in two hundred and only under load.
+	//
+	// Only HTTP/1 has a half-duplex mode to switch off; on HTTP/2 this is a
+	// no-op because full duplex is the only behaviour there. Either way there
+	// is nothing a caller could do about a refusal, so the error is dropped.
+	_ = http.NewResponseController(w).EnableFullDuplex()
+
 	ex := &exchange{
 		request:  newCapture(p.maxBody),
 		response: newCapture(p.maxBody),
