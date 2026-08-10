@@ -55,9 +55,10 @@ type Call struct {
 	GraphQLOp      string  `json:"graphql_op"`
 	GraphQLErrors  int     `json:"graphql_errors"`
 
-	// A Postgres session has no method, no path and no status worth showing, so
-	// the summary is the only thing that says which session this was — and its
-	// errors are the only thing that says it failed.
+	// A Postgres capture has no status, and its path is a database every one of
+	// them shares, so the summary — the statement and how it ended — is the only
+	// thing that says which one this was, and its errors are the only thing that
+	// says it failed.
 	PostgresSummary string `json:"postgres_summary"`
 	PostgresErrors  int    `json:"postgres_errors"`
 	ReplayOf        *int64 `json:"replay_of"`
@@ -105,8 +106,9 @@ func (c Call) Outcome() string {
 	case c.PostgresErrors > 0:
 		return "SQL ERROR"
 	case c.Protocol == "postgres":
-		// There is no status. Printing the zero would invent one.
-		return "SESSION"
+		// There is no status. Printing the zero would invent one, so the kind
+		// of row stands in: a statement, or the connection that ran none.
+		return c.Method
 	default:
 		return strconv.Itoa(c.Status)
 	}
@@ -115,6 +117,7 @@ func (c Call) Outcome() string {
 // Label is how a call is named in one line. For GraphQL and Postgres alike the
 // method and path are the same on every call a service makes, and the
 // operation — or the statement — is the only part that says which one this was.
+// A Postgres row is one statement, so its summary is the SQL itself.
 func (c Call) Label() string {
 	base := c.Method + " " + c.Path
 	switch {

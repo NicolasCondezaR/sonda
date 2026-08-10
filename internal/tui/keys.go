@@ -69,16 +69,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "r":
-		// Neither a socket nor a database session is a request that can be sent
-		// again: replaying one opens a new conversation rather than repeating
-		// the one being read.
+		// Neither a socket nor a database statement is a request that can be
+		// sent again: replaying one opens a new connection rather than
+		// repeating the one being read.
 		if call, ok := m.selectedCall(); ok {
 			switch call.Protocol {
 			case "websocket":
 				m.status = "a socket cannot be replayed — the handshake would open a new conversation"
 				return m, nil
 			case "postgres":
-				m.status = "a session cannot be replayed — it is a whole conversation, not a request"
+				m.status = "a statement cannot be replayed — it belongs to a connection that is gone"
 				return m, nil
 			}
 		}

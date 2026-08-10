@@ -228,7 +228,7 @@ func (m Model) renderInspector() string {
 		meta = append(meta, "gRPC")
 	}
 	if d.Protocol == "postgres" {
-		// A session has no HTTP status. "HTTP 0" would be a reading of
+		// A statement has no HTTP status. "HTTP 0" would be a reading of
 		// something that was never measured.
 		meta = append(meta, "POSTGRES")
 	} else {
@@ -274,7 +274,7 @@ func (m Model) renderInspector() string {
 		lines = append(lines, styleFault.Render(truncate(
 			fmt.Sprintf(" GRAPHQL · %d error(s) under HTTP %d", d.GraphQLErrors, d.Status), m.width-1)))
 	}
-	// Same reason again: nothing about a Postgres session's transport says it
+	// Same reason again: nothing about a Postgres statement's transport says it
 	// failed, so the header has to.
 	if d.PostgresErrors > 0 {
 		lines = append(lines, styleFault.Render(truncate(
@@ -337,9 +337,9 @@ func (m Model) renderFrames(title string, frames []FrameView, summary string) []
 	return lines
 }
 
-// renderPostgres shows one direction of a session as the messages it carried.
+// renderPostgres shows one direction of a statement as the messages it carried.
 //
-// A session is mostly DataRows, and printing every one of them would bury the
+// A result is mostly DataRows, and printing every one of them would bury the
 // statement that produced them. Rows are counted instead, and the messages that
 // say something a reader came for — the SQL, its parameters, the command tag,
 // the server's error — are printed.

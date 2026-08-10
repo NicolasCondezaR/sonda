@@ -66,6 +66,26 @@ type Blanker struct {
 	// records as frames would blank bytes at meaningless offsets, and there is
 	// no plaintext secret left to protect once the connection is encrypted.
 	stopped bool
+
+	// msgType is the type byte of the message currently being drained, kept for
+	// OnMessage. A startup message has none and reports 0, which no typed
+	// message can be.
+	msgType byte
+
+	// OnMessage, when set, is called once per whole message with the offset one
+	// past its last byte in the chunk that completed it. Nothing about blanking
+	// depends on it and a nil one changes nothing.
+	//
+	// It lives here rather than in a framer of its own because this is the only
+	// state machine in the process that already frames a live stream message by
+	// message, and the parts of that which are easy to get wrong — the untyped
+	// startup message, the bare byte that answers an SSLRequest, the point
+	// where the stream turns into TLS and framing has to stop — are exactly the
+	// parts a second copy would get wrong differently. The capture is split
+	// into one call per statement on these boundaries, so a framer that
+	// disagreed with the blanker would put the split in a different place than
+	// the blanking.
+	OnMessage func(typ byte, end int)
 }
 
 // NewBlanker returns a blanker for one direction. The direction matters for the
@@ -113,6 +133,9 @@ func (b *Blanker) Blank(chunk []byte) []byte {
 			n := min(b.copyLeft, len(chunk)-i)
 			b.copyLeft -= n
 			i += n
+			if b.copyLeft == 0 && b.blankLeft == 0 {
+				b.report(i)
+			}
 
 		case b.blankLeft > 0:
 			n := min(b.blankLeft, len(chunk)-i)
@@ -127,6 +150,9 @@ func (b *Blanker) Blank(chunk []byte) []byte {
 			}
 			b.blankLeft -= n
 			i += n
+			if b.blankLeft == 0 {
+				b.report(i)
+			}
 
 		default:
 			need := 5
@@ -141,12 +167,29 @@ func (b *Blanker) Blank(chunk []byte) []byte {
 				return out // the rest of the header is in the next chunk
 			}
 			b.headerLen = 0
+			startup := b.startup
 			if b.readHeader(); b.stopped {
 				return out
+			}
+			b.msgType = 0
+			if !startup {
+				b.msgType = b.header[0]
+			}
+			// A message with no body at all — Sync, Terminate, an SSLRequest —
+			// is whole the moment its header is, and would otherwise never be
+			// reported: there is nothing left to drain.
+			if b.copyLeft == 0 && b.blankLeft == 0 {
+				b.report(i)
 			}
 		}
 	}
 	return out
+}
+
+func (b *Blanker) report(end int) {
+	if b.OnMessage != nil {
+		b.OnMessage(b.msgType, end)
+	}
 }
 
 // readHeader works out what the message just framed is and how much of its body

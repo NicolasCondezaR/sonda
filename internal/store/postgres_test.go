@@ -141,6 +141,40 @@ func TestTheStatementIsSearchable(t *testing.T) {
 	}
 }
 
+// The summary is one line cut at ninety characters. A capture is one statement
+// now, so what makes it findable has to be the statement itself — the table
+// named halfway down a formatted query, and the value that was bound to it.
+func TestTheWholeStatementIsSearchableNotJustItsSummary(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	sql := "SELECT o.id, o.total, o.created_at, o.customer_id, o.status, o.currency " +
+		"FROM orders o JOIN shipments_archive a ON a.order_id = o.id WHERE o.reference = $1"
+	parse := pgFrame('P', z(""), z(sql), []byte{0, 0})
+	bind := pgFrame('B', z(""), z(""),
+		[]byte{0, 0}, // no format codes: everything is text
+		[]byte{0, 1}, // one parameter
+		binary.BigEndian.AppendUint32(nil, uint32(len("ORD-4821"))), []byte("ORD-4821"),
+		[]byte{0, 0}) // no result format codes
+
+	if _, err := s.Insert(ctx, pgSession(
+		append(pgStartupFrame("user", "app", "database", "orders"), append(parse, bind...)...),
+		append(pgFrame('C', z("SELECT 1")), pgFrame('Z', []byte{'I'})...),
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, term := range []string{"shipments_archive", "ORD-4821"} {
+		found, err := s.List(ctx, Filter{Search: term})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(found) != 1 {
+			t.Errorf("%d results for %q, want 1", len(found), term)
+		}
+	}
+}
+
 // Nothing but a Postgres capture may be read as one. An HTTP body that happens
 // to start with plausible bytes must not come back with a database name.
 func TestOnlyAPostgresCaptureIsReadAsOne(t *testing.T) {

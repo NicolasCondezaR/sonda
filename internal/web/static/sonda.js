@@ -76,7 +76,7 @@ function el(tag, className, text) {
 function isFault(call) {
   if (call.error) return true;
   if (call.graphql_errors > 0) return true;
-  /* A Postgres session has no status at all: its failure is an ErrorResponse
+  /* A Postgres statement has no status at all: its failure is an ErrorResponse
    * inside the stream, counted when the capture was stored. */
   if (call.postgres_errors > 0) return true;
   if (call.grpc_status !== undefined && call.grpc_status !== null) return call.grpc_status !== 0;
@@ -109,13 +109,14 @@ function outcome(call) {
   /* "200" here would be the truth about the transport and a lie about the call. */
   if (call.graphql_errors > 0) return "GRAPHQL ERROR";
   if (call.postgres_errors > 0) return "SQL ERROR";
-  /* There is no status on a session. Printing the zero would invent one. */
-  if (call.protocol === "postgres") return "SESSION";
+  /* There is no status on a statement. Printing the zero would invent one, so
+   * the kind of row stands in: a statement, or the connection that ran none. */
+  if (call.protocol === "postgres") return call.method;
   return String(call.status);
 }
 
 /* How a call is named in one line. Every GraphQL call to a service is the same
- * method and path, and every Postgres session to a database is too, so the
+ * method and path, and every Postgres capture against a database is too, so the
  * operation — or the statement — is the only part that says which one this was.
  * Without it a whole lane reads as one call repeated. */
 function label(call) {
@@ -554,7 +555,7 @@ function renderInspector(call) {
     el("span", null, call.target),
     el("span", null, (call.protocol || "http").toUpperCase()),
   );
-  /* A Postgres session has no HTTP status. "HTTP 0" would be a reading of
+  /* A Postgres statement has no HTTP status. "HTTP 0" would be a reading of
    * something that was never measured. */
   if (call.protocol !== "postgres") {
     meta.appendChild(el("span", null, "HTTP " + call.status));
@@ -579,7 +580,7 @@ function renderInspector(call) {
       "GraphQL · " + call.graphql_errors +
       (call.graphql_errors === 1 ? " error" : " errors") + " under HTTP " + call.status));
   }
-  /* Same reason again: nothing about a session's transport says it failed. */
+  /* Same reason again: nothing about a statement's transport says it failed. */
   if (call.postgres_errors > 0) {
     head.appendChild(el("div", "insp-head__fault",
       "Postgres · " + call.postgres_errors +
@@ -815,7 +816,7 @@ function renderActions(call) {
     return bar;
   }
   if (call.protocol === "postgres") {
-    bar.appendChild(el("span", "note", "A session cannot be replayed: it is a whole conversation, not a request."));
+    bar.appendChild(el("span", "note", "A statement cannot be replayed: it belongs to a connection and a transaction that are gone."));
     return bar;
   }
 
@@ -1141,10 +1142,10 @@ function renderGraphQL(g) {
   return s.wrap;
 }
 
-/* A Postgres session is one exchange carrying two streams of protocol
+/* A Postgres statement is one exchange carrying two streams of protocol
    messages, read out of the stored bytes here the same way frames are.
 
-   A session is mostly DataRows, and drawing forty of them would bury the
+   A result is mostly DataRows, and drawing forty of them would bury the
    statement that produced them. Rows are counted; the messages that say
    something a reader came for — the SQL, its parameters, the command tag, the
    server's error — are drawn. */

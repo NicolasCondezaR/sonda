@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -36,6 +38,23 @@ func get(t *testing.T, addr string) (string, error) {
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	return string(body), err
+}
+
+// dial reads whatever a raw listener greets with. The deadline is not patience:
+// a port wired to the wrong kind accepts and then says nothing.
+func dial(t *testing.T, addr string) string {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read from %s: %v", addr, err)
+	}
+	return string(got)
 }
 
 func TestApplyStartsAndStops(t *testing.T) {
@@ -143,6 +162,120 @@ func TestUnchangedListenersAreNotRestarted(t *testing.T) {
 	}
 	if body, _ := get(t, other); body != "second" {
 		t.Errorf("the new listener did not start: %q", body)
+	}
+}
+
+// Editing a service's upstream without moving its port is the ordinary edit,
+// and the one where a stale listener lies: the port stays open, every interface
+// reports the new target, and the traffic keeps going to the old one.
+func TestEditingAListenerWithoutMovingItsPort(t *testing.T) {
+	s := New()
+	defer s.StopAll()
+
+	addr := freePort(t)
+	s.Apply([]Desired{{Key: "a", Listen: addr, Handler: echo("old upstream")}})
+	if body, err := get(t, addr); err != nil || body != "old upstream" {
+		t.Fatalf("the listener did not come up: %q %v", body, err)
+	}
+
+	// Same key, same address, rebuilt handler: the port must not be rebound and
+	// the traffic must reach the new target.
+	s.Apply([]Desired{{Key: "a", Listen: addr, Handler: echo("new upstream")}})
+	if body, err := get(t, addr); err != nil || body != "new upstream" {
+		t.Errorf("after the edit the port answered %q, %v", body, err)
+	}
+}
+
+// The raw path inherits the same semantics, so it inherits the same lie.
+func TestEditingARawListenerWithoutMovingItsPort(t *testing.T) {
+	s := New()
+	defer s.StopAll()
+
+	greet := func(body string) func(net.Conn) {
+		return func(c net.Conn) { defer c.Close(); io.WriteString(c, body) }
+	}
+
+	addr := freePort(t)
+	s.Apply([]Desired{{Key: "db", Listen: addr, Serve: greet("old database")}})
+	if got := dial(t, addr); got != "old database" {
+		t.Fatalf("the raw listener did not come up: %q", got)
+	}
+
+	s.Apply([]Desired{{Key: "db", Listen: addr, Serve: greet("new database")}})
+	if got := dial(t, addr); got != "new database" {
+		t.Errorf("after the edit the raw port answered %q", got)
+	}
+}
+
+// Changing a service's protocol keeps its key and may keep its port, but an
+// http.Server cannot be swapped into speaking framed bytes. This one has to be
+// a restart, or the port answers nothing while reporting itself healthy.
+func TestSwitchingBetweenHTTPAndRawOnTheSamePort(t *testing.T) {
+	s := New()
+	defer s.StopAll()
+
+	addr := freePort(t)
+	s.Apply([]Desired{{Key: "a", Listen: addr, Handler: echo("http")}})
+	if body, err := get(t, addr); err != nil || body != "http" {
+		t.Fatalf("http listener did not come up: %q %v", body, err)
+	}
+
+	s.Apply([]Desired{{Key: "a", Listen: addr, Serve: func(c net.Conn) {
+		defer c.Close()
+		io.WriteString(c, "raw")
+	}}})
+	if got := dial(t, addr); got != "raw" {
+		t.Errorf("after switching to raw the port answered %q", got)
+	}
+
+	s.Apply([]Desired{{Key: "a", Listen: addr, Handler: echo("http again")}})
+	if body, err := get(t, addr); err != nil || body != "http again" {
+		t.Errorf("after switching back the port answered %q, %v", body, err)
+	}
+}
+
+// Reconcile runs while the proxy is serving — saving a service does not pause
+// traffic — so the swap and the requests genuinely overlap.
+func TestSwappingWhileRequestsAreInFlight(t *testing.T) {
+	s := New()
+	defer s.StopAll()
+
+	addr := freePort(t)
+	s.Apply([]Desired{{Key: "a", Listen: addr, Handler: echo("v0")}})
+
+	stop := make(chan struct{})
+	var callers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				body, err := get(t, addr)
+				if err != nil {
+					continue // a rebind of the socket is not what is under test
+				}
+				if !strings.HasPrefix(body, "v") {
+					// t.Error is safe from a goroutine; t.Fatal is not.
+					t.Errorf("a request read a torn handler: %q", body)
+					return
+				}
+			}
+		}()
+	}
+
+	for i := 1; i <= 50; i++ {
+		s.Apply([]Desired{{Key: "a", Listen: addr, Handler: echo(fmt.Sprintf("v%d", i))}})
+	}
+	close(stop)
+	callers.Wait()
+
+	if body, err := get(t, addr); err != nil || body != "v50" {
+		t.Errorf("after the last swap the port answered %q, %v", body, err)
 	}
 }
 

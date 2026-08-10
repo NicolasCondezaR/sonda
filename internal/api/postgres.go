@@ -5,9 +5,12 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/store"
 )
 
-// A Postgres session is one exchange carrying many messages, so it is read back
-// the way a socket and a gRPC stream are: the raw stream per direction is what
-// was stored, and the messages are a view computed here when someone looks.
+// A Postgres capture is one statement, and a statement is still several
+// messages, so it is read back the way a socket and a gRPC stream are: the raw
+// stream per direction is what was stored, and the messages are a view computed
+// here when someone looks. The first statement of a connection also carries
+// that connection's opening, which is why a startup message and an
+// authentication turn up in one of these and not in the rest.
 //
 // pgwire.Message goes out as it is rather than through a translation struct.
 // It was designed for this — flat, mostly optional fields, with the payload and

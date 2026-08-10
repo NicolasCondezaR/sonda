@@ -140,9 +140,10 @@ type summaryJSON struct {
 	GraphQLOp     string `json:"graphql_op,omitempty"`
 	GraphQLErrors int    `json:"graphql_errors,omitempty"`
 
-	// Postgres has both problems again, and worse: every session to a database
-	// is the same method and the same path, and a failed statement has no
-	// status code anywhere — it is an ErrorResponse inside the stream.
+	// Postgres has both problems again, and worse: every capture against a
+	// database is the same method and the same path, so the summary — the SQL
+	// and how it ended — is what names the row; and a failed statement has no
+	// status code anywhere, it is an ErrorResponse inside the stream.
 	PostgresSummary string `json:"postgres_summary,omitempty"`
 	PostgresErrors  int    `json:"postgres_errors,omitempty"`
 
