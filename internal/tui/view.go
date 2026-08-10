@@ -203,6 +203,9 @@ func (m Model) renderSeparator(fieldWidth int) string {
 /* ------------------------------------------------------------ inspector -- */
 
 func (m Model) renderInspector() string {
+	if m.trace != nil {
+		return m.renderTrace()
+	}
 	if m.diff != nil {
 		return m.renderDiff()
 	}
@@ -225,6 +228,14 @@ func (m Model) renderInspector() string {
 		meta = append(meta, fmt.Sprintf("replay of #%d", *d.ReplayOf))
 	}
 	lines = append(lines, styleFaint.Render(" "+strings.Join(meta, "   ")))
+
+	// Stated before the payload, for the same reason the web client states it:
+	// everything below is a reading of something recorded earlier, and a reader
+	// who scrolls straight to the body would take it for what just happened.
+	if d.StubOf != nil {
+		lines = append(lines, styleInk.Render(
+			fmt.Sprintf(" FROM RECORDING · the service was not called. Answered from capture #%d", *d.StubOf)))
+	}
 
 	if d.GRPCStatusText != "" {
 		text := fmt.Sprintf(" gRPC %d %s", *d.GRPCStatus, d.GRPCStatusText)
@@ -297,6 +308,31 @@ func (m Model) renderBody(label string, msg Message) []string {
 }
 
 /* ----------------------------------------------------------------- diff -- */
+
+// renderTrace shows the whole request a call belonged to. The drawing arrives
+// already made from the API, so the terminal and the agent read the same one.
+func (m Model) renderTrace() string {
+	t := m.trace
+	head := fmt.Sprintf(" CALL TREE   %d calls", t.Tree.Calls)
+	if t.Tree.Failed > 0 {
+		head += fmt.Sprintf(" · %d failed", t.Tree.Failed)
+	}
+
+	lines := []string{styleInk.Render(head)}
+	for _, line := range strings.Split(strings.TrimRight(t.Rendered, "\n"), "\n") {
+		style := styleDim
+		switch {
+		// The same rule as everywhere: the failure is why the tool is open.
+		case strings.Contains(line, "✗"):
+			style = styleFault
+		case strings.HasPrefix(line, "(grouped by timing"):
+			style = styleFaint
+		}
+		lines = append(lines, style.Render(" "+truncate(line, m.width-2)))
+	}
+	lines = append(lines, "", styleFaint.Render(" esc to go back"))
+	return strings.Join(lines, "\n") + "\n"
+}
 
 func (m Model) renderDiff() string {
 	lines := []string{styleLabel.Render(" DIFF") + styleFaint.Render("   a is red, b is green")}
@@ -378,7 +414,7 @@ func (m Model) renderFooter() string {
 	// terminal is narrow — but quit is re-appended every time. A legend that
 	// silently loses the way out is worse than a short one.
 	keys := []string{
-		"↑↓ chan", "←→ call", "⏎ read", "r replay", "d diff",
+		"↑↓ chan", "←→ call", "⏎ read", "t tree", "r replay", "d diff",
 		"f faults", "w window", "h hold", "/ find",
 	}
 	prefix := " "

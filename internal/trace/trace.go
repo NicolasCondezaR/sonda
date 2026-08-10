@@ -38,6 +38,11 @@ type Call struct {
 	Duration time.Duration `json:"-"`
 	TraceID  string        `json:"trace_id,omitempty"`
 	Failed   bool          `json:"failed"`
+
+	// Stubbed says the service was never called: this node is a recording
+	// played back. The tree is exactly where someone asks why one branch is
+	// suspiciously fast, so it has to answer there and not only in the detail.
+	Stubbed bool `json:"stubbed,omitempty"`
 	// Detail is the gRPC status, the transport error, whatever explains a
 	// failure in one line.
 	Detail string `json:"detail,omitempty"`
@@ -281,8 +286,11 @@ func renderNode(b *strings.Builder, n *Node, prefix string, last, root bool) {
 	}
 
 	flags := ""
+	if n.Call.Stubbed {
+		flags = "  [from recording]"
+	}
 	if n.Ambiguous {
-		flags = "  [could belong to another call]"
+		flags += "  [could belong to another call]"
 	}
 
 	// The padding has to account for the indent, or the millisecond column

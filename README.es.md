@@ -18,7 +18,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 11.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 12.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
 > [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
@@ -247,7 +247,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
      "message": "no tienes acceso a este pedido"
    }
  RESPONSE  0 message(s)
- ↑↓ chan · ←→ call · ⏎ read · r replay · d diff · f faults · w window · h hold · / find · q quit
+ ↑↓ chan · ←→ call · ⏎ read · t tree · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
 La traducción es casi directa: la monoespaciada es gratis acá, las líneas de un
@@ -266,6 +266,7 @@ iguales. Dos cosas necesitaron otra expresión:
 | `↑` `↓` | elegir canal |
 | `←` `→` | recorrerlo, llamada por llamada |
 | `enter` | leer la llamada seleccionada |
+| `t` | ver la petición completa a la que perteneció, como árbol |
 | `r` | reenviarla |
 | `d` | comparar un reenvío contra su original |
 | `f` | solo fallos, o todo |
@@ -719,6 +720,7 @@ leerse como operadores de consulta.
 | 9 | Configuración por MCP: conectar un proyecto entero pidiéndolo | listo |
 | 10 | Correlación: las llamadas de una petición, ordenadas como árbol | listo |
 | 11 | Modo stub: responder desde una grabación en vez de reenviar | listo |
+| 12 | El árbol y el stub, en todas las superficies: web, terminal y MCP | listo |
 
 ### Limitaciones
 
@@ -730,10 +732,9 @@ leerse como operadores de consulta.
 - Una captura truncada no se puede reenviar; la negativa es deliberada.
 - La interfaz no tiene cursores ni trigger, dos dispositivos que un instrumento
   real sí tiene, y el siguiente alcance evidente.
-- La interfaz web todavía no dibuja el árbol de la petición ni marca una
-  respuesta servida desde stub. Las dos cosas están en la API y en las
-  herramientas MCP; el campo sigue mostrando una lista plana, y eso es un hueco,
-  no una decisión.
+- No se inyecta un id de traza propio. Las peticiones que traen uno se agrupan
+  con exactitud; el resto se agrupa por anidamiento y el árbol avisa de que lo
+  infirió.
 
 ## Desarrollo
 

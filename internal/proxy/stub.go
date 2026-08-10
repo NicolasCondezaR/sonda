@@ -11,6 +11,7 @@ import (
 
 	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/trace"
 )
 
 // Stubs is the part of the stub registry a proxy needs. Nil means this proxy
@@ -120,6 +121,11 @@ func (p *Proxy) recordStub(r *http.Request, body []byte, from *store.Call, statu
 			Body:    body,
 			Size:    int64(len(body)),
 		},
+		// Read here for the same reason a forwarded call reads it: without it a
+		// stubbed call drops out of the tree of the very request it belongs to,
+		// and the one service that was answered from a recording becomes the
+		// one that looks like it was never called.
+		TraceID: trace.ID(r.Header),
 	}
 	if isGRPCRequest(r.Header) {
 		call.Protocol = config.ProtocolGRPC

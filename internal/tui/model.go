@@ -53,6 +53,7 @@ type Model struct {
 	calls   []Call
 	detail  *CallDetail
 	diff    *Diff
+	trace   *Trace
 
 	failedOnly bool
 	windowIdx  int
@@ -113,6 +114,11 @@ type detailMsg struct {
 	detail *CallDetail
 	err    error
 }
+type traceMsg struct {
+	trace *Trace
+	err   error
+}
+
 type diffMsg struct {
 	diff *Diff
 	err  error
@@ -172,6 +178,13 @@ func (m Model) loadDetail(id int64) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := m.client.Detail(m.ctx, id)
 		return detailMsg{detail: detail, err: err}
+	}
+}
+
+func (m Model) loadTrace(id int64) tea.Cmd {
+	return func() tea.Msg {
+		trace, err := m.client.Trace(m.ctx, id)
+		return traceMsg{trace: trace, err: err}
 	}
 }
 
@@ -245,6 +258,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.withError(msg.err), nil
 		}
 		m.detail, m.diff = msg.detail, nil
+		return m, nil
+
+	case traceMsg:
+		if msg.err != nil {
+			m.status = "could not arrange the request: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.trace == nil || msg.trace.Tree.Calls < 2 {
+			// One call is not a tree, and saying so beats drawing a stump.
+			m.status = "this call was on its own — nothing else belonged to the same request"
+			return m, nil
+		}
+		m.trace, m.diff, m.status = msg.trace, nil, ""
 		return m, nil
 
 	case diffMsg:

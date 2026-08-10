@@ -270,6 +270,18 @@ body {
   background: var(--ch);
 }
 
+/* The same hatch the events carry, for the same reason: this channel is being
+   answered from recordings, so its readings are not measurements. Carried on
+   the swatch as well as the label because the label is the first thing a long
+   service name squeezes out. */
+.channel__swatch--stub {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 1px,
+    var(--case) 1px 3px
+  );
+}
+
 /* Past the ninth target the probe sequence repeats, distinguished the way a
    second probe group is on the instrument. */
 .channel__swatch--hollow {
@@ -394,6 +406,19 @@ body {
 
 .ev:hover { outline: 1px solid var(--ink); outline-offset: 1px; }
 
+/* An answer served from a recording never crossed the wire: the service was not
+   called at all. A solid mark means measured, so a recording is drawn hatched —
+   the reading is there, and it visibly is not a measurement. Texture carries it
+   rather than a colour, because the probe code plus fault is the whole system,
+   and because a stub can also be a fault and the two must both stay legible. */
+.ev--stub {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 2px,
+    var(--field) 2px 4px
+  );
+}
+
 /* A fault is a different shape, not a red event. Shape carries it so it
    survives a red channel, a colour-blind reader, and a glance from across the
    room — which is the whole reason the tool is open. */
@@ -414,15 +439,15 @@ body {
 /* The instrument's native motion: an event arrives at the right edge and its
    acquire flash decays. Nothing else on the surface animates. */
 @keyframes acquire {
-  from { background: var(--ink); }
-  to   { background: var(--ch); }
+  from { background-color: var(--ink); }
+  to   { background-color: var(--ch); }
 }
 
 .ev--new { animation: acquire 700ms cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
 @keyframes acquire-fault {
-  from { background: var(--ink); }
-  to   { background: var(--fault); }
+  from { background-color: var(--ink); }
+  to   { background-color: var(--fault); }
 }
 
 .ev--fault.ev--new { animation-name: acquire-fault; }
@@ -630,6 +655,134 @@ body {
 }
 
 .note--fault { color: var(--fault); }
+
+/* An engraved position marker, the way a latched toggle shows where it sits.
+   It goes on the channel row rather than on each event because stubbing is a
+   mode the service is in, not a property of one call.
+
+   flex:none matters: the row is a flexbox whose name cell absorbs the slack,
+   and a shrinkable label folds onto a second line inside a fixed-height lane. */
+.channel__stub {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  border-bottom: 1px solid var(--rule);
+}
+
+/* Provenance, stated before anything else in the inspector: what follows is a
+   reading of something that was recorded earlier, not of what just happened. */
+.insp-head__stub {
+  font-size: 11px;
+  color: var(--ink);
+  margin-top: var(--tight);
+  padding-left: var(--tight);
+  border-left: 1px solid var(--rule);
+}
+
+.insp-head__stub b { font-weight: 600; }
+
+.insp-head__stub button {
+  font: inherit;
+  color: var(--ink-dim);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  padding: 0;
+  cursor: pointer;
+}
+
+.insp-head__stub button:hover { color: var(--ink); }
+
+/* ---------------------------------------------------------- request tree -- */
+
+/* The calls of one request, arranged by what caused what. Fixed columns, so the
+   durations form a rule down the right edge and the slow one is found by
+   scanning rather than by reading. */
+.tree {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.tree__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--tight);
+  align-items: baseline;
+  width: 100%;
+  font: inherit;
+  font-family: var(--mono);
+  color: var(--ink-dim);
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 1px 0;
+  cursor: pointer;
+}
+
+.tree__row:hover .tree__name { color: var(--ink); }
+
+.tree__row[aria-current="true"] .tree__name { color: var(--ink); }
+
+.tree__row[aria-current="true"] .tree__pipe::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -4px;
+  width: 1px;
+  background: var(--ink);
+}
+
+.tree__pipe {
+  position: relative;
+  color: var(--ink-faint);
+  white-space: pre;
+}
+
+/* The probe colour, so a row in the tree and a lane in the field are obviously
+   the same service. */
+.tree__swatch {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--ch, var(--ink-faint));
+  margin-right: var(--tight);
+}
+
+.tree__dur {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Failure keeps the same rule it has everywhere else: shape first. The mark is
+   a filled block against the hollow one a healthy call carries. */
+.tree__row--fault .tree__name,
+.tree__row--fault .tree__mark { color: var(--fault); }
+
+.tree__mark { margin-right: var(--tight); }
+
+/* Third place the same hatch appears, and deliberately the same: the rail says
+   which channel is stubbed, the field says which events were, and the tree says
+   which branch of this request never reached its service. */
+.tree__swatch--stub {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 1px,
+    var(--case) 1px 3px
+  );
+}
+
+.tree__detail {
+  color: var(--fault);
+  font-size: 11px;
+  padding-left: var(--loose);
+}
+
+/* An inferred branch is a guess, and a guess that reads as a measurement is
+   worse than no tree at all. */
+.tree__row--guess .tree__pipe { opacity: 0.55; }
+
 
 .insp-sec__body--loading { color: var(--ink-faint); font-size: 12px; }
 

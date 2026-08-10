@@ -55,6 +55,11 @@ const (
 	markCall  = "▄"
 	markFault = "█"
 	markMixed = "▆" // several calls in one cell, at least one of them a fault
+
+	// A shaded block against a solid one, which is what the hatch in the web
+	// client is in a terminal: the reading is there and it is visibly not a
+	// measurement, because the service was never called.
+	markStub = "▒"
 )
 
 var (

@@ -14,6 +14,8 @@ import (
 type Cell struct {
 	Calls  int
 	Faults int
+	// Stubs counts answers that came from a recording rather than the service.
+	Stubs int
 }
 
 // Bucket assigns a call to a column. The right edge is now and time runs
@@ -53,6 +55,9 @@ func LaneCells(calls []Call, now time.Time, window time.Duration, width int) []C
 		if call.Fault() {
 			cells[col].Faults++
 		}
+		if call.StubOf != nil {
+			cells[col].Stubs++
+		}
 	}
 	return cells
 }
@@ -66,7 +71,11 @@ func Mark(c Cell) string {
 	case c.Faults > 0 && c.Calls > c.Faults:
 		return markMixed
 	case c.Faults > 0:
+		// A failure outranks a recording: the reason the tool is open is the
+		// failure, and a cell can only carry one shape.
 		return markFault
+	case c.Stubs > 0 && c.Stubs == c.Calls:
+		return markStub
 	case c.Calls > 0:
 		return markCall
 	default:

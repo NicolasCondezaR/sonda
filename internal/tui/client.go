@@ -52,6 +52,8 @@ type Call struct {
 	GRPCStatusText string  `json:"grpc_status_text"`
 	GRPCMessage    string  `json:"grpc_message"`
 	ReplayOf       *int64  `json:"replay_of"`
+	StubOf         *int64  `json:"stub_of"`
+	TraceID        string  `json:"trace_id"`
 
 	started time.Time // parsed once, on the way in
 }
@@ -259,6 +261,28 @@ func (c *Client) Diff(ctx context.Context, a, b int64) (*Diff, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Trace asks for the whole request a call belonged to.
+//
+// The API already returns the tree drawn as text, and the terminal takes it as
+// it comes: a second renderer here would be a second thing to keep in step with
+// the first, for a drawing that is identical either way.
+func (c *Client) Trace(ctx context.Context, id int64) (*Trace, error) {
+	var out Trace
+	if err := c.get(ctx, "/api/trace?call="+strconv.FormatInt(id, 10), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type Trace struct {
+	Rendered string `json:"rendered"`
+	Tree     struct {
+		Calls   int  `json:"calls"`
+		Failed  int  `json:"failed"`
+		Certain bool `json:"certain"`
+	} `json:"trace"`
 }
 
 func (c *Client) Replay(ctx context.Context, id int64) (*ReplayResult, error) {

@@ -193,3 +193,30 @@ func stripANSI(s string) string {
 	}
 	return b.String()
 }
+
+// A recording is not a measurement, and the field has to say so with a shape —
+// the same rule the web client follows with a hatch, and the same reason: an
+// answer that never reached its service must not look like one that did.
+func TestAStubbedCellIsADifferentShape(t *testing.T) {
+	cases := []struct {
+		name string
+		cell Cell
+		want string
+	}{
+		{"a plain call", Cell{Calls: 1}, markCall},
+		{"answered from a recording", Cell{Calls: 1, Stubs: 1}, markStub},
+		{"all of them from recordings", Cell{Calls: 3, Stubs: 3}, markStub},
+		// A failure outranks a recording: the failure is why the tool is open,
+		// and a cell can only carry one shape.
+		{"a stubbed failure", Cell{Calls: 1, Stubs: 1, Faults: 1}, markFault},
+		// Mixed live and recorded is not "recorded": saying so would claim more
+		// than the cell knows.
+		{"some recorded, some real", Cell{Calls: 3, Stubs: 1}, markCall},
+		{"nothing", Cell{}, markEmpty},
+	}
+	for _, c := range cases {
+		if got := Mark(c.cell); got != c.want {
+			t.Errorf("%s: mark = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

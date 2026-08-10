@@ -218,3 +218,52 @@ func TestGRPCTrailersAreReplayed(t *testing.T) {
 		t.Errorf("grpc-message trailer = %q", got)
 	}
 }
+
+// A stubbed call still belongs to the request that made it. Found by looking at
+// the tree in the browser and noticing the one stubbed service missing from it:
+// the capture carried no trace id, so it fell out of the very request it was
+// part of — and the service that was answered from a recording became the one
+// that looked like it had never been called.
+func TestAStubbedCallStaysInItsRequest(t *testing.T) {
+	front, rec := stubbed(t, &fakeStubs{enabled: true, recorded: recording(7, 200, "x")})
+
+	req, err := http.NewRequest("GET", front.URL+"/v1/rates", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	call := rec.last()
+	if call == nil {
+		t.Fatal("nothing was recorded")
+	}
+	if call.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Errorf("TraceID = %q, want the id the request carried", call.TraceID)
+	}
+}
+
+// The refusal is part of the request too: a request that got no answer is
+// exactly the one somebody will be looking for in the tree.
+func TestARefusalAlsoStaysInItsRequest(t *testing.T) {
+	front, rec := stubbed(t, &fakeStubs{enabled: true, recorded: nil})
+
+	req, err := http.NewRequest("GET", front.URL+"/v1/never", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Request-Id", "req-99")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if call := rec.last(); call == nil || call.TraceID != "req-99" {
+		t.Errorf("TraceID = %v, want req-99", call.TraceID)
+	}
+}
