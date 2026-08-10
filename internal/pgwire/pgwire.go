@@ -684,8 +684,8 @@ func (c *cursor) text() string {
 	return string(s)
 }
 
-// Summarise gives a one-line reading of a conversation, for a listing that has
-// no room for the messages themselves.
+// Summarise gives a one-line reading of a statement, for a listing that has no
+// room for the messages themselves.
 //
 // It is not a count by kind the way wsframe's is. A Postgres exchange is mostly
 // DataRows, and "1 query, 1 row_description, 40 data_row" tells a reader
@@ -696,29 +696,44 @@ func Summarise(msgs []Message) string {
 		return "no messages"
 	}
 
-	var sql, tag string
+	var sql string
+	var tags []string
+	var failures []Message
 	rows := 0
 	for _, m := range msgs {
 		switch {
 		case m.Kind == "error_response":
-			// The error is why the capture was opened. Nothing outranks it.
-			return errorLine(m)
+			failures = append(failures, m)
 		case m.Encrypted:
 			return "encrypted connection, not readable"
 		case m.SQL != "" && sql == "":
 			sql = m.SQL
 		case m.Kind == "data_row":
 			rows++
-		case m.Kind == "command_complete" && tag == "":
-			tag = m.Tag
+		case m.Kind == "command_complete" && m.Tag != "":
+			// Every tag, not the first: a COPY and a multi-statement simple
+			// query both answer one cycle with several results, and a line that
+			// showed one of them would say the others never happened.
+			tags = append(tags, m.Tag)
 		}
+	}
+
+	// The error is why the capture was opened. Nothing outranks it — and if
+	// more than one arrived, the count says so rather than the line pretending
+	// there was one.
+	if len(failures) > 0 {
+		line := errorLine(failures[0])
+		if len(failures) > 1 {
+			line += fmt.Sprintf(" (+%d more)", len(failures)-1)
+		}
+		return line
 	}
 
 	if sql != "" {
 		line := oneLine(sql)
 		switch {
-		case tag != "":
-			return line + " -> " + tag
+		case len(tags) > 0:
+			return line + " -> " + strings.Join(tags, ", ")
 		case rows > 0:
 			return fmt.Sprintf("%s -> %d rows", line, rows)
 		}

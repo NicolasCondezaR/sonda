@@ -453,6 +453,42 @@ func TestMovingAServiceReleasesTheOldPort(t *testing.T) {
 	}
 }
 
+// Repointing a service at another upstream, leaving its port alone, is the most
+// ordinary edit there is. The port stays open by design, so the only way the
+// change reaches anything is if the running listener picks up the rebuilt proxy
+// — and if it does not, the interface reports the new upstream while the
+// traffic keeps going to the old one.
+func TestChangingTheUpstreamReachesTheNewOne(t *testing.T) {
+	db := openStore(t)
+	addr := freePort(t)
+	oldUp, newUp := upstream(t, "el viejo"), upstream(t, "el nuevo")
+	id := project(t, db, "monorepo", svc{name: "api", listen: addr, upstream: oldUp})
+
+	rt := New(db, newRecorder(), 1<<20)
+	defer rt.Stop()
+
+	activate(t, db, id)
+	reconcile(t, rt)
+	if body, err := get(t, addr); err != nil || body != "el viejo" {
+		t.Fatalf("the service did not come up: %q %v", body, err)
+	}
+
+	active, err := db.ActiveProject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repointed := active.Services[0]
+	repointed.Upstream = newUp
+	if _, err := db.SaveService(context.Background(), repointed); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, rt)
+
+	if body, err := get(t, addr); err != nil || body != "el nuevo" {
+		t.Errorf("after the edit the port reached %q, want el nuevo", body)
+	}
+}
+
 // Renaming a service keys off its id, so the port must not go down. A rename
 // that drops live connections turns an edit in a form into a broken request in
 // whatever was running.

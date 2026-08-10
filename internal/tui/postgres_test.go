@@ -118,3 +118,19 @@ func TestASessionIsNamedAndJudgedInTheListing(t *testing.T) {
 		t.Errorf("outcome = %q", got)
 	}
 }
+
+// A capture is one statement, and the row has to say which kind of row it is:
+// there is no status to print and the connection that ran nothing is a
+// different thing from the statement that ran.
+func TestAStatementIsNamedByItsSQL(t *testing.T) {
+	call := Call{
+		Protocol: "postgres", Method: "STATEMENT", Path: "orders",
+		PostgresSummary: "UPDATE orders SET total = 1 -> UPDATE 2",
+	}
+	if got := call.Label(); got != "STATEMENT orders · UPDATE orders SET total = 1 -> UPDATE 2" {
+		t.Errorf("label = %q", got)
+	}
+	if got := call.Outcome(); got != "STATEMENT" {
+		t.Errorf("outcome = %q, want the kind of row and no invented status", got)
+	}
+}

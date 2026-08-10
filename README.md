@@ -448,7 +448,7 @@ on and replay along with it.
 
 There is exactly one exception, and it is one because the trade-off runs the
 other way: a **Postgres** password is blanked in the capture as the bytes go
-past. A database session cannot be replayed anyway, so nothing is lost by not
+past. A database capture cannot be replayed anyway, so nothing is lost by not
 keeping it, and the alternative is a live credential in a plaintext file. See
 [PostgreSQL](#postgresql).
 
@@ -634,9 +634,9 @@ than as a call with no errors.
 ## PostgreSQL
 
 Every other protocol Sonda captures is one hop between services. Postgres is the
-hop underneath: it puts the SQL a request actually ran in the field beside the
-HTTP call that caused it, and an N+1 stops being a theory and becomes forty
-rows next to one handler.
+hop underneath: it puts the SQL a request actually ran in the field under the
+HTTP call that caused it, one row per statement, and an N+1 stops being a theory
+and becomes forty rows under one handler.
 
 A database target is declared like any other service, with `protocol: postgres`
 and an upstream that names the transport:
@@ -680,19 +680,44 @@ an authentication happened and by which mechanism — `sasl`, `md5_password`,
 never to the bytes the database receives; the real password reaches the server
 and the login works. Both halves of that are covered by tests.
 
-### What a session looks like
+### What a capture is
 
-- **A capture is a connection, not a query.** A session is recorded when it
-  closes, the same way a socket is, and everything the connection carried is in
-  it. Behind a connection pool that means one capture can hold hours of an
-  application's SQL — see the limitations below.
+- **One capture is one statement, not one connection.** The protocol gives the
+  boundary away: a simple query is `Q` → results → `ReadyForQuery`, an extended
+  one is Parse/Bind/Describe/Execute/Sync → results → `ReadyForQuery`, and the
+  `Z` ends the cycle in both. Each row carries the SQL, the values bound to it,
+  what the server answered — the command tag, the row count or the error — and
+  the timing of that statement alone.
+- **The SQL hangs under the request that ran it**, and nothing new correlates
+  them. Sonda already arranges calls into a tree by containment: a call that
+  begins no earlier and ends no later than another is its child, and a statement
+  run during an HTTP request is contained in it by definition. That only works
+  because a capture is timed from the statement rather than from the connection,
+  which is the whole reason the split exists — behind a pool one connection
+  carries hours of an application's SQL, and hours of SQL is not something you
+  can hang off a request.
+- **The connection's opening rides its first statement.** The startup
+  parameters, the mechanism that was demanded, the server's settings: they
+  happen once, and they are context for the first thing the connection ran
+  rather than a row of their own — a row with no SQL in it would be noise on
+  every pooled connection. Dropping the fact that an authentication happened is
+  not something a debugger gets to do, so a connection that authenticated and
+  then ran nothing does get its own row, with the method `SESSION`.
 - **The path is the database**, read off the startup message rather than
-  invented, and the method is `SESSION` because a session is not a request and
-  there is no honest verb for it. There is no HTTP status, and none is shown.
-- **The listing carries a summary**: the first statement and how it ended
+  invented, and carried onto every statement of the connection — only the first
+  one holds the message it came from. The method is `STATEMENT`. There is no
+  HTTP status, and none is shown.
+- **The listing carries the statement itself** and how it ended
   (`SELECT id FROM orders WHERE total > 100 -> SELECT 12`), or the error if
-  there was one. Without it every session to a database reads as the same row
-  repeated.
+  there was one. Every result of a cycle is named, not just the first: a `COPY`
+  and a multi-statement simple query both answer once with several.
+- **A statement that never finished is recorded and says so.** The connection
+  died mid-query, or the capture ended while the statement was still in flight:
+  the row is written with what crossed and an error saying no `ReadyForQuery`
+  ever arrived. Reporting it as a success would be a lie, and dropping it would
+  lose exactly the statement worth having.
+- **The statement is searchable in full** — the SQL, the values bound to it, the
+  command tags and the server's complaint — not only the summary line.
 - **The inspector shows the messages**: the statements, their bind parameters
   with `NULL` distinguished from the empty string, the columns described, the
   command tags, the transaction status, and any server error with its SQLSTATE,
@@ -700,14 +725,15 @@ and the login works. Both halves of that are covered by tests.
 
 **A SQL error is a failure.** It arrives as an `ErrorResponse` inside the stream
 with no status code anywhere, so a tool that reads transports alone would show
-it as a healthy session. Sonda counts it as a fault everywhere the question is
+it as a healthy statement. Sonda counts it as a fault everywhere the question is
 asked: the fault filter, the channel rail, the field's fault marks, the terminal,
 the trace tree and `recent_failures` over MCP. It is the same problem gRPC and
 GraphQL have, answered the same way.
 
-**A session cannot be replayed.** It is a whole conversation, not a request, and
-sending it again would open a new one. Every surface refuses, including the API
-itself, so an agent gets the same answer the browser does.
+**A statement cannot be replayed.** It belongs to a connection, a session and a
+transaction that are gone, and sending the SQL again would run it somewhere
+else. Every surface refuses, including the API itself, so an agent gets the same
+answer the browser does.
 
 ## Contract drift
 
@@ -926,7 +952,7 @@ operators.
 | 14 | Fault injection: latency, forced statuses, cut connections | done |
 | 15 | Contract drift: a field gone, a field retyped | done |
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
-| 17 | PostgreSQL: the SQL underneath the request, with the credentials blanked before they are stored | done |
+| 17 | PostgreSQL: one capture per statement, hung under the request that ran it, with the credentials blanked before they are stored | done |
 
 ### Limitations
 
@@ -939,15 +965,14 @@ operators.
 - Captures taken before GraphQL support existed report no operation and no
   errors. Nothing is re-read retroactively: an old capture that quietly changed
   outcome is worse than one that is honestly blank.
-- **A Postgres capture is a connection, not a statement.** Behind a connection
-  pool one row can hold an entire application's SQL, and it is only written when
-  the connection closes — so the SQL of a single request does not reliably line
-  up under the request in the trace tree. Short-lived connections, `psql`, and
-  pools with a low idle timeout behave the way you would expect; a long-lived
-  pooled connection does not.
-- Only a Postgres session's summary line is full-text searchable. The stream is
-  binary, so the second statement of a session is found by opening the capture,
-  not by searching for it.
+- A statement prepared in one cycle and executed in a later one shows the name
+  it was prepared under rather than its SQL — the text crossed the wire once, in
+  the capture that holds the `Parse`, and nothing is written into a capture that
+  did not cross it. The parameters, the timing and the outcome are all there,
+  and drivers that prepare per query rather than per connection are unaffected.
+- A client that pipelines more than sixteen statements without a single answer
+  has the oldest written as it stands rather than held: nothing may pile up in
+  memory waiting for an answer that is not coming.
 - A Postgres connection that negotiates TLS is forwarded and captured, but the
   bytes after the handshake are TLS records and nothing in them can be read —
   the same limit as any other encrypted upstream.

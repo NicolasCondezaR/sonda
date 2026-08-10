@@ -104,9 +104,9 @@ func readTools() []Tool {
 			Name:  "search_calls",
 			Title: "Search captured calls",
 			Description: "Find captured calls by service, method, path, protocol, status or free text in the bodies. Every filter is optional and they combine. " +
-				"Sockets, event streams and Postgres sessions are captures like any other, so the same filters reach them. " +
+				"Sockets, event streams and Postgres statements are captures like any other, so the same filters reach them. " +
 				"GraphQL rides on http and every operation shares one path, so search it by operation name in text rather than by path. " +
-				"A Postgres capture has no method or status: its path is the database and its text is the summary of the session's first statement.",
+				"A Postgres capture is one statement: its path is the database, its method is STATEMENT, and its text is the SQL, the values bound to it and what the server answered — so a table or column name in text finds the statements that touched it.",
 			Schema: obj(map[string]any{
 				"service": prop("string", "Service name, as Sonda knows it — for example ms-auth."),
 				"method":  prop("string", "HTTP method, or the gRPC method name."),
@@ -117,7 +117,7 @@ func readTools() []Tool {
 				// offering it would filter on a value no capture can hold.
 				// Postgres is, because it genuinely is a separate transport
 				// with its own listener and its own captures.
-				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "websocket", "postgres"}, "description": "Restrict to one protocol. A websocket or a postgres capture is one whole conversation, not one per message. GraphQL is http."},
+				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "websocket", "postgres"}, "description": "Restrict to one protocol. A websocket capture is one whole conversation; a postgres capture is one statement. GraphQL is http."},
 				"text":     prop("string", "Free text to look for inside the request and response bodies — a GraphQL operation name finds its calls this way."),
 				"status":   prop("integer", "Exact HTTP status."),
 				"failed":   prop("boolean", "Only calls that failed, including GraphQL responses carrying errors under HTTP 200."),
@@ -154,8 +154,9 @@ func readTools() []Tool {
 				"A WebSocket comes back as the frames of both directions, unmasked and labelled by kind, with the close code when there is one. " +
 				"A server-sent event stream comes back as its events. " +
 				"A GraphQL POST comes back as the operations it carried — type, name, the fields asked for, the variables sent, and any errors the response held, with their path and code. " +
-				"A Postgres session comes back as the protocol messages of both directions: the statements, their bind parameters, the rows described, the command tags and any server error with its SQLSTATE. " +
-				"Its password and cancellation key were blanked when the bytes were captured, so they are not there to ask for. " +
+				"A Postgres statement comes back as the protocol messages of both directions: the SQL, its bind parameters, the rows described, the command tags and any server error with its SQLSTATE. " +
+				"The first statement of a connection also carries that connection's opening — the startup parameters and which authentication mechanism was demanded — because those happened once and belong somewhere. " +
+				"The password and the cancellation key were blanked when the bytes were captured, so they are not there to ask for. " +
 				"Bodies are shortened unless you ask for detail.",
 			Schema: obj(map[string]any{
 				"id":     prop("integer", "The call id, as returned by the other tools."),

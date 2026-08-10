@@ -470,3 +470,30 @@ func TestSummariseLeadsWithTheStatement(t *testing.T) {
 		t.Errorf("empty summary = %q", Summarise(nil))
 	}
 }
+
+// One cycle can answer with several results: a multi-statement simple query and
+// a COPY both do. A line that showed the first of them would say the others
+// never happened.
+func TestSummariseKeepsEveryResultOfACycle(t *testing.T) {
+	client, _ := Deframe(msg('Q', cstr("UPDATE orders SET total = 1; SELECT id FROM orders")), true)
+	server, _ := Deframe(cat(
+		msg('C', cstr("UPDATE 2")),
+		msg('C', cstr("SELECT 7")),
+		msg('Z', []byte{'I'}),
+	), false)
+
+	got := Summarise(append(client, server...))
+	for _, want := range []string{"UPDATE 2", "SELECT 7"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary = %q, want %q in it", got, want)
+		}
+	}
+
+	failed, _ := Deframe(cat(
+		msg('E', append([]byte{'C'}, cstr("42P01")...), append([]byte{'M'}, cstr("relation does not exist")...), []byte{0}),
+		msg('E', append([]byte{'C'}, cstr("25P02")...), append([]byte{'M'}, cstr("transaction is aborted")...), []byte{0}),
+	), false)
+	if got := Summarise(failed); !strings.Contains(got, "42P01") || !strings.Contains(got, "+1 more") {
+		t.Errorf("summary = %q, want the first error and a count of the rest", got)
+	}
+}

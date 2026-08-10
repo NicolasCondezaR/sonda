@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,6 +57,39 @@ type listener struct {
 	// frees the port.
 	raw net.Listener
 	err error
+
+	// handler and serve are what the running listener actually dereferences,
+	// one load per request or per connection. An http.Server cannot have its
+	// Handler replaced once it is serving, so without this indirection editing
+	// a service's upstream would leave the old target wired to the port while
+	// every interface reported the new one — the tool lying about itself, which
+	// is the one thing this package exists to prevent.
+	handler atomic.Pointer[http.Handler]
+	serve   atomic.Pointer[func(net.Conn)]
+}
+
+// ServeHTTP is the stable handler the http.Server holds.
+func (l *listener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Take the handler and let go: a swap must never wait for a request to
+	// finish, nor a request for a swap.
+	h := l.handler.Load()
+	if h == nil || *h == nil {
+		http.Error(w, "no handler", http.StatusServiceUnavailable)
+		return
+	}
+	(*h).ServeHTTP(w, r)
+}
+
+// serveConn is the stable function the accept loop holds.
+func (l *listener) serveConn(c net.Conn) { (*l.serve.Load())(c) }
+
+// swap points a running listener at a rebuilt target.
+func (l *listener) swap(d Desired) {
+	if d.Serve != nil {
+		l.serve.Store(&d.Serve)
+		return
+	}
+	l.handler.Store(&d.Handler)
 }
 
 type Supervisor struct {
@@ -86,8 +120,11 @@ func (s *Supervisor) Apply(desired []Desired) []Status {
 	// not an update: a listening socket cannot be rebound.
 	for key, l := range s.running {
 		want, keep := wanted[key]
-		if keep && want.Listen == l.desired.Listen && l.err == nil {
-			l.desired = want // handler may have been rebuilt
+		if keep && want.Listen == l.desired.Listen && l.err == nil && sameKind(want, l.desired) {
+			l.desired = want
+			// The target is rebuilt on every reconcile, so keeping the port
+			// open only stays honest if the new one is put to work.
+			l.swap(want)
 			continue
 		}
 		s.stop(key, l)
@@ -102,6 +139,12 @@ func (s *Supervisor) Apply(desired []Desired) []Status {
 
 	return s.statusLocked()
 }
+
+// sameKind reports whether two Desired want the same kind of listener. A
+// service switched between HTTP and raw keeps its key and may keep its port,
+// but an http.Server cannot start speaking framed bytes: that one is a restart,
+// not a swap.
+func sameKind(a, b Desired) bool { return (a.Serve != nil) == (b.Serve != nil) }
 
 // StopAll closes every listener. Used when a project is deactivated and on
 // shutdown.
@@ -143,19 +186,23 @@ func (s *Supervisor) start(key string, d Desired) {
 	}
 
 	if d.Serve != nil {
-		s.running[key] = &listener{desired: d, raw: ln}
-		go accept(ln, d.Serve)
+		entry := &listener{desired: d, raw: ln}
+		entry.swap(d)
+		s.running[key] = entry
+		go accept(ln, entry.serveConn)
 		slog.Info("listening", "service", key, "listen", d.Listen)
 		return
 	}
 
+	entry := &listener{desired: d}
+	entry.swap(d)
 	server := &http.Server{
-		Handler: d.Handler,
+		Handler: entry,
 		// No read or write timeout: a debugging proxy must not be the thing
 		// that kills a slow call the developer is trying to observe.
 		ReadHeaderTimeout: 30 * time.Second,
 	}
-	entry := &listener{desired: d, server: server}
+	entry.server = server
 	s.running[key] = entry
 
 	go func() {

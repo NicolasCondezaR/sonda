@@ -304,7 +304,7 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 	// fault path all record through this one function, and a reading taken in
 	// three places is a reading that disagrees with itself.
 	describeGraphQL(c)
-	describePostgres(c)
+	postgresText := describePostgres(c)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -337,7 +337,7 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO calls_fts (rowid, text) VALUES (?, ?)`, id, indexText(c),
+		`INSERT INTO calls_fts (rowid, text) VALUES (?, ?)`, id, indexText(c, postgresText),
 	); err != nil {
 		return 0, fmt.Errorf("index call: %w", err)
 	}
@@ -661,7 +661,7 @@ func decodeHeaders(s string) (http.Header, error) {
 //
 // Genuinely binary payloads are still skipped: indexing them yields noise
 // rather than matches, and bloats the index with tokens nobody searches for.
-func indexText(c *Call) string {
+func indexText(c *Call, extra string) string {
 	var b strings.Builder
 	b.WriteString(c.Target)
 	b.WriteByte(' ')
@@ -677,13 +677,16 @@ func indexText(c *Call) string {
 		b.WriteString(c.GRPCMessage)
 	}
 	// A Postgres stream is full of NUL bytes and length prefixes, so isIndexable
-	// rejects it as binary and the SQL inside it would be unsearchable. The
-	// summary is the one line that carries the statement, so it is indexed
-	// explicitly. Only that line: the second statement of a session is still
-	// only findable by opening the capture.
-	if c.PostgresSummary != "" {
+	// rejects it as binary and everything readable inside it would be lost to
+	// search. extra is that reading, taken while the stream was decoded for the
+	// summary: the statement in full rather than the summary's first ninety
+	// characters, the parameters bound to it, and what the server answered.
+	if extra != "" {
 		b.WriteByte(' ')
-		b.WriteString(c.PostgresSummary)
+		if len(extra) > ftsTextLimit {
+			extra = extra[:ftsTextLimit]
+		}
+		b.WriteString(extra)
 	}
 	for _, body := range [][]byte{c.Request.Body, c.Response.Body} {
 		if !isIndexable(body) {
@@ -849,32 +852,34 @@ func describeGraphQL(c *Call) {
 	c.GraphQLErrors = e.Errors()
 }
 
-// describePostgres reads the database, the one-line summary and the error count
-// off a captured session.
+// describePostgres reads the one-line summary and the error count off a
+// captured statement, and returns the text worth putting in the search index.
 //
 // It runs here for the same reason describeGraphQL does: every writer routes
 // through Insert, and a reading taken in three places is a reading that
 // disagrees with itself. It writes nothing back into either stream — the record
 // stays the exact bytes that crossed, minus the credentials the tap already
 // blanked on the way in.
-//
-// Path is filled here rather than by the proxy because the database name is in
-// the startup message, and deframing the stream a second time in the listener
-// just to read it would be the same reading taken twice.
-func describePostgres(c *Call) {
+func describePostgres(c *Call) string {
 	if c.Protocol != config.ProtocolPostgres {
-		return
+		return ""
 	}
 	sent, _ := pgwire.Deframe(c.Request.Body, true)
 	received, _ := pgwire.Deframe(c.Response.Body, false)
 
-	for _, m := range sent {
-		if m.Kind == "startup" {
-			// Left blank when the client did not name one: Postgres then
-			// defaults it to the user name, and repeating that guess here would
-			// put a database in the field that may not be the one used.
-			c.Path = m.Parameters["database"]
-			break
+	// The proxy already knows the database and puts it on every statement of a
+	// connection, only the first of which carries the startup message. This is
+	// the fallback for a capture that arrived without one.
+	if c.Path == "" {
+		for _, m := range sent {
+			if m.Kind == "startup" {
+				// Left blank when the client did not name one: Postgres then
+				// defaults it to the user name, and repeating that guess here
+				// would put a database in the field that may not be the one
+				// used.
+				c.Path = m.Parameters["database"]
+				break
+			}
 		}
 	}
 	for _, m := range received {
@@ -888,4 +893,35 @@ func describePostgres(c *Call) {
 	all := make([]pgwire.Message, 0, len(sent)+len(received))
 	all = append(append(all, sent...), received...)
 	c.PostgresSummary = pgwire.Summarise(all)
+	return postgresIndexText(all)
+}
+
+// postgresIndexText is everything readable in a statement, for the search
+// index: the SQL in full, the values bound to it, the command tags and what the
+// server complained about.
+//
+// The summary alone is not enough. It is one line cut at ninety characters, and
+// searching for a table named halfway down a formatted statement would miss it.
+func postgresIndexText(msgs []pgwire.Message) string {
+	var b strings.Builder
+	write := func(s string) {
+		if s == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(s)
+	}
+	for _, m := range msgs {
+		write(m.SQL)
+		write(m.Tag)
+		write(m.Message)
+		write(m.Code)
+		write(m.Detail)
+		for _, p := range m.Params {
+			write(p.Text)
+		}
+	}
+	return b.String()
 }

@@ -68,14 +68,16 @@ func (s *Server) replayCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Neither a socket nor a Postgres session is a request that can be sent
-	// again: replaying one would open a new conversation and label the result a
-	// replay of this one. Both clients already refuse to offer the control, but
-	// the refusal belongs here, where every caller — including an agent over
-	// MCP — goes through it.
+	// Neither a socket nor a Postgres statement is a request that can be sent
+	// again: replaying one would open a new connection and label the result a
+	// replay of this one — and a statement also belongs to a session and a
+	// transaction that are gone, so even the same SQL would not be the same
+	// call. Both clients already refuse to offer the control, but the refusal
+	// belongs here, where every caller — including an agent over MCP — goes
+	// through it.
 	if call.Protocol == config.ProtocolWebSocket || call.Protocol == config.ProtocolPostgres {
 		writeError(w, http.StatusConflict, fmt.Sprintf(
-			"a %s capture is a whole conversation, not a request: replaying it would open a new one, not repeat this one",
+			"a %s capture cannot be replayed: it belongs to a connection that is gone, and sending it again would open a new one rather than repeat this one",
 			call.Protocol))
 		return
 	}

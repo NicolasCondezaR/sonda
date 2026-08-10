@@ -456,7 +456,7 @@ la herramienta como el replay junto con ella.
 
 Hay exactamente una excepción, y lo es porque ahí el balance se invierte: la
 contraseña de **Postgres** se borra de la captura mientras los bytes pasan. Una
-sesión de base de datos no se puede reenviar de todos modos, así que no se
+captura de base de datos no se puede reenviar de todos modos, así que no se
 pierde nada por no guardarla, y la alternativa es una credencial viva en un
 archivo en texto plano. Ver [PostgreSQL](#postgresql).
 
@@ -650,8 +650,8 @@ ilegible, no como una llamada sin errores.
 
 Todos los demás protocolos que Sonda captura son un salto entre servicios.
 Postgres es el salto de abajo: pone el SQL que una petición ejecutó de verdad en
-el campo, junto a la llamada HTTP que lo provocó, y un N+1 deja de ser una
-sospecha para volverse cuarenta filas al lado de un solo handler.
+el campo, debajo de la llamada HTTP que lo provocó, una fila por sentencia, y un
+N+1 deja de ser una sospecha para volverse cuarenta filas bajo un solo handler.
 
 Una base de datos se declara como cualquier otro servicio, con
 `protocol: postgres` y un upstream que nombra el transporte:
@@ -697,20 +697,44 @@ Sonda guarda, nunca a los bytes que recibe la base de datos: la contraseña real
 llega al servidor y el login funciona. Las dos mitades están cubiertas por
 pruebas.
 
-### Cómo se ve una sesión
+### Qué es una captura
 
-- **Una captura es una conexión, no una consulta.** La sesión se registra cuando
-  se cierra, igual que un socket, y trae todo lo que la conexión llevó. Detrás
-  de un pool de conexiones eso significa que una sola captura puede contener
-  horas de SQL de la aplicación; ver las limitaciones más abajo.
+- **Una captura es una sentencia, no una conexión.** El protocolo regala el
+  límite: una consulta simple es `Q` → resultados → `ReadyForQuery`, una
+  extendida es Parse/Bind/Describe/Execute/Sync → resultados → `ReadyForQuery`,
+  y la `Z` cierra el ciclo en las dos. Cada fila lleva el SQL, los valores que
+  se le asociaron, lo que respondió el servidor —la etiqueta de comando, el
+  número de filas o el error— y el tiempo de esa sentencia sola.
+- **El SQL queda colgado bajo la petición que lo ejecutó**, y no hace falta
+  ningún mecanismo nuevo para correlacionarlos. Sonda ya arma el árbol por
+  contención: una llamada que empieza no antes y termina no después que otra es
+  hija suya, y una sentencia ejecutada durante una petición HTTP está contenida
+  en ella por definición. Eso solo funciona porque la captura se mide desde la
+  sentencia y no desde la conexión, que es justamente la razón de partirla:
+  detrás de un pool, una conexión lleva horas de SQL de la aplicación, y horas
+  de SQL no se pueden colgar de ninguna petición.
+- **La apertura de la conexión viaja en su primera sentencia.** Los parámetros
+  de inicio, el mecanismo que se exigió y los ajustes del servidor ocurren una
+  sola vez, y son contexto de lo primero que la conexión ejecutó, no una fila
+  propia: una fila sin SQL adentro sería ruido en cada conexión de un pool. Pero
+  callar que hubo una autenticación no es algo que un depurador pueda hacer, así
+  que una conexión que se autenticó y no ejecutó nada sí recibe su propia fila,
+  con el método `SESSION`.
 - **La ruta es la base de datos**, leída del mensaje de inicio en vez de
-  inventada, y el método es `SESSION` porque una sesión no es una petición y no
-  hay ningún verbo honesto para ella. No hay estado HTTP, y no se muestra
-  ninguno.
-- **El listado lleva un resumen**: la primera sentencia y cómo terminó
+  inventada, y puesta en cada sentencia de la conexión: solo la primera contiene
+  el mensaje del que salió. El método es `STATEMENT`. No hay estado HTTP, y no
+  se muestra ninguno.
+- **El listado lleva la sentencia misma** y cómo terminó
   (`SELECT id FROM orders WHERE total > 100 -> SELECT 12`), o el error si lo
-  hubo. Sin él, cada sesión contra una base de datos se lee como la misma fila
-  repetida.
+  hubo. Se nombran todos los resultados del ciclo, no solo el primero: un `COPY`
+  y una consulta simple con varias sentencias responden una vez con varios.
+- **Una sentencia que nunca terminó igual queda registrada, y lo dice.** Se cayó
+  la conexión a mitad de la consulta, o la captura terminó con la sentencia en
+  vuelo: la fila se escribe con lo que cruzó y con un error que dice que nunca
+  llegó un `ReadyForQuery`. Darla por exitosa sería mentir, y descartarla sería
+  perder justamente la sentencia que valía la pena.
+- **La sentencia se busca completa** —el SQL, los valores asociados, las
+  etiquetas de comando y la queja del servidor—, no solo la línea de resumen.
 - **El inspector muestra los mensajes**: las sentencias, sus parámetros con
   `NULL` distinguido de la cadena vacía, las columnas descritas, las etiquetas
   de comando, el estado de la transacción y cualquier error del servidor con su
@@ -719,16 +743,16 @@ pruebas.
 
 **Un error de SQL es un fallo.** Llega como un `ErrorResponse` dentro del flujo,
 sin ningún código de estado en ninguna parte, así que una herramienta que solo
-mire el transporte lo mostraría como una sesión sana. Sonda lo cuenta como fallo
-en todos los lugares donde se hace la pregunta: el filtro de fallos, el riel de
-canales, las marcas de fallo del campo, la terminal, el árbol de trazas y
-`recent_failures` por MCP. Es el mismo problema que tienen gRPC y GraphQL, y se
-resuelve igual.
+mire el transporte lo mostraría como una sentencia sana. Sonda lo cuenta como
+fallo en todos los lugares donde se hace la pregunta: el filtro de fallos, el
+riel de canales, las marcas de fallo del campo, la terminal, el árbol de trazas
+y `recent_failures` por MCP. Es el mismo problema que tienen gRPC y GraphQL, y
+se resuelve igual.
 
-**Una sesión no se puede reenviar.** Es una conversación entera, no una
-petición, y mandarla de nuevo abriría otra distinta. Todas las superficies se
-niegan, incluida la propia API, así que un agente recibe la misma respuesta que
-el navegador.
+**Una sentencia no se puede reenviar.** Pertenece a una conexión, una sesión y
+una transacción que ya no existen, y mandar el SQL de nuevo lo ejecutaría en
+otro lugar. Todas las superficies se niegan, incluida la propia API, así que un
+agente recibe la misma respuesta que el navegador.
 
 ## Deriva de contratos
 
@@ -950,7 +974,7 @@ leerse como operadores de consulta.
 | 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
 | 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
-| 17 | PostgreSQL: el SQL que hay debajo de la petición, con las credenciales borradas antes de guardarlas | listo |
+| 17 | PostgreSQL: una captura por sentencia, colgada bajo la petición que la ejecutó, con las credenciales borradas antes de guardarlas | listo |
 
 ### Limitaciones
 
@@ -964,16 +988,16 @@ leerse como operadores de consulta.
 - Las capturas tomadas antes del soporte de GraphQL no reportan operación ni
   errores. Nada se vuelve a leer con efecto retroactivo: una captura vieja que
   cambia de resultado en silencio es peor que una que está honestamente vacía.
-- **Una captura de Postgres es una conexión, no una sentencia.** Detrás de un
-  pool de conexiones una sola fila puede contener todo el SQL de una aplicación,
-  y solo se escribe cuando la conexión se cierra, así que el SQL de una petición
-  concreta no queda de forma fiable debajo de esa petición en el árbol de
-  trazas. Las conexiones de vida corta, `psql` y los pools con un tiempo de
-  inactividad bajo se comportan como uno esperaría; una conexión de pool de vida
-  larga no.
-- Solo la línea de resumen de una sesión de Postgres se puede buscar por texto.
-  El flujo es binario, así que la segunda sentencia de una sesión se encuentra
-  abriendo la captura, no buscándola.
+- Una sentencia preparada en un ciclo y ejecutada en otro posterior muestra el
+  nombre con el que se preparó y no su SQL: el texto cruzó el cable una sola
+  vez, en la captura que contiene el `Parse`, y no se escriben en una captura
+  bytes que no pasaron por ella. Los parámetros, el tiempo y el resultado sí
+  están, y los drivers que preparan por consulta y no por conexión no se ven
+  afectados.
+- Un cliente que encadena más de dieciséis sentencias sin recibir una sola
+  respuesta hace que la más antigua se escriba tal como está en vez de quedar
+  retenida: nada puede acumularse en memoria esperando una respuesta que no va a
+  llegar.
 - Una conexión de Postgres que negocia TLS se reenvía y se captura, pero los
   bytes posteriores al handshake son registros TLS y nada en ellos se puede
   leer: el mismo límite que cualquier otro upstream cifrado.
