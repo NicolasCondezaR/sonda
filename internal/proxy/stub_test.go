@@ -69,7 +69,7 @@ func stubbed(t *testing.T, stubs Stubs) (*httptest.Server, *captured) {
 		Name: "ms-rates", Listen: "127.0.0.1:0",
 		Upstream: "http://127.0.0.1:1", Protocol: config.ProtocolHTTP,
 	}
-	front := httptest.NewServer(New(target, 1<<20, rec, stubs))
+	front := httptest.NewServer(New(target, 1<<20, rec, stubs, nil))
 	t.Cleanup(front.Close)
 	return front, rec
 }

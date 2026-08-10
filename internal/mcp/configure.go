@@ -109,6 +109,26 @@ func configureTools() []Tool {
 		},
 
 		{
+			Name:  "break_service",
+			Title: "Make a service misbehave on purpose",
+			Description: "Add latency, answer with a status without reaching the service, or cut the connection outright. Use it to find out whether the caller's retries, timeouts and degradation actually work — the code nobody exercises because making a real service fail is awkward. " +
+				"Faults are deterministic: one call in three means one call in three, the same sequence every run, so a failure can be reproduced. Every injected failure is recorded as injected and carries an X-Sonda-Fault header, and rules are forgotten when Sonda restarts.",
+			Schema: obj(map[string]any{
+				"service":    prop("string", "Service name."),
+				"latency_ms": prop("integer", "Milliseconds to add before forwarding. The service still answers."),
+				"status":     prop("integer", "Answer with this HTTP status instead of forwarding. The service is never reached."),
+				"cut":        prop("boolean", "Drop the connection without answering at all."),
+				"one_in":     prop("integer", "Apply to one call in every N. Defaults to every call."),
+				"clear":      prop("boolean", "Remove the rule for this service."),
+				"clear_all":  prop("boolean", "Remove every rule."),
+			}),
+			// It changes what callers receive, which is exactly the surprise
+			// worth confirming first.
+			Annotations: changing,
+			Run:         breakService,
+		},
+
+		{
 			Name:  "disconnect_project",
 			Title: "Close the ports and undo the pointing",
 			Description: "Stop observing: closes every port and returns the variable changes that put things back the way they were, so whatever you repointed can be pointed at the real services again. " +
@@ -412,4 +432,33 @@ func setStub(ctx context.Context, s *Server, a args) (any, error) {
 		return nil, err
 	}
 	return s.post(ctx, "/api/stub", body)
+}
+
+func breakService(ctx context.Context, s *Server, a args) (any, error) {
+	if a.boolean("clear_all") {
+		return s.post(ctx, "/api/faults", []byte(`{"clear_all":true}`))
+	}
+	service := a.str("service")
+	if service == "" {
+		return nil, fmt.Errorf("which service? pass its name, or clear_all:true to remove every rule")
+	}
+
+	rule := map[string]any{"service": service}
+	if a.boolean("clear") {
+		rule["clear"] = true
+	} else {
+		for _, key := range []string{"latency_ms", "status", "one_in"} {
+			if a.has(key) {
+				rule[key] = a.num(key, 0)
+			}
+		}
+		if a.boolean("cut") {
+			rule["cut"] = true
+		}
+	}
+	body, err := json.Marshal(rule)
+	if err != nil {
+		return nil, err
+	}
+	return s.post(ctx, "/api/faults", body)
 }

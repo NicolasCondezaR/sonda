@@ -79,7 +79,7 @@ func newLiveStack(t *testing.T) *liveStack {
 	}
 
 	recorder := &directRecorder{store: db}
-	server := &http.Server{Handler: proxy.New(stack.target, 1<<20, recorder, nil).Handler()}
+	server := &http.Server{Handler: proxy.New(stack.target, 1<<20, recorder, nil, nil).Handler()}
 	go server.Serve(listener)
 	t.Cleanup(func() { server.Close() })
 

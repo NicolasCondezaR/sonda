@@ -29,6 +29,7 @@ const state = {
   detail: null,             // the call currently in the inspector
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
   stubbed: new Set(),        // services answering from recordings, not the wire
+  broken: new Map(),         // service -> the rule Sonda is applying to it
   pxPerMs: 0,
   epoch: Date.now(),
   laneWidth: 0,
@@ -165,6 +166,12 @@ function renderRail() {
     if (stubbed) {
       row.appendChild(el("span", "channel__stub", "STUB"));
       row.title += " — answering from recordings, not being called";
+    }
+    // Being broken on purpose is a mode too, and the one most worth seeing
+    // before spending an hour on the failures it is causing.
+    if (state.broken.has(target.name)) {
+      row.appendChild(el("span", "channel__stub channel__stub--broken", "BROKEN"));
+      row.title += " — broken on purpose: " + state.broken.get(target.name);
     }
     row.append(
       el("span", "channel__calls", "0"),
@@ -354,10 +361,11 @@ function query() {
 
 async function reload() {
   try {
-    const [callsRes, statsRes, stubRes] = await Promise.all([
+    const [callsRes, statsRes, stubRes, faultRes] = await Promise.all([
       fetch("api/calls?" + query()),
       fetch("api/stats"),
       fetch("api/stub"),
+      fetch("api/faults"),
     ]);
     if (!callsRes.ok) throw new Error("calls " + callsRes.status);
 
@@ -372,6 +380,15 @@ async function reload() {
       const changed = next.size !== state.stubbed.size ||
         [...next].some((name) => !state.stubbed.has(name));
       state.stubbed = next;
+      if (changed) renderRail();
+    }
+
+    if (faultRes.ok) {
+      const { faults } = await faultRes.json();
+      const next = new Map(Object.entries(faults || {}));
+      const changed = next.size !== state.broken.size ||
+        [...next].some(([name, rule]) => state.broken.get(name) !== rule);
+      state.broken = next;
       if (changed) renderRail();
     }
     if (statsRes.ok) {
@@ -532,6 +549,15 @@ function renderInspector(call) {
   // Provenance before anything else. Everything below is a reading of something
   // recorded earlier, and a reader who scrolls straight to the payload would
   // otherwise take it for what just happened.
+  // Said before anything else: this failure is Sonda's, not the service's, and
+  // a reader who takes it for real spends an hour on a bug that is not there.
+  if (call.injected) {
+    const line = el("div", "insp-head__stub insp-head__stub--broken");
+    line.append(el("b", null, "BROKEN ON PURPOSE"), document.createTextNode(" · "));
+    line.appendChild(document.createTextNode(call.error || "Sonda injected this failure."));
+    head.appendChild(line);
+  }
+
   if (call.stub_of) {
     const line = el("div", "insp-head__stub");
     line.append(el("b", null, "FROM RECORDING"), document.createTextNode(" · "));

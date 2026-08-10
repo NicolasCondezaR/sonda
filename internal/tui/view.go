@@ -232,6 +232,14 @@ func (m Model) renderInspector() string {
 	// Stated before the payload, for the same reason the web client states it:
 	// everything below is a reading of something recorded earlier, and a reader
 	// who scrolls straight to the body would take it for what just happened.
+	// Sonda's own interference, said before the payload for the same reason the
+	// web client says it: a reader who takes it for the service's failure
+	// spends an hour on a bug that is not there.
+	if d.Injected {
+		lines = append(lines, styleFault.Render(
+			" BROKEN ON PURPOSE · "+truncate(orDefault(d.Error, "Sonda injected this failure."), m.width-24)))
+	}
+
 	if d.StubOf != nil {
 		lines = append(lines, styleInk.Render(
 			fmt.Sprintf(" FROM RECORDING · the service was not called. Answered from capture #%d", *d.StubOf)))

@@ -44,7 +44,7 @@ func newProxy(t *testing.T, upstream *httptest.Server, maxBody int64, rec Record
 		Upstream: upstream.URL,
 		Protocol: config.ProtocolHTTP,
 	}
-	front := httptest.NewServer(New(target, maxBody, rec, nil))
+	front := httptest.NewServer(New(target, maxBody, rec, nil, nil))
 	t.Cleanup(front.Close)
 	return front
 }
@@ -208,7 +208,7 @@ func TestUnreachableUpstreamIsCaptured(t *testing.T) {
 
 	rec := &collector{}
 	target := config.Target{Name: "dead", Listen: "127.0.0.1:0", Upstream: deadURL, Protocol: config.ProtocolHTTP}
-	front := httptest.NewServer(New(target, 1024, rec, nil))
+	front := httptest.NewServer(New(target, 1024, rec, nil, nil))
 	defer front.Close()
 
 	resp, err := http.Get(front.URL + "/anything")

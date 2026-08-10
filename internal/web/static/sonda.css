@@ -684,6 +684,13 @@ body {
 
 .insp-head__stub b { font-weight: 600; }
 
+/* A failure the tool caused, marked with the colour failure already owns. This
+   is the one place fault is used outside the field, and it earns it: the whole
+   point is that this line reads as a failure, because it is one — just not the
+   service's. */
+.insp-head__stub--broken { color: var(--fault); }
+.channel__stub--broken { color: var(--fault); }
+
 .insp-head__stub button {
   font: inherit;
   color: var(--ink-dim);

@@ -146,7 +146,7 @@ func socketProxy(t *testing.T, upstream string) (*httptest.Server, *captured) {
 		Name: "realtime", Listen: "127.0.0.1:0",
 		Upstream: "http://" + upstream, Protocol: config.ProtocolHTTP,
 	}
-	front := httptest.NewServer(New(target, 1<<20, rec, nil))
+	front := httptest.NewServer(New(target, 1<<20, rec, nil, nil))
 	t.Cleanup(front.Close)
 	return front, rec
 }

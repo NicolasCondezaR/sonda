@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/fault"
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
 	"github.com/NicolasCondezaR/sonda/internal/stub"
@@ -36,10 +37,16 @@ type Server struct {
 	// stubs is nil when nothing wired one in, which is how every test that
 	// does not care about stubbing keeps working.
 	stubs *stub.Registry
+
+	// faults is nil the same way, and a nil one reports no rules.
+	faults *fault.Registry
 }
 
 // WithStubs gives the server control of which services answer from recordings.
 func (s *Server) WithStubs(r *stub.Registry) *Server { s.stubs = r; return s }
+
+// WithFaults gives the server control of which services are broken on purpose.
+func (s *Server) WithFaults(r *fault.Registry) *Server { s.faults = r; return s }
 
 func New(s *store.Store, dropped Dropper, rt *runtime.Runtime) *Server {
 	return &Server{store: s, dropped: dropped, rt: rt, hub: NewHub()}
@@ -85,6 +92,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/trace", s.traceForCall)
 	mux.HandleFunc("GET /api/stub", s.stubState)
 	mux.HandleFunc("POST /api/stub", s.setStub)
+	mux.HandleFunc("GET /api/faults", s.faultState)
+	mux.HandleFunc("POST /api/faults", s.setFault)
 
 	mux.HandleFunc("GET /api/projects", s.listProjects)
 	mux.HandleFunc("POST /api/projects", s.createProject)
@@ -130,6 +139,11 @@ type summaryJSON struct {
 	// recording. It has to reach every listing, because a stub that looks like
 	// live traffic is the one thing that feature must never be.
 	StubOf *int64 `json:"stub_of,omitempty"`
+
+	// Injected says Sonda broke this call on purpose. It has to reach every
+	// listing: a fault the field shows as the service's own sends someone
+	// hunting a bug that does not exist.
+	Injected bool `json:"injected,omitempty"`
 
 	// TraceID is what groups this call with the rest of its request. Present
 	// only when something upstream put it in the headers.
@@ -367,6 +381,7 @@ func toSummary(c store.Summary) summaryJSON {
 		GRPCMessage:  c.GRPCMessage,
 		ReplayOf:     c.ReplayOf,
 		StubOf:       c.StubOf,
+		Injected:     c.Injected,
 		TraceID:      c.TraceID,
 	}
 	if c.GRPCStatus != nil {
