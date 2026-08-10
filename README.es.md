@@ -1122,6 +1122,38 @@ leerse como operadores de consulta.
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
 | 17 | PostgreSQL: una captura por sentencia, colgada bajo la petición que la ejecutó, con las credenciales borradas antes de guardarlas | listo |
 | 18 | TLS: terminado para el cliente desde una autoridad local que Sonda nunca instala, hablado hacia el upstream, y registrado en cada captura como verificado o no | listo |
+| 19 | AMQP 0-9-1: el decodificador del protocolo, con las credenciales nombradas pero no decodificadas | decodificador listo, captura sin construir |
+
+Kafka falta de esa tabla a propósito. Por qué, y qué hacer en su lugar, va abajo.
+
+### Capturar Kafka
+
+Sonda puede capturar Kafka, pero no apuntándolo a un broker.
+
+Un cliente de Kafka usa su primera conexión solo para preguntar dónde están los
+brokers. La respuesta es lo que el broker publique como `advertised.listeners`,
+y el cliente abre entonces **conexiones nuevas directamente a esas direcciones**
+y manda por ahí todo lo que importa: las publicaciones, las lecturas y cada
+llamada de grupo. Un proxy en medio ve el saludo inicial y después nada, para
+siempre, mientras el tráfico por el que alguien conectó un depurador pasa por
+al lado.
+
+Apunta el broker a Sonda, en vez de poner a Sonda delante del broker:
+
+```yaml
+# docker-compose.yml — el broker escucha en 9192 y Sonda se queda con 9092
+KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+```
+
+Así entran todas las conexiones, la de arranque y las de los brokers, y **no se
+reescribe nada**. Vas a ver dos sockets a la misma dirección: no es un
+duplicado, es lo que el cliente hace de verdad.
+
+En un clúster real con varios brokers esto deja de funcionar, y Sonda se detiene
+ahí. Conseguir que el cliente se quede significaría editar al vuelo las
+direcciones de los brokers dentro de las respuestas, y eso convertiría cada
+captura en el registro de un clúster que no existe. Para eso está una pasarela
+de Kafka, que es justamente lo contrario de lo que es esto.
 
 ### Limitaciones
 
