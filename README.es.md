@@ -18,12 +18,13 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 18.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 19.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
-> [modo stub](#modo-stub) un [servidor MCP para agentes de código](#agentes)
-> y [TLS](#tls) funcionan, y todo se levanta con `docker compose up`.
-> Ver [Hoja de ruta](#hoja-de-ruta).
+> [modo stub](#modo-stub), un [servidor MCP para agentes de código](#agentes)
+> y [TLS](#tls) funcionan, y todo se levanta con `docker compose up`. La fase 19
+> es AMQP 0-9-1: el decodificador del protocolo está escrito y la captura
+> todavía no. Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
 
@@ -61,12 +62,19 @@ sean estáticos y la imagen pese 50 MB.
 | **macOS** | `brew install NicolasCondezaR/tap/sonda` |
 | **Windows** | `scoop bucket add nicolascondezar https://github.com/NicolasCondezaR/scoop-bucket`<br>`scoop install sonda` |
 | **Go** | `go install github.com/NicolasCondezaR/sonda/cmd/sonda@latest` |
-| **Docker** | `docker run -p 9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
+| **Docker** | `docker run -p 127.0.0.1:9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
 | **Binario** | Descárgalo desde [Releases](https://github.com/NicolasCondezaR/sonda/releases), descomprime y ejecuta |
 | **Fuente** | `git clone` y `go build ./cmd/sonda` |
 
 En Linux usa `go install`, la imagen o el tarball: las casks de Homebrew son
 solo para macOS.
+
+La línea de Docker publica en `127.0.0.1` y no en todas las interfaces, igual
+que el resto de este documento: `sonda.db` guarda las credenciales que hayan
+cruzado el cable, en texto plano y sin ningún login delante. Dentro del
+contenedor Sonda escucha en `0.0.0.0` —ahí el aislamiento lo pone el
+contenedor—, que es lo que hace `-api-listen` en el comando de la imagen; fuera
+de un contenedor el valor por omisión sigue siendo loopback.
 
 Los archivos del release traen cuatro binarios, no uno: `sonda`, el cliente de
 terminal `sonda-tui`, y los dos servicios de juguete `echo` y `grpcdemo` que usa
@@ -121,6 +129,11 @@ cp sonda.example.yaml sonda.yaml
 ./grpcdemo -addr 127.0.0.1:8082 &
 ./sonda -config sonda.yaml
 ```
+
+De aquí en adelante es igual que arriba: abre **http://127.0.0.1:9000** y mándale
+las tres peticiones del bloque de Docker. Los puertos son los mismos, porque
+`sonda.example.yaml` y la configuración de compose describen los mismos dos
+servicios de juguete.
 
 ## La interfaz
 
@@ -234,7 +247,7 @@ docker compose run --rm tui            # or from the image
 ```
 
 ```
-M I R A D O R  ■ LIVE   FAULTS  ALL    1M  5M  30M                  19 CAPTURED  ·  2 FLAGGED
+S O N D A  ■ LIVE   FAULTS  ALL    1M  5M  30M                      19 CAPTURED  ·  2 FLAGGED
 CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -10M       -5M  NOW
  ■ echo       7     1     │·············│···········│···········│···········│·········█·····
 ▸■ orders     12    1     │·············│···········│···········│···········│·········█·····
@@ -249,7 +262,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
      "message": "no tienes acceso a este pedido"
    }
  RESPONSE  0 message(s)
- ↑↓ chan · ←→ call · ⏎ read · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
+ ↑↓ chan · ←→ call · g/G ends · ⏎ read · esc close · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
 La traducción es casi directa: la monoespaciada es gratis acá, las líneas de un
@@ -265,9 +278,12 @@ iguales. Dos cosas necesitaron otra expresión:
 
 | Tecla | |
 |---|---|
-| `↑` `↓` | elegir canal |
-| `←` `→` | recorrerlo, llamada por llamada |
+| `↑` `↓` o `k` `j` | elegir canal |
+| `←` `→` o `H` `L` | recorrerlo, llamada por llamada |
+| `home` o `g` | saltar a la llamada más antigua del canal |
+| `end` o `G` | saltar a la más reciente |
 | `enter` | leer la llamada seleccionada |
+| `esc` | cerrar lo que esté abierto: inspector, diff, árbol o contrato |
 | `t` | ver la petición completa a la que perteneció, como árbol |
 | `c` | si este endpoint cambió de forma desde que funcionaba |
 | `r` | reenviarla |
@@ -275,8 +291,8 @@ iguales. Dos cosas necesitaron otra expresión:
 | `f` | solo fallos, o todo |
 | `w` | cambiar el barrido |
 | `h` | congelar el trazo |
-| `/` | buscar |
-| `q` | salir |
+| `/` | buscar; `enter` aplica la búsqueda y `esc` la limpia y sale del campo |
+| `q` o `ctrl+c` | salir |
 
 El recorrido avanza llamada por llamada y no celda por celda: una celda vacía no
 es algo a lo que apuntar. `h` congela el trazo por la misma razón por la que el
@@ -813,8 +829,11 @@ confianza de la máquina es una decisión que le corresponde tomar a quien la us
 y una herramienta de depuración que lo hiciera en silencio sería
 indistinguible de un programa malicioso.
 
-Los comandos se imprimen en la primera ejecución, aparecen en el panel de
-autoridad certificadora de la interfaz y los devuelve la herramienta MCP
+Los comandos se imprimen la primera vez que la autoridad hace falta de verdad
+—cuando arranca por primera vez un servicio con `tls: true`, que no es lo mismo
+que la primera ejecución: un Sonda sin ningún objetivo TLS nunca crea una
+autoridad y no imprime nada—. También aparecen en el panel de autoridad
+certificadora de la interfaz y los devuelve la herramienta MCP
 `trust_certificate`. La opción acotada suele ser la correcta, porque no confía
 en nada más de la máquina y no deja nada que deshacer:
 
@@ -933,6 +952,7 @@ bastante engorroso como para que nadie lo haga. Sonda ya está en el camino.
 ```bash
 curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-rates","latency_ms":2000}'
 curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-seo","status":503,"one_in":3}'
+curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-auth","cut":true}'
 ```
 
 Desde un agente, `break_service` hace lo mismo, y pregunta antes.
@@ -1124,12 +1144,16 @@ leerse como operadores de consulta.
 | 18 | TLS: terminado para el cliente desde una autoridad local que Sonda nunca instala, hablado hacia el upstream, y registrado en cada captura como verificado o no | listo |
 | 19 | AMQP 0-9-1: el decodificador del protocolo, con las credenciales nombradas pero no decodificadas | decodificador listo, captura sin construir |
 
-Kafka falta de esa tabla a propósito. Por qué, y qué hacer en su lugar, va abajo.
+Kafka falta de esa tabla a propósito. Por qué, va abajo.
 
-### Capturar Kafka
+### Por qué falta Kafka
 
-Sonda puede capturar Kafka, pero no apuntándolo a un broker.
+**Hoy Sonda no tiene ningún listener de Kafka.** `protocol:` acepta `http`,
+`grpc` y `postgres`, y las tramas de Kafka que lleguen a un listener HTTP se
+leen como una petición malformada. Nada de esta sección se puede usar todavía:
+es la explicación de por qué falta la fila, no una receta.
 
+Poner un proxy delante de un broker no funciona, y la razón no es el protocolo.
 Un cliente de Kafka usa su primera conexión solo para preguntar dónde están los
 brokers. La respuesta es lo que el broker publique como `advertised.listeners`,
 y el cliente abre entonces **conexiones nuevas directamente a esas direcciones**
@@ -1138,22 +1162,26 @@ llamada de grupo. Un proxy en medio ve el saludo inicial y después nada, para
 siempre, mientras el tráfico por el que alguien conectó un depurador pasa por
 al lado.
 
-Apunta el broker a Sonda, en vez de poner a Sonda delante del broker:
+Conseguir que el cliente se quede significaría reescribir al vuelo las
+direcciones de los brokers dentro de esas respuestas. Sonda no lo va a hacer,
+por la razón que encabeza `internal/proxy/proxy.go`: el reenvío es byte a byte,
+y una captura de un clúster que no existe es peor que no capturar nada.
+Reescribir direcciones es para lo que está una pasarela de Kafka, que es
+justamente lo contrario de esto.
+
+Hay una salida que no reescribe nada: apuntar el broker a Sonda en vez de poner
+a Sonda delante del broker, de modo que toda dirección que reciba el cliente sea
+una a la que se pretendía que se conectara:
 
 ```yaml
-# docker-compose.yml — el broker escucha en 9192 y Sonda se queda con 9092
+# el broker escucharía en 9192 y Sonda se quedaría con 9092
 KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
 ```
 
-Así entran todas las conexiones, la de arranque y las de los brokers, y **no se
-reescribe nada**. Vas a ver dos sockets a la misma dirección: no es un
-duplicado, es lo que el cliente hace de verdad.
-
-En un clúster real con varios brokers esto deja de funcionar, y Sonda se detiene
-ahí. Conseguir que el cliente se quede significaría editar al vuelo las
-direcciones de los brokers dentro de las respuestas, y eso convertiría cada
-captura en el registro de un clúster que no existe. Para eso está una pasarela
-de Kafka, que es justamente lo contrario de lo que es esto.
+Así que si alguna vez se construye la captura de Kafka, así va a estar cableada,
+y lo que falta por escribir es un protocolo `kafka` con su listener crudo y un
+decodificador al lado de `pgwire` y `amqpwire`. La parte difícil nunca fue el
+protocolo.
 
 ### Limitaciones
 

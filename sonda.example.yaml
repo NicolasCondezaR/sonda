@@ -59,7 +59,9 @@ targets:
   # port with a certificate of its own, so the caller is pointed at
   # https://127.0.0.1:9104 instead. The certificate is signed by an authority
   # Sonda generates beside the database — nothing is added to this machine's
-  # trust store, and the first run prints the command to trust it yourself.
+  # trust store, and the first start of a target like this one prints the
+  # command to trust it yourself. A Sonda with no TLS target prints nothing,
+  # because it never creates an authority.
   # - name: web-api
   #   listen: 127.0.0.1:9104
   #   upstream: http://127.0.0.1:3000

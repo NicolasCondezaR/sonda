@@ -44,4 +44,10 @@ VOLUME /data
 WORKDIR /data
 
 ENTRYPOINT ["sonda"]
-CMD ["-config", "/etc/sonda/sonda.yaml"]
+# -api-listen is not redundant with the mounted configuration: `docker run` with
+# no file at all falls back to the 127.0.0.1 default, which is the container's
+# own loopback, so the published port would forward to nothing. Binding every
+# interface is right here and wrong on a workstation — inside a container the
+# isolation is the container's, and the README publishes the port to the host's
+# loopback only.
+CMD ["-config", "/etc/sonda/sonda.yaml", "-api-listen", "0.0.0.0:9000"]

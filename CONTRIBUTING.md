@@ -48,12 +48,20 @@ trace id, a stubbed answer. Confident nonsense is worse than an honest gap.
 |---|---|
 | `internal/proxy` | Forwards and captures. The gRPC, WebSocket, stub and fault paths live here |
 | `internal/store` | SQLite: captures, projects, services, search, retention |
+| `internal/config` | The configuration file: parsing, defaults, and the validation that turns a typo into a startup error |
+| `internal/runtime` | Turns stored services into open ports. Every change to configuration ends in its one Reconcile |
+| `internal/supervisor` | Owns the listeners, so a port that will not open fails alone instead of taking the others with it |
 | `internal/tlsca` | The local certificate authority and the certificates issued from it. It never installs anything |
 | `internal/api` | The HTTP API every client reads, including the decoded views |
 | `internal/mcp` | The tools an agent calls, over HTTP or a pipe |
 | `internal/web` | The interface, embedded in the binary. Plain HTML, CSS and JavaScript |
 | `internal/tui` | The terminal client, a second consumer of the same API |
-| `internal/grpcwire`, `wsframe`, `protoschema`, `trace`, `drift`, `calldiff` | Pure decoding and comparison, tested without a network |
+| `internal/discover` | Reads a project's own `.env` or compose file so fifteen services need not be typed in by hand |
+| `internal/stub` | Answering for a service from a recording instead of forwarding to it |
+| `internal/fault` | Breaking a service on purpose: latency, forced statuses, cut connections |
+| `internal/graphql` | Reads the operation out of a GraphQL body, so identical POSTs stop being indistinguishable |
+| `internal/grpcwire`, `wsframe`, `pgwire`, `amqpwire` | The wire formats, decoded on the way out and never re-serialized. Built to the same shape on purpose: a new protocol should look like these |
+| `internal/protoschema`, `trace`, `drift`, `calldiff` | Schema resolution and comparison, tested without a network |
 
 `PRODUCT.md` holds the product record and `DESIGN.md` the visual system. A
 change to the interface is expected to hold to `DESIGN.md`, or to argue with it

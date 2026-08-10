@@ -68,7 +68,7 @@ func TestFrameCarriesTheInstrument(t *testing.T) {
 	frame := stripANSI(sampleModel(t, 120, 30).View())
 
 	for _, want := range []string{
-		"M I R A D O R", // masthead
+		"S O N D A",     // masthead
 		"LIVE",          // acquisition state
 		"FAULTS", "ALL", // the filter switch
 		"CHANNEL", "CALLS", "FAULT", // rail header

@@ -79,7 +79,7 @@ func (m Model) renderBar() string {
 	// masthead and the acquisition lamp stay: knowing whether the feed is live
 	// outranks knowing which sweep is selected.
 	pieces := []string{
-		styleMasthead.Render("M I R A D O R"),
+		styleMasthead.Render("S O N D A"),
 		lamp + " " + state,
 		m.key("FAULTS", m.failedOnly) + m.key("ALL", !m.failedOnly),
 		m.windowKeys(),
@@ -719,9 +719,13 @@ func (m Model) renderFooter() string {
 	// Keys read in order of use and are dropped from the far end when the
 	// terminal is narrow — but quit is re-appended every time. A legend that
 	// silently loses the way out is worse than a short one.
+	//
+	// g/G and esc are here rather than only in the README because they have no
+	// other discovery path: nothing on screen suggests a jump to either end of a
+	// lane, and only the tree and the contract views say how to close themselves.
 	keys := []string{
-		"↑↓ chan", "←→ call", "⏎ read", "t tree", "c contract", "r replay", "d diff",
-		"f faults", "w window", "h hold", "/ find",
+		"↑↓ chan", "←→ call", "g/G ends", "⏎ read", "esc close", "t tree", "c contract",
+		"r replay", "d diff", "f faults", "w window", "h hold", "/ find",
 	}
 	prefix := " "
 	if search := m.search.Value(); search != "" {

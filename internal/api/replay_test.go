@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/proxy"
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
+	"github.com/NicolasCondezaR/sonda/internal/tlsca"
 )
 
 // liveStack wires a real proxy in front of a real upstream and a real API, so a
@@ -28,6 +30,11 @@ type liveStack struct {
 	target   config.Target
 	received chan *http.Request
 	bodies   chan []byte
+
+	// scheme and client are how a caller reaches the proxy's own port, which
+	// differs once that port terminates TLS.
+	scheme string
+	client *http.Client
 }
 
 type directRecorder struct {
@@ -43,12 +50,21 @@ func (d *directRecorder) Record(c *store.Call) {
 
 func (d *directRecorder) Dropped() int64 { return 0 }
 
-func newLiveStack(t *testing.T) *liveStack {
+func newLiveStack(t *testing.T) *liveStack { return newStack(t, false) }
+
+// newTLSLiveStack is the same stack with the proxy's own port wrapped exactly as
+// the supervisor wraps a `tls: true` service, so a replay has to speak https to
+// get anywhere.
+func newTLSLiveStack(t *testing.T) *liveStack { return newStack(t, true) }
+
+func newStack(t *testing.T, terminateTLS bool) *liveStack {
 	t.Helper()
 
 	stack := &liveStack{
 		received: make(chan *http.Request, 8),
 		bodies:   make(chan []byte, 8),
+		scheme:   "http://",
+		client:   http.DefaultClient,
 	}
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +92,21 @@ func newLiveStack(t *testing.T) *liveStack {
 		Listen:   listener.Addr().String(),
 		Upstream: upstream.URL,
 		Protocol: config.ProtocolHTTP,
+		TLS:      terminateTLS,
+	}
+
+	if terminateTLS {
+		ca, err := tlsca.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		listener = tls.NewListener(listener, ca.Config())
+		stack.scheme = "https://"
+		// The authority is created per test directory and never trusted by this
+		// machine, so the test client has nothing to check against either.
+		stack.client = &http.Client{Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}}
 	}
 
 	recorder := &directRecorder{store: db}
@@ -90,7 +121,7 @@ func newLiveStack(t *testing.T) *liveStack {
 	if _, err := db.SaveService(context.Background(), store.Service{
 		ProjectID: project.ID, Name: stack.target.Name,
 		Listen: stack.target.Listen, Upstream: stack.target.Upstream,
-		Protocol: stack.target.Protocol,
+		Protocol: stack.target.Protocol, TLS: stack.target.TLS,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -112,13 +143,13 @@ func newLiveStack(t *testing.T) *liveStack {
 // under.
 func (s *liveStack) call(t *testing.T, method, path, body string) int64 {
 	t.Helper()
-	req, err := http.NewRequest(method, "http://"+s.target.Listen+path, bytes.NewReader([]byte(body)))
+	req, err := http.NewRequest(method, s.scheme+s.target.Listen+path, bytes.NewReader([]byte(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-Id", "original")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +232,35 @@ func TestReplaySendsTheOriginalRequestByteForByte(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no body received")
+	}
+}
+
+// A service that terminates TLS is reached over https or not at all: the
+// listener answers a handshake, so a cleartext replay dies in the transport and
+// the user is told nothing except that it failed.
+func TestReplayReachesAServiceThatTerminatesTLS(t *testing.T) {
+	stack := newTLSLiveStack(t)
+	original := `{"sku":"ABC-9"}`
+	id := stack.call(t, http.MethodPost, "/v1/orders", original)
+
+	code, out := stack.replay(t, id, "")
+	if code != http.StatusOK {
+		t.Fatalf("replay returned %d: %v", code, out)
+	}
+	if msg, _ := out["error"].(string); msg != "" {
+		t.Fatalf("the replay never reached the listener: %s", msg)
+	}
+	if status, _ := out["status"].(float64); status != http.StatusOK {
+		t.Errorf("the service answered %v, want 200", out["status"])
+	}
+
+	select {
+	case body := <-stack.bodies:
+		if string(body) != original {
+			t.Errorf("upstream received %q, want %q", body, original)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the upstream never received the replay")
 	}
 }
 

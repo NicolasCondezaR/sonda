@@ -1,10 +1,13 @@
 services:
   sonda:
     build: .
+    # Published to the host's loopback and no further: sonda.db holds whatever
+    # credentials crossed the wire, in plaintext and behind no login, and a bare
+    # "9000:9000" would offer all of it to the local network.
     ports:
-      - "9000:9000" # query API
-      - "9101:9101" # proxy in front of the echo service
-      - "9201:9201" # proxy in front of the gRPC service
+      - "127.0.0.1:9000:9000" # query API
+      - "127.0.0.1:9101:9101" # proxy in front of the echo service
+      - "127.0.0.1:9201:9201" # proxy in front of the gRPC service
     volumes:
       - ./sonda.docker.yaml:/etc/sonda/sonda.yaml:ro
       - sonda-data:/data

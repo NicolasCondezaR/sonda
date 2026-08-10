@@ -8,6 +8,12 @@ with no encryption. Nothing is redacted on the way in, and that is deliberate: a
 capture that was altered is no longer what was sent, which would break both the
 fidelity the tool is built on and replay along with it.
 
+There is exactly one exception. A **PostgreSQL password is blanked in the tap**,
+before anything reaches the database — a statement cannot be replayed anyway, so
+nothing is lost by not keeping it, and the alternative is a live credential
+sitting in a plaintext file. Nothing else is touched, and no setting adds to the
+list.
+
 Two consequences follow, and neither is a bug report:
 
 - **`sonda.db` is a file with credentials in it.** Treat it the way you would
@@ -76,10 +82,12 @@ turn on fault injection. There is no login to get past.
 
 Concretely:
 
-- Do not bind it to `0.0.0.0` or publish its port from a container to a network
-  you do not control.
+- Do not bind it to an address anyone else can reach, and do not publish its
+  port from a container to a network you do not control.
 - Do not run it in a shared or production environment.
-- The container image publishes port 9000; keep the host side on `127.0.0.1`.
+- Inside a container Sonda binds `0.0.0.0`, because a published port can reach
+  nothing else; the boundary is the port mapping instead. Keep the host side on
+  `127.0.0.1` — the `docker run` line in `README.md` and `compose.yaml` both do.
 
 The MCP server is the one place credentials are held back, because there the
 answers leave the machine and land in whatever model an agent is driving.

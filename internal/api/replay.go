@@ -125,7 +125,14 @@ func (s *Server) target(name string) (config.Target, bool) {
 func (s *Server) send(ctx context.Context, call *store.Call, target config.Target) replayResponse {
 	out := replayResponse{SentTo: target.Name}
 
-	url := "http://" + target.Listen + call.Path
+	// A target with tls: true has its listener wrapped in a TLS one, so the port
+	// rejects a cleartext request outright. The scheme is not a guess: it is the
+	// same flag the supervisor read when it opened the socket.
+	scheme := "http://"
+	if target.TLS {
+		scheme = "https://"
+	}
+	url := scheme + target.Listen + call.Path
 	ctx, cancel := context.WithTimeout(ctx, replayTimeout)
 	defer cancel()
 
@@ -151,7 +158,7 @@ func (s *Server) send(ctx context.Context, call *store.Call, target config.Targe
 	req.Header.Set(proxy.ReplayHeader, strconv.FormatInt(call.ID, 10))
 
 	started := time.Now()
-	resp, err := replayClient(call.Protocol).Do(req)
+	resp, err := replayClient(call.Protocol, target.TLS).Do(req)
 	out.DurationMS = float64(time.Since(started).Microseconds()) / 1000
 	if err != nil {
 		out.Error = err.Error()
@@ -165,15 +172,36 @@ func (s *Server) send(ctx context.Context, call *store.Call, target config.Targe
 	return out
 }
 
-func replayClient(protocol string) *http.Client {
-	if protocol == config.ProtocolGRPC {
-		return &http.Client{Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
-		}}
+func replayClient(protocol string, listenerTLS bool) *http.Client {
+	if protocol != config.ProtocolGRPC {
+		if !listenerTLS {
+			return &http.Client{}
+		}
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: replayTLSConfig()}}
 	}
-	return &http.Client{}
+	if listenerTLS {
+		// No AllowHTTP and no dial override: http2.Transport does the handshake
+		// itself and asks for h2 over ALPN, which is what the listener offers.
+		return &http.Client{Transport: &http2.Transport{TLSClientConfig: replayTLSConfig()}}
+	}
+	return &http.Client{Transport: &http2.Transport{
+		AllowHTTP: true,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	}}
+}
+
+// replayTLSConfig is for the one hop between Sonda and Sonda's own listener.
+//
+// The certificate on the other end was minted by an authority this process
+// holds, for whatever name the connection asked for, so checking it would only
+// be Sonda vouching for itself. Worse, it would fail on a target bound to
+// 0.0.0.0 — the compose configuration binds every target that way — because the
+// leaf is issued for the interface the connection landed on rather than for the
+// address that was dialled. Nothing here leaves the machine, and the upstream
+// hop beyond it is verified as it always was.
+func replayTLSConfig() *tls.Config {
+	return &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- Sonda's own listener, see above
 }

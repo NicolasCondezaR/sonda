@@ -45,9 +45,13 @@ func upstreamTransport(t config.Target) http.RoundTripper {
 	}
 }
 
-// clientConfig is the only place InsecureSkipVerify is ever set, and it is set
-// from one target's own configuration. There is no process-wide equivalent and
-// there is not meant to be.
+// clientConfig is the only place a user's traffic can reach an unverified
+// upstream, and it gets there from one target's own configuration. There is no
+// process-wide equivalent and there is not meant to be.
+//
+// Replay sets the flag too, in api.replayTLSConfig, but that hop dials Sonda's
+// own listener with a certificate Sonda's own authority just issued, so there
+// is nothing there for a verification to establish.
 func clientConfig(t config.Target) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,

@@ -17,11 +17,12 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 18.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 19.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
-> [request trees](#agents), [stub mode](#stub-mode) and an
-> [MCP server for coding agents](#agents) and [TLS](#tls) all work, and the whole thing runs
-> from `docker compose up`. See [Roadmap](#roadmap).
+> [request trees](#agents), [stub mode](#stub-mode), an
+> [MCP server for coding agents](#agents) and [TLS](#tls) all work, and the whole
+> thing runs from `docker compose up`. Phase 19 is AMQP 0-9-1, where the wire
+> decoder is written and capture is not built yet. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -61,12 +62,19 @@ image is 50 MB.
 | **macOS** | `brew install NicolasCondezaR/tap/sonda` |
 | **Windows** | `scoop bucket add nicolascondezar https://github.com/NicolasCondezaR/scoop-bucket`<br>`scoop install sonda` |
 | **Go** | `go install github.com/NicolasCondezaR/sonda/cmd/sonda@latest` |
-| **Docker** | `docker run -p 9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
+| **Docker** | `docker run -p 127.0.0.1:9000:9000 -v sonda:/data ghcr.io/nicolascondezar/sonda` |
 | **Binary** | Download from [Releases](https://github.com/NicolasCondezaR/sonda/releases), unpack, run |
 | **Source** | `git clone` and `go build ./cmd/sonda` |
 
 On Linux, use `go install`, the image, or the tarball: Homebrew casks are macOS
 only.
+
+The Docker line publishes to `127.0.0.1` rather than to every interface, and
+every other one here does the same: `sonda.db` holds whatever credentials
+crossed the wire, in plaintext and behind no login. Inside the container Sonda
+binds `0.0.0.0` — the isolation is the container's job — which is what
+`-api-listen` in the image's command does; outside one, the default stays
+loopback.
 
 The release archives carry four binaries, not one: `sonda`, the terminal client
 `sonda-tui`, and the two toy services `echo` and `grpcdemo` that the quick start
@@ -121,6 +129,11 @@ cp sonda.example.yaml sonda.yaml
 ./grpcdemo -addr 127.0.0.1:8082 &
 ./sonda -config sonda.yaml
 ```
+
+Same as above from here: open **http://127.0.0.1:9000** and send it the three
+requests in the Docker block — the ports are the same, because
+`sonda.example.yaml` and the compose configuration describe the same two toy
+services.
 
 ## The interface
 
@@ -233,7 +246,7 @@ docker compose run --rm tui            # or from the image
 ```
 
 ```
-M I R A D O R  ■ LIVE   FAULTS  ALL    1M  5M  30M                  19 CAPTURED  ·  2 FLAGGED
+S O N D A  ■ LIVE   FAULTS  ALL    1M  5M  30M                      19 CAPTURED  ·  2 FLAGGED
 CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -10M       -5M  NOW
  ■ echo       7     1     │·············│···········│···········│···········│·········█·····
 ▸■ orders     12    1     │·············│···········│···········│···········│·········█·····
@@ -248,7 +261,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
      "message": "no tienes acceso a este pedido"
    }
  RESPONSE  0 message(s)
- ↑↓ chan · ←→ call · ⏎ read · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
+ ↑↓ chan · ←→ call · g/G ends · ⏎ read · esc close · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
 The translation is mostly direct — monospace is free here, hairlines become
@@ -263,9 +276,12 @@ needed a different expression:
 
 | Key | |
 |---|---|
-| `↑` `↓` | pick a channel |
-| `←` `→` | step along it, call by call |
+| `↑` `↓` or `k` `j` | pick a channel |
+| `←` `→` or `H` `L` | step along it, call by call |
+| `home` or `g` | jump to the oldest call on the channel |
+| `end` or `G` | jump to the newest |
 | `enter` | read the selected call |
+| `esc` | close whatever is open: inspector, diff, tree or contract |
 | `t` | show the whole request it belonged to, as a tree |
 | `c` | has this endpoint changed shape since it used to work |
 | `r` | replay it |
@@ -273,8 +289,8 @@ needed a different expression:
 | `f` | faults only, or everything |
 | `w` | cycle the sweep |
 | `h` | hold the trace |
-| `/` | search |
-| `q` | quit |
+| `/` | search; `enter` applies it, `esc` clears it and leaves the field |
+| `q` or `ctrl+c` | quit |
 
 Stepping moves call by call rather than cell by cell: an empty cell is not
 something to point at. `h` holds the trace for the same reason the web client
@@ -793,10 +809,12 @@ and stops. Modifying your machine's trust store is your decision to make
 deliberately; a debugging tool that did it quietly would be indistinguishable
 from malware.
 
-The commands are printed on the first run, shown in the interface's certificate
-authority panel, and returned by the `trust_certificate` MCP tool. The narrow
-option is usually the right one, because it trusts nothing else on the machine
-and leaves nothing to undo:
+The commands are printed the first time the authority is actually needed — when
+a service with `tls: true` first starts, which is not the same as the first run:
+a Sonda with no TLS target never creates one and prints nothing. They are also
+shown in the interface's certificate authority panel, and returned by the
+`trust_certificate` MCP tool. The narrow option is usually the right one,
+because it trusts nothing else on the machine and leaves nothing to undo:
 
 ```bash
 curl --cacert ./sonda-ca.pem https://127.0.0.1:9104/
@@ -1099,34 +1117,41 @@ operators.
 | 18 | TLS: terminated for the client from a local authority Sonda never installs, spoken to the upstream, and recorded on every capture as verified or not | done |
 | 19 | AMQP 0-9-1: the wire decoder, with the credentials named but not decoded | decoder done, capture not built |
 
-Kafka is deliberately absent from that table. Why, and what to do instead, is below.
+Kafka is deliberately absent from that table. Why is below.
 
-### Capturing Kafka
+### Why Kafka is absent
 
-Sonda can capture Kafka, but not by being pointed at a broker.
+**Sonda has no Kafka listener today.** `protocol:` takes `http`, `grpc` and
+`postgres`, and Kafka frames arriving at an HTTP listener are read as a
+malformed request. Nothing in this section is usable yet: it is why the row is
+missing, not a recipe.
 
-A Kafka client uses its first connection only to ask where the brokers are. The
-answer is whatever the broker publishes as its `advertised.listeners`, and the
-client then opens **new connections straight to those addresses** and sends
-everything that matters — produces, fetches, every group call — down those. A
-proxy in the middle sees the handshake and then nothing, forever, while the
-traffic someone attached a debugger to flows around it.
+Putting a proxy in front of a broker does not work, and the reason is not the
+protocol. A Kafka client uses its first connection only to ask where the brokers
+are. The answer is whatever the broker publishes as its `advertised.listeners`,
+and the client then opens **new connections straight to those addresses** and
+sends everything that matters — produces, fetches, every group call — down
+those. A proxy in the middle sees the handshake and then nothing, forever, while
+the traffic someone attached a debugger to flows around it.
 
-Point the broker at Sonda instead of putting Sonda in front of the broker:
+Making the client stay would mean rewriting the broker addresses inside those
+responses as they cross. Sonda will not, for the reason at the top of
+`internal/proxy/proxy.go`: forwarding is byte exact, and a capture of a cluster
+that does not exist is worse than no capture at all. Rewriting addresses is what
+a Kafka gateway is for, and it is the opposite of this.
+
+There is a way round that rewrites nothing — point the broker at Sonda instead
+of putting Sonda in front of it, so every address the client is handed is one it
+was meant to dial:
 
 ```yaml
-# docker-compose.yml — the broker listens on 9192, Sonda owns 9092
+# the broker would listen on 9192, Sonda would own 9092
 KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
 ```
 
-Now every connection comes through, bootstrap and broker alike, and **nothing is
-rewritten**. You will see two sockets to the same address, which is not a
-duplicate — it is what the client really does.
-
-On a real multi-broker cluster this stops working, and Sonda stops there. Making
-a client stay would mean editing the broker addresses in the responses as they
-cross, which would make every capture a record of a cluster that does not exist.
-That is what a Kafka gateway is for, and it is the opposite of what this is.
+So if Kafka capture is ever built, that is how it will be wired, and what is
+left to build is a `kafka` protocol with a raw listener and a decoder beside
+`pgwire` and `amqpwire`. The hard part was never the protocol.
 
 ### Limitations
 
