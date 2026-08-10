@@ -288,3 +288,41 @@ func TestReplayOfAMissingCall(t *testing.T) {
 		t.Errorf("status = %d, want 404", code)
 	}
 }
+
+// A session and a socket are whole conversations, not requests. Both clients
+// already hide the control, but an agent over MCP goes straight at the endpoint
+// — so the refusal has to live where every caller passes through.
+func TestReplayRefusesAConversation(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "conversations.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	handler := New(db, noDrops{}, emptyRuntime(t, db)).Handler()
+
+	for _, protocol := range []string{"postgres", "websocket"} {
+		id, err := db.Insert(context.Background(), &store.Call{
+			Target: "db", Protocol: protocol, Method: "SESSION", Path: "orders",
+			ClientAddr: "127.0.0.1:1", StartedAt: time.Now().UTC(),
+			Request:  store.Message{Headers: http.Header{}},
+			Response: store.Message{Headers: http.Header{}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/calls/"+strconv.FormatInt(id, 10)+"/replay", http.NoBody)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Errorf("%s: status = %d, want 409", protocol, rec.Code)
+		}
+		var out map[string]string
+		json.Unmarshal(rec.Body.Bytes(), &out)
+		if !bytes.Contains([]byte(out["error"]), []byte(protocol)) {
+			t.Errorf("%s: the refusal should name the protocol, got %q", protocol, out["error"])
+		}
+	}
+}

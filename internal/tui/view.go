@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -226,7 +227,14 @@ func (m Model) renderInspector() string {
 	if d.Protocol == "grpc" {
 		meta = append(meta, "gRPC")
 	}
-	meta = append(meta, fmt.Sprintf("HTTP %d", d.Status), fmt.Sprintf("%.2fms", d.DurationMS))
+	if d.Protocol == "postgres" {
+		// A session has no HTTP status. "HTTP 0" would be a reading of
+		// something that was never measured.
+		meta = append(meta, "POSTGRES")
+	} else {
+		meta = append(meta, fmt.Sprintf("HTTP %d", d.Status))
+	}
+	meta = append(meta, fmt.Sprintf("%.2fms", d.DurationMS))
 	if d.ReplayOf != nil {
 		meta = append(meta, fmt.Sprintf("replay of #%d", *d.ReplayOf))
 	}
@@ -266,6 +274,12 @@ func (m Model) renderInspector() string {
 		lines = append(lines, styleFault.Render(truncate(
 			fmt.Sprintf(" GRAPHQL · %d error(s) under HTTP %d", d.GraphQLErrors, d.Status), m.width-1)))
 	}
+	// Same reason again: nothing about a Postgres session's transport says it
+	// failed, so the header has to.
+	if d.PostgresErrors > 0 {
+		lines = append(lines, styleFault.Render(truncate(
+			fmt.Sprintf(" POSTGRES · %d server error(s)", d.PostgresErrors), m.width-1)))
+	}
 	if d.Error != "" {
 		lines = append(lines, styleFault.Render(" "+truncate(d.Error, m.width-2)))
 	}
@@ -276,6 +290,9 @@ func (m Model) renderInspector() string {
 	case d.Socket != nil:
 		lines = append(lines, m.renderFrames("SENT", d.Socket.Sent, d.Socket.SentSummary)...)
 		lines = append(lines, m.renderFrames("RECEIVED", d.Socket.Received, d.Socket.ReceivedSummary)...)
+	case d.Postgres != nil:
+		lines = append(lines, m.renderPostgres("SENT", d.Postgres.Sent, d.Postgres.SentIncomplete)...)
+		lines = append(lines, m.renderPostgres("RECEIVED", d.Postgres.Received, d.Postgres.ReceivedIncomplete)...)
 	case d.Stream != nil:
 		lines = append(lines, m.renderEvents(d.Stream)...)
 	case d.GRPC != nil:
@@ -318,6 +335,123 @@ func (m Model) renderFrames(title string, frames []FrameView, summary string) []
 		}
 	}
 	return lines
+}
+
+// renderPostgres shows one direction of a session as the messages it carried.
+//
+// A session is mostly DataRows, and printing every one of them would bury the
+// statement that produced them. Rows are counted instead, and the messages that
+// say something a reader came for — the SQL, its parameters, the command tag,
+// the server's error — are printed.
+func (m Model) renderPostgres(title string, msgs []PGMessage, incomplete bool) []string {
+	lines := []string{"", styleLabel.Render(" "+title) +
+		styleFaint.Render(fmt.Sprintf("   %d message(s)", len(msgs)))}
+	if len(msgs) == 0 {
+		return append(lines, styleFaint.Render("  nothing in this direction"))
+	}
+
+	rows := 0
+	flushRows := func() {
+		if rows > 0 {
+			lines = append(lines, styleFaint.Render(fmt.Sprintf("  %d data row(s)", rows)))
+			rows = 0
+		}
+	}
+
+	for _, msg := range msgs {
+		if msg.Kind == "data_row" {
+			rows++
+			continue
+		}
+		flushRows()
+
+		// The statement and its parameters arrive in different messages —
+		// Parse carries the SQL and Bind carries the values — so they are
+		// printed independently. Hanging the parameters off the SQL would drop
+		// every one of them for the extended protocol, which is what every ORM
+		// uses.
+		head := styleFaint.Render("  " + strings.ToUpper(msg.Kind))
+		printed := false
+		if msg.SQL != "" {
+			lines = append(lines, head)
+			lines = append(lines, indent(msg.SQL, "  ", m.width-3)...)
+			printed = true
+		}
+		if len(msg.Params) > 0 {
+			if !printed {
+				lines = append(lines, head)
+			}
+			for i, p := range msg.Params {
+				lines = append(lines, styleDim.Render(fmt.Sprintf("   $%d = %s", i+1, pgValue(p))))
+			}
+			printed = true
+		}
+		if printed {
+			continue
+		}
+
+		switch {
+		case msg.Kind == "error_response" || msg.Kind == "notice_response":
+			head := strings.TrimSpace(orDefault(msg.Severity, strings.ToUpper(msg.Kind)) + " " + msg.Code)
+			style := styleFault
+			if msg.Kind == "notice_response" {
+				style = styleDim
+			}
+			lines = append(lines, style.Render("  "+truncate(head+" — "+msg.Message, m.width-3)))
+			for _, extra := range []string{msg.Detail, msg.Hint} {
+				if extra != "" {
+					lines = append(lines, styleFaint.Render("   "+truncate(extra, m.width-4)))
+				}
+			}
+		case msg.Kind == "command_complete":
+			lines = append(lines, styleInk.Render("  "+truncate(msg.Tag, m.width-3)))
+		case msg.Kind == "startup":
+			lines = append(lines, styleFaint.Render("  STARTUP   "+truncate(pgParameters(msg.Parameters), m.width-13)))
+		case msg.Auth != "":
+			// Which mechanism, never the exchange: the bytes that carried it
+			// were blanked before anything was stored.
+			lines = append(lines, styleFaint.Render("  AUTHENTICATION   "+msg.Auth))
+		case msg.Encrypted:
+			lines = append(lines, styleFaint.Render("  "+truncate(msg.Note, m.width-3)))
+		default:
+			lines = append(lines, styleFaint.Render(fmt.Sprintf("  %s  %d B", strings.ToUpper(msg.Kind), msg.Size)))
+		}
+	}
+	flushRows()
+
+	if incomplete {
+		lines = append(lines, styleFaint.Render("  bytes remain after the last whole message: cut by the body cap, or still open"))
+	}
+	return lines
+}
+
+// pgValue renders a bind parameter. A NULL and an empty string are different on
+// the wire and different in a WHERE clause, so they read differently here.
+func pgValue(v PGValue) string {
+	switch {
+	case v.Null:
+		return "NULL"
+	case v.Text != "":
+		return v.Text
+	case v.Size == 0:
+		return "''"
+	}
+	return fmt.Sprintf("%d B, not text", v.Size)
+}
+
+// pgParameters puts the connection's declared parameters in a stable order, so
+// two sessions to the same database read the same way.
+func pgParameters(params map[string]string) string {
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+params[k])
+	}
+	return strings.Join(parts, " ")
 }
 
 // renderEvents shows a server-sent event stream as the events it carried.

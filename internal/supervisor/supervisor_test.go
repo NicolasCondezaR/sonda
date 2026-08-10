@@ -198,3 +198,72 @@ func TestProbeReportsAvailability(t *testing.T) {
 		t.Error("a taken port was reported as available")
 	}
 }
+
+// A raw listener is the second kind this package carries, and it has to obey
+// the same two promises as the first: the reported state is what is really
+// listening, and a stopped port is genuinely free afterwards.
+func TestARawListenerServesAndReleasesItsPort(t *testing.T) {
+	s := New()
+	defer s.StopAll()
+
+	addr := freePort(t)
+	status := s.Apply([]Desired{{
+		Key:    "db",
+		Listen: addr,
+		Serve: func(c net.Conn) {
+			defer c.Close()
+			io.WriteString(c, "postgres")
+		},
+	}})
+	if len(status) != 1 || !status[0].Running {
+		t.Fatalf("status = %+v", status)
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A deadline, not patience: a listener wired to the wrong kind accepts the
+	// connection and then says nothing, and a test that waits it out reports
+	// the regression thirty seconds late.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, err := io.ReadAll(conn)
+	conn.Close()
+	if err != nil || string(got) != "postgres" {
+		t.Fatalf("read %q, %v", got, err)
+	}
+
+	// Dropped from the desired set, the port must be rebindable at once: the
+	// next Apply of another project may want it.
+	s.Apply(nil)
+	if err := Probe(addr); err != nil {
+		t.Errorf("the port was not released: %v", err)
+	}
+}
+
+// The two kinds sit side by side in one project, and one must not disturb the
+// other.
+func TestBothKindsOfListenerRunTogether(t *testing.T) {
+	s := New()
+	defer s.StopAll()
+
+	web, db := freePort(t), freePort(t)
+	s.Apply([]Desired{
+		{Key: "web", Listen: web, Handler: echo("http")},
+		{Key: "db", Listen: db, Serve: func(c net.Conn) { defer c.Close(); io.WriteString(c, "raw") }},
+	})
+
+	if body, err := get(t, web); err != nil || body != "http" {
+		t.Errorf("http listener: %q, %v", body, err)
+	}
+	conn, err := net.DialTimeout("tcp", db, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, _ := io.ReadAll(conn)
+	conn.Close()
+	if string(got) != "raw" {
+		t.Errorf("raw listener: %q", got)
+	}
+}

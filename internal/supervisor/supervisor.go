@@ -26,6 +26,17 @@ type Desired struct {
 	Key     string
 	Listen  string
 	Handler http.Handler
+
+	// Serve takes each accepted connection instead of an HTTP server, for a
+	// target that never speaks HTTP at all — Postgres is framed messages from
+	// its first byte, so there is no request for a handler to be given.
+	//
+	// It is a field on the same struct rather than a second kind of listener
+	// because everything that makes this package worth having — a port that
+	// fails to open must not take the others with it, a port that closes must
+	// really be free, the reported state must be what is running — is identical
+	// either way. Only the four lines between Accept and the goroutine differ.
+	Serve func(net.Conn)
 }
 
 // Status is what is actually happening on a port, which is not always what was
@@ -40,7 +51,11 @@ type Status struct {
 type listener struct {
 	desired Desired
 	server  *http.Server
-	err     error
+
+	// raw is set instead of server for a Serve listener, and closing it is what
+	// frees the port.
+	raw net.Listener
+	err error
 }
 
 type Supervisor struct {
@@ -127,6 +142,13 @@ func (s *Supervisor) start(key string, d Desired) {
 		return
 	}
 
+	if d.Serve != nil {
+		s.running[key] = &listener{desired: d, raw: ln}
+		go accept(ln, d.Serve)
+		slog.Info("listening", "service", key, "listen", d.Listen)
+		return
+	}
+
 	server := &http.Server{
 		Handler: d.Handler,
 		// No read or write timeout: a debugging proxy must not be the thing
@@ -153,8 +175,30 @@ func (s *Supervisor) start(key string, d Desired) {
 // stop must leave the port genuinely free: the next Apply may rebind it
 // immediately, and a Shutdown that returns before the socket is released turns
 // a project switch into an "address already in use".
+// accept hands every connection to the target's own handler. It ends when the
+// listener is closed, which is the only way out and is not an error.
+func accept(ln net.Listener, serve func(net.Conn)) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go serve(conn)
+	}
+}
+
 func (s *Supervisor) stop(key string, l *listener) {
 	delete(s.running, key)
+
+	if l.raw != nil {
+		// Closing the socket frees the port immediately, which is all this has
+		// to guarantee. Sessions already accepted are left to finish: killing a
+		// developer's live psql session because they switched project is worse
+		// than recording it under the project it started in.
+		_ = l.raw.Close()
+		slog.Info("closed", "service", key, "listen", l.desired.Listen)
+		return
+	}
 	if l.server == nil {
 		return
 	}

@@ -592,3 +592,65 @@ func TestDeletingTheActiveProjectClosesItsPorts(t *testing.T) {
 		t.Error("a deleted project is still reported active")
 	}
 }
+
+// A Postgres service is the only one that reaches the supervisor as a raw
+// connection handler rather than an HTTP one. Reconcile choosing the wrong kind
+// would open a port that answers nothing, and nothing else in the stack can
+// catch it: the store validates the row and the supervisor serves whatever it
+// is handed.
+func TestAPostgresServiceGetsARawListener(t *testing.T) {
+	db := openStore(t)
+
+	// A stand-in database that says who it is, so the test proves the port
+	// reached this service and not merely that something answered.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			io.WriteString(conn, "the database")
+			conn.Close()
+		}
+	}()
+
+	listen := freePort(t)
+	id := project(t, db, "shop", svc{
+		name:     "orders-db",
+		listen:   listen,
+		upstream: "postgres://" + ln.Addr().String(),
+		protocol: config.ProtocolPostgres,
+	})
+	activate(t, db, id)
+
+	rec := newRecorder()
+	rt := New(db, rec, 1<<20)
+	defer rt.Stop()
+	reconcile(t, rt)
+
+	conn, err := net.DialTimeout("tcp", listen, 2*time.Second)
+	if err != nil {
+		t.Fatalf("nothing is listening on the postgres port: %v", err)
+	}
+	// A deadline, not patience: an HTTP listener on this port accepts and then
+	// waits for a request that is never coming.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, err := io.ReadAll(conn)
+	conn.Close()
+	if err != nil || string(got) != "the database" {
+		t.Fatalf("read %q, %v", got, err)
+	}
+
+	call := rec.wait(t)
+	if call.Protocol != config.ProtocolPostgres {
+		t.Errorf("protocol = %q", call.Protocol)
+	}
+	if call.Target != "orders-db" {
+		t.Errorf("target = %q", call.Target)
+	}
+}

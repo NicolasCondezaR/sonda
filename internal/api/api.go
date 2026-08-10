@@ -140,6 +140,12 @@ type summaryJSON struct {
 	GraphQLOp     string `json:"graphql_op,omitempty"`
 	GraphQLErrors int    `json:"graphql_errors,omitempty"`
 
+	// Postgres has both problems again, and worse: every session to a database
+	// is the same method and the same path, and a failed statement has no
+	// status code anywhere — it is an ErrorResponse inside the stream.
+	PostgresSummary string `json:"postgres_summary,omitempty"`
+	PostgresErrors  int    `json:"postgres_errors,omitempty"`
+
 	// ReplayOf turns "did the fix work?" into a diff instead of a memory
 	// exercise, so it travels with the summary and reaches the live view.
 	ReplayOf *int64 `json:"replay_of,omitempty"`
@@ -176,11 +182,12 @@ type callJSON struct {
 	ResponseTrailers http.Header `json:"response_trailers,omitempty"`
 	GRPC             *grpcView   `json:"grpc,omitempty"`
 
-	// Socket, Stream and GraphQL are the same idea as GRPC: what a body means,
-	// read back out of the stored bytes when someone looks.
-	Socket  *socketView  `json:"socket,omitempty"`
-	Stream  *streamView  `json:"stream,omitempty"`
-	GraphQL *graphqlView `json:"graphql,omitempty"`
+	// Socket, Stream, GraphQL and Postgres are the same idea as GRPC: what a
+	// body means, read back out of the stored bytes when someone looks.
+	Socket   *socketView   `json:"socket,omitempty"`
+	Stream   *streamView   `json:"stream,omitempty"`
+	GraphQL  *graphqlView  `json:"graphql,omitempty"`
+	Postgres *postgresView `json:"postgres,omitempty"`
 }
 
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
@@ -274,6 +281,9 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Protocol == config.ProtocolWebSocket {
 		out.Socket = buildSocketView(c)
+	}
+	if c.Protocol == config.ProtocolPostgres {
+		out.Postgres = buildPostgresView(c)
 	}
 	if isEventStream(c) {
 		out.Stream = buildStreamView(c)
@@ -396,6 +406,9 @@ func toSummary(c store.Summary) summaryJSON {
 		TraceID:       c.TraceID,
 		GraphQLOp:     c.GraphQLOp,
 		GraphQLErrors: c.GraphQLErrors,
+
+		PostgresSummary: c.PostgresSummary,
+		PostgresErrors:  c.PostgresErrors,
 	}
 	if c.GRPCStatus != nil {
 		out.GRPCStatusText = codes.Code(*c.GRPCStatus).String()

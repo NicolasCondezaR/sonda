@@ -19,7 +19,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/graphql"
+	"github.com/NicolasCondezaR/sonda/internal/pgwire"
 )
 
 // Message is one side of an exchange: the headers, the bytes Sonda kept, and
@@ -89,6 +91,19 @@ type Call struct {
 	// insert; the bodies themselves go in untouched.
 	GraphQLOp     string
 	GraphQLErrors int
+
+	// PostgresSummary and PostgresErrors exist for the two reasons GraphQLOp
+	// and GraphQLErrors do, and they are the same two reasons.
+	//
+	// A Postgres capture has no method and no path worth showing — every
+	// session to a database looks identical from outside — so without the
+	// summary the field shows a service as one repeated call. And a failed
+	// statement is an ErrorResponse inside the stream, not a status code, so
+	// without the error count the SQL that decides what counts as a fault
+	// cannot see it. Both are read out of the stored stream on insert; the
+	// stream itself goes in untouched.
+	PostgresSummary string
+	PostgresErrors  int
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -115,6 +130,9 @@ type Summary struct {
 
 	GraphQLOp     string
 	GraphQLErrors int
+
+	PostgresSummary string
+	PostgresErrors  int
 }
 
 type Filter struct {
@@ -173,7 +191,9 @@ CREATE TABLE IF NOT EXISTS calls (
 	replay_of      INTEGER,
 	project        TEXT    NOT NULL DEFAULT '',
 	graphql_op     TEXT    NOT NULL DEFAULT '',
-	graphql_errors INTEGER NOT NULL DEFAULT 0
+	graphql_errors INTEGER NOT NULL DEFAULT 0,
+	pg_summary     TEXT    NOT NULL DEFAULT '',
+	pg_errors      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS calls_started_at_idx ON calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS calls_target_idx     ON calls(target, id DESC);
@@ -198,6 +218,8 @@ var addedColumns = map[string]string{
 	// changed outcome is worse than one that is honestly blank.
 	"graphql_op":     `ALTER TABLE calls ADD COLUMN graphql_op TEXT NOT NULL DEFAULT ''`,
 	"graphql_errors": `ALTER TABLE calls ADD COLUMN graphql_errors INTEGER NOT NULL DEFAULT 0`,
+	"pg_summary":     `ALTER TABLE calls ADD COLUMN pg_summary TEXT NOT NULL DEFAULT ''`,
+	"pg_errors":      `ALTER TABLE calls ADD COLUMN pg_errors INTEGER NOT NULL DEFAULT 0`,
 }
 
 func migrate(db *sql.DB) error {
@@ -282,6 +304,7 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 	// fault path all record through this one function, and a reading taken in
 	// three places is a reading that disagrees with itself.
 	describeGraphQL(c)
+	describePostgres(c)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -295,15 +318,15 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
 			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-			stub_of, injected, graphql_op, graphql_errors
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
 		c.Project, c.TraceID, nullableInt64(c.StubOf), boolToInt(c.Injected),
-		c.GraphQLOp, c.GraphQLErrors,
+		c.GraphQLOp, c.GraphQLErrors, c.PostgresSummary, c.PostgresErrors,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -377,7 +400,8 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of, project, trace_id, stub_of, injected, graphql_op, graphql_errors
+		       replay_of, project, trace_id, stub_of, injected, graphql_op, graphql_errors,
+		       pg_summary, pg_errors
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -406,7 +430,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
 			&replayOf, &s.Project, &s.TraceID, &stubOf, &injected,
-			&s.GraphQLOp, &s.GraphQLErrors); err != nil {
+			&s.GraphQLOp, &s.GraphQLErrors, &s.PostgresSummary, &s.PostgresErrors); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
@@ -434,14 +458,14 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
 		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-		       stub_of, injected, graphql_op, graphql_errors
+		       stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
 		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf, &injectedFlag,
-		&c.GraphQLOp, &c.GraphQLErrors)
+		&c.GraphQLOp, &c.GraphQLErrors, &c.PostgresSummary, &c.PostgresErrors)
 	if err != nil {
 		return nil, err
 	}
@@ -487,10 +511,12 @@ type TargetStats struct {
 // faultPredicate is one definition of failure, shared by the stats rollup and
 // the FailedOnly filter so the rail and the field can never disagree.
 //
-// The last two clauses are the same problem twice: gRPC and GraphQL both report
-// failure under HTTP 200, so a definition that trusted the status alone would
-// show the failure someone opened this tool to find as a success.
-const faultPredicate = `(error != '' OR status >= 400 OR (grpc_status IS NOT NULL AND grpc_status != 0) OR graphql_errors > 0)`
+// The last three clauses are the same problem three times: gRPC, GraphQL and
+// Postgres all report failure somewhere other than the HTTP status — and a
+// Postgres session has no HTTP status at all — so a definition that trusted the
+// status alone would show the failure someone opened this tool to find as a
+// success.
+const faultPredicate = `(error != '' OR status >= 400 OR (grpc_status IS NOT NULL AND grpc_status != 0) OR graphql_errors > 0 OR pg_errors > 0)`
 
 func (s *Store) Stats(ctx context.Context, project string) (Stats, error) {
 	var (
@@ -650,6 +676,15 @@ func indexText(c *Call) string {
 		b.WriteByte(' ')
 		b.WriteString(c.GRPCMessage)
 	}
+	// A Postgres stream is full of NUL bytes and length prefixes, so isIndexable
+	// rejects it as binary and the SQL inside it would be unsearchable. The
+	// summary is the one line that carries the statement, so it is indexed
+	// explicitly. Only that line: the second statement of a session is still
+	// only findable by opening the capture.
+	if c.PostgresSummary != "" {
+		b.WriteByte(' ')
+		b.WriteString(c.PostgresSummary)
+	}
 	for _, body := range [][]byte{c.Request.Body, c.Response.Body} {
 		if !isIndexable(body) {
 			continue
@@ -796,6 +831,7 @@ func (c *Call) Summary() Summary {
 		ReplayOf: c.ReplayOf, Project: c.Project,
 		TraceID: c.TraceID, StubOf: c.StubOf, Injected: c.Injected,
 		GraphQLOp: c.GraphQLOp, GraphQLErrors: c.GraphQLErrors,
+		PostgresSummary: c.PostgresSummary, PostgresErrors: c.PostgresErrors,
 	}
 }
 
@@ -811,4 +847,45 @@ func describeGraphQL(c *Call) {
 	}
 	c.GraphQLOp = e.Label()
 	c.GraphQLErrors = e.Errors()
+}
+
+// describePostgres reads the database, the one-line summary and the error count
+// off a captured session.
+//
+// It runs here for the same reason describeGraphQL does: every writer routes
+// through Insert, and a reading taken in three places is a reading that
+// disagrees with itself. It writes nothing back into either stream — the record
+// stays the exact bytes that crossed, minus the credentials the tap already
+// blanked on the way in.
+//
+// Path is filled here rather than by the proxy because the database name is in
+// the startup message, and deframing the stream a second time in the listener
+// just to read it would be the same reading taken twice.
+func describePostgres(c *Call) {
+	if c.Protocol != config.ProtocolPostgres {
+		return
+	}
+	sent, _ := pgwire.Deframe(c.Request.Body, true)
+	received, _ := pgwire.Deframe(c.Response.Body, false)
+
+	for _, m := range sent {
+		if m.Kind == "startup" {
+			// Left blank when the client did not name one: Postgres then
+			// defaults it to the user name, and repeating that guess here would
+			// put a database in the field that may not be the one used.
+			c.Path = m.Parameters["database"]
+			break
+		}
+	}
+	for _, m := range received {
+		if m.Kind == "error_response" {
+			c.PostgresErrors++
+		}
+	}
+
+	// Both directions in one reading: the statement comes from the client and
+	// its outcome from the server, and either alone is half the answer.
+	all := make([]pgwire.Message, 0, len(sent)+len(received))
+	all = append(append(all, sent...), received...)
+	c.PostgresSummary = pgwire.Summarise(all)
 }

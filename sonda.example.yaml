@@ -47,3 +47,17 @@ targets:
   #   listen: 127.0.0.1:9102
   #   upstream: http://127.0.0.1:3000
   #   protocol: http
+
+  # A database. Point the application's DSN at the listen address — keeping its
+  # own user, password and database name — and the SQL it runs shows up as
+  # captures beside the HTTP calls that caused it:
+  #
+  #   DATABASE_URL=postgres://app:secret@127.0.0.1:9301/orders
+  #
+  # The upstream carries no credentials on purpose. Sonda forwards the client's
+  # own handshake, so it has no use for them, and a password written here would
+  # be a password written into sonda.db.
+  # - name: orders-db
+  #   listen: 127.0.0.1:9301
+  #   upstream: postgres://127.0.0.1:5432
+  #   protocol: postgres

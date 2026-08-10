@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/NicolasCondezaR/sonda/internal/config"
 )
 
 // A Project groups the services of one system: a monorepo, a side project,
@@ -320,16 +322,23 @@ func ValidateService(svc Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("the service needs a name")
 	}
-	if svc.Protocol != "http" && svc.Protocol != "grpc" {
-		return fmt.Errorf("protocol %q is not supported, use http or grpc", svc.Protocol)
+	if !config.SupportedProtocol(svc.Protocol) {
+		return fmt.Errorf("protocol %q is not supported, use http, grpc or postgres", svc.Protocol)
 	}
 	if _, _, err := splitHostPort(svc.Listen); err != nil {
 		return fmt.Errorf("listen address %q: %w", svc.Listen, err)
 	}
 
 	u, err := url.Parse(svc.Upstream)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("upstream %q must look like http://host:port", svc.Upstream)
+	if err != nil || !config.UpstreamSchemeOK(svc.Protocol, u.Scheme) || u.Host == "" {
+		return fmt.Errorf("upstream %q must look like %shost:port", svc.Upstream, config.UpstreamPrefix(svc.Protocol))
+	}
+	// Pasting a whole DATABASE_URL in here would write a live password into
+	// sonda.db in plaintext. Sonda forwards the client's own handshake and has
+	// no use for one.
+	if u.User != nil {
+		return fmt.Errorf("upstream %q carries a user and password; Sonda forwards the client's own handshake, so give it just %s://%s",
+			u.Redacted(), u.Scheme, u.Host)
 	}
 	if svc.Listen == u.Host {
 		return errors.New("the listen address and the upstream are the same, which would make the service call itself")

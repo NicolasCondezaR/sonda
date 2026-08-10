@@ -17,7 +17,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 15.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 17.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode) and an
 > [MCP server for coding agents](#agents) all work, and the whole thing runs
@@ -45,7 +45,10 @@ Two properties drive the design:
 - **The stored bytes are the record.** Bodies are saved exactly as they crossed
   the wire and decoded only when displayed. Re-serializing would lose unknown
   fields and reorder keys, which is what makes replay meaningless — and it lets
-  a capture become readable later, once its schema is available.
+  a capture become readable later, once its schema is available. The single
+  exception is stated where it applies: a [Postgres](#postgresql) password is
+  blanked in the capture before it is written, because a credential in a
+  plaintext file cannot be taken back out afterwards.
 
 ## Install
 
@@ -443,7 +446,13 @@ a deliberate choice rather than an oversight — redacting the capture would mea
 it is no longer what was sent, which breaks both the fidelity the tool is built
 on and replay along with it.
 
-The one place credentials are held back is [the MCP server](#agents), because
+There is exactly one exception, and it is one because the trade-off runs the
+other way: a **Postgres** password is blanked in the capture as the bytes go
+past. A database session cannot be replayed anyway, so nothing is lost by not
+keeping it, and the alternative is a live credential in a plaintext file. See
+[PostgreSQL](#postgresql).
+
+The other place credentials are held back is [the MCP server](#agents), because
 there the answers leave the machine.
 
 What follows from that:
@@ -622,6 +631,84 @@ know your schema. A response that is not JSON — cut by the body cap, or an err
 page from something in front of the service — is reported as unreadable rather
 than as a call with no errors.
 
+## PostgreSQL
+
+Every other protocol Sonda captures is one hop between services. Postgres is the
+hop underneath: it puts the SQL a request actually ran in the field beside the
+HTTP call that caused it, and an N+1 stops being a theory and becomes forty
+rows next to one handler.
+
+A database target is declared like any other service, with `protocol: postgres`
+and an upstream that names the transport:
+
+```yaml
+  - name: orders-db
+    listen: 127.0.0.1:9301
+    upstream: postgres://127.0.0.1:5432
+    protocol: postgres
+```
+
+Then point the application's DSN at the listen address, keeping its own user,
+password and database name:
+
+```
+DATABASE_URL=postgres://app:secret@127.0.0.1:9301/orders
+```
+
+**The upstream carries no credentials, and Sonda refuses one that does.** It
+forwards the client's own handshake untouched, so it has no use for a user or a
+password — and a password in the configuration would be a password written into
+`sonda.db`.
+
+### The password never reaches the capture
+
+This is the one place Sonda rewrites what it keeps, and the reason is that the
+alternative cannot be fixed later. A startup exchange carries the password. If
+the raw bytes were stored as they arrived, the secret would sit in `sonda.db` in
+plaintext and could reach an agent through MCP — whose redaction walks headers
+and JSON keys, which a TCP stream is neither.
+
+So the credential bytes are blanked in the tap, as they go past, before anything
+is stored: the PasswordMessage and SASL response bodies, the server's
+authentication challenges, and the cancellation key in both directions. They are
+replaced by filler of the same length, so every length field in the stream stays
+true and the capture still reads back as a conversation. What survives is that
+an authentication happened and by which mechanism — `sasl`, `md5_password`,
+`cleartext_password` — which is the part a reader is entitled to.
+
+**What is forwarded is untouched.** The rewrite applies to the copy Sonda keeps,
+never to the bytes the database receives; the real password reaches the server
+and the login works. Both halves of that are covered by tests.
+
+### What a session looks like
+
+- **A capture is a connection, not a query.** A session is recorded when it
+  closes, the same way a socket is, and everything the connection carried is in
+  it. Behind a connection pool that means one capture can hold hours of an
+  application's SQL — see the limitations below.
+- **The path is the database**, read off the startup message rather than
+  invented, and the method is `SESSION` because a session is not a request and
+  there is no honest verb for it. There is no HTTP status, and none is shown.
+- **The listing carries a summary**: the first statement and how it ended
+  (`SELECT id FROM orders WHERE total > 100 -> SELECT 12`), or the error if
+  there was one. Without it every session to a database reads as the same row
+  repeated.
+- **The inspector shows the messages**: the statements, their bind parameters
+  with `NULL` distinguished from the empty string, the columns described, the
+  command tags, the transaction status, and any server error with its SQLSTATE,
+  detail and hint. Data rows are counted rather than drawn one by one.
+
+**A SQL error is a failure.** It arrives as an `ErrorResponse` inside the stream
+with no status code anywhere, so a tool that reads transports alone would show
+it as a healthy session. Sonda counts it as a fault everywhere the question is
+asked: the fault filter, the channel rail, the field's fault marks, the terminal,
+the trace tree and `recent_failures` over MCP. It is the same problem gRPC and
+GraphQL have, answered the same way.
+
+**A session cannot be replayed.** It is a whole conversation, not a request, and
+sending it again would open a new one. Every surface refuses, including the API
+itself, so an agent gets the same answer the browser does.
+
 ## Contract drift
 
 In a monorepo where nobody versions a contract, a field that quietly went away
@@ -753,7 +840,7 @@ targets:
   - name: admin-api
     listen: 127.0.0.1:9102
     upstream: http://127.0.0.1:3000
-    protocol: http
+    protocol: http     # http, grpc or postgres
 ```
 
 Then point whatever calls `admin-api` at `127.0.0.1:9102`. The same binary and
@@ -839,6 +926,7 @@ operators.
 | 14 | Fault injection: latency, forced statuses, cut connections | done |
 | 15 | Contract drift: a field gone, a field retyped | done |
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
+| 17 | PostgreSQL: the SQL underneath the request, with the credentials blanked before they are stored | done |
 
 ### Limitations
 
@@ -851,6 +939,18 @@ operators.
 - Captures taken before GraphQL support existed report no operation and no
   errors. Nothing is re-read retroactively: an old capture that quietly changed
   outcome is worse than one that is honestly blank.
+- **A Postgres capture is a connection, not a statement.** Behind a connection
+  pool one row can hold an entire application's SQL, and it is only written when
+  the connection closes — so the SQL of a single request does not reliably line
+  up under the request in the trace tree. Short-lived connections, `psql`, and
+  pools with a low idle timeout behave the way you would expect; a long-lived
+  pooled connection does not.
+- Only a Postgres session's summary line is full-text searchable. The stream is
+  binary, so the second statement of a session is found by opening the capture,
+  not by searching for it.
+- A Postgres connection that negotiates TLS is forwarded and captured, but the
+  bytes after the handshake are TLS records and nothing in them can be read —
+  the same limit as any other encrypted upstream.
 - The interface has no cursors and no trigger — two devices a real instrument
   has, and the obvious next reach.
 - No trace id of its own is injected. Requests that carry one are grouped

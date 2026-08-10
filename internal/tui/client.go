@@ -54,10 +54,16 @@ type Call struct {
 	GRPCMessage    string  `json:"grpc_message"`
 	GraphQLOp      string  `json:"graphql_op"`
 	GraphQLErrors  int     `json:"graphql_errors"`
-	ReplayOf       *int64  `json:"replay_of"`
-	StubOf         *int64  `json:"stub_of"`
-	Injected       bool    `json:"injected"`
-	TraceID        string  `json:"trace_id"`
+
+	// A Postgres session has no method, no path and no status worth showing, so
+	// the summary is the only thing that says which session this was — and its
+	// errors are the only thing that says it failed.
+	PostgresSummary string `json:"postgres_summary"`
+	PostgresErrors  int    `json:"postgres_errors"`
+	ReplayOf        *int64 `json:"replay_of"`
+	StubOf          *int64 `json:"stub_of"`
+	Injected        bool   `json:"injected"`
+	TraceID         string `json:"trace_id"`
 
 	started time.Time // parsed once, on the way in
 }
@@ -74,8 +80,9 @@ func (c Call) Fault() bool {
 		return true
 	}
 	// A GraphQL error arrives under HTTP 200 with no transport complaint, so it
-	// has to be asked about before the status is trusted.
-	if c.GraphQLErrors > 0 {
+	// has to be asked about before the status is trusted — and a Postgres
+	// session has no status at all.
+	if c.GraphQLErrors > 0 || c.PostgresErrors > 0 {
 		return true
 	}
 	if c.GRPCStatus != nil {
@@ -95,19 +102,28 @@ func (c Call) Outcome() string {
 		// "200" here would be the truth about the transport and a lie about
 		// the call.
 		return "GRAPHQL ERROR"
+	case c.PostgresErrors > 0:
+		return "SQL ERROR"
+	case c.Protocol == "postgres":
+		// There is no status. Printing the zero would invent one.
+		return "SESSION"
 	default:
 		return strconv.Itoa(c.Status)
 	}
 }
 
-// Label is how a call is named in one line. For GraphQL the method and path are
-// the same on every call a service makes, and the operation is the only part
-// that says which one this was.
+// Label is how a call is named in one line. For GraphQL and Postgres alike the
+// method and path are the same on every call a service makes, and the
+// operation — or the statement — is the only part that says which one this was.
 func (c Call) Label() string {
-	if c.GraphQLOp == "" {
-		return c.Method + " " + c.Path
+	base := c.Method + " " + c.Path
+	switch {
+	case c.GraphQLOp != "":
+		return base + " · " + c.GraphQLOp
+	case c.PostgresSummary != "":
+		return base + " · " + c.PostgresSummary
 	}
-	return c.Method + " " + c.Path + " · " + c.GraphQLOp
+	return base
 }
 
 type Message struct {
@@ -149,9 +165,46 @@ type CallDetail struct {
 	// A socket and an event stream are the same shape as a gRPC stream: one
 	// exchange that carried many messages, decoded by the API. GraphQL is the
 	// same arrangement over a single POST.
-	Socket  *SocketView  `json:"socket"`
-	Stream  *StreamView  `json:"stream"`
-	GraphQL *GraphQLView `json:"graphql"`
+	Socket   *SocketView   `json:"socket"`
+	Stream   *StreamView   `json:"stream"`
+	GraphQL  *GraphQLView  `json:"graphql"`
+	Postgres *PostgresView `json:"postgres"`
+}
+
+// PostgresView is one session read back as the protocol messages of both
+// directions. The fields mirror pgwire.Message and carry only what the terminal
+// draws; the API's own view has the rest.
+type PostgresView struct {
+	Sent               []PGMessage `json:"sent"`
+	Received           []PGMessage `json:"received"`
+	SentIncomplete     bool        `json:"sent_incomplete"`
+	ReceivedIncomplete bool        `json:"received_incomplete"`
+}
+
+type PGMessage struct {
+	Kind       string            `json:"kind"`
+	Size       int64             `json:"size"`
+	SQL        string            `json:"sql"`
+	Statement  string            `json:"statement"`
+	Params     []PGValue         `json:"params"`
+	Tag        string            `json:"tag"`
+	Severity   string            `json:"severity"`
+	Code       string            `json:"code"`
+	Message    string            `json:"message"`
+	Detail     string            `json:"detail"`
+	Hint       string            `json:"hint"`
+	TxStatus   string            `json:"tx_status"`
+	Auth       string            `json:"auth"`
+	Parameters map[string]string `json:"parameters"`
+	Encrypted  bool              `json:"encrypted"`
+	Note       string            `json:"note"`
+}
+
+type PGValue struct {
+	Null   bool   `json:"null"`
+	Size   int    `json:"size"`
+	Binary bool   `json:"binary"`
+	Text   string `json:"text"`
 }
 
 type GraphQLView struct {

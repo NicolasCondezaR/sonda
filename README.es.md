@@ -18,7 +18,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 15.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 17.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
 > [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
@@ -46,7 +46,9 @@ Dos propiedades sostienen el diseño:
   cruzaron el cable y se decodifican solo al mostrarlos. Re-serializar perdería
   campos desconocidos y reordenaría claves, que es justo lo que vuelve inútil un
   replay — y así una captura se puede volver legible más adelante, cuando
-  aparezca su esquema.
+  aparezca su esquema. La única excepción se declara donde aplica: la contraseña
+  de [Postgres](#postgresql) se borra de la captura antes de escribirla, porque
+  una credencial en un archivo en texto plano ya no se puede sacar después.
 
 ## Instalación
 
@@ -452,7 +454,13 @@ decisión deliberada y no un descuido: redactar la captura significaría que ya 
 es lo que se envió, lo que rompe tanto la fidelidad sobre la que está construida
 la herramienta como el replay junto con ella.
 
-El único lugar donde las credenciales sí se retienen es [el servidor
+Hay exactamente una excepción, y lo es porque ahí el balance se invierte: la
+contraseña de **Postgres** se borra de la captura mientras los bytes pasan. Una
+sesión de base de datos no se puede reenviar de todos modos, así que no se
+pierde nada por no guardarla, y la alternativa es una credencial viva en un
+archivo en texto plano. Ver [PostgreSQL](#postgresql).
+
+El otro lugar donde las credenciales sí se retienen es [el servidor
 MCP](#agentes), porque ahí las respuestas salen de la máquina.
 
 Lo que se desprende de eso:
@@ -638,6 +646,90 @@ esquema. Una respuesta que no es JSON —cortada por el tope de cuerpo, o una
 página de error de algo que está delante del servicio— se reporta como
 ilegible, no como una llamada sin errores.
 
+## PostgreSQL
+
+Todos los demás protocolos que Sonda captura son un salto entre servicios.
+Postgres es el salto de abajo: pone el SQL que una petición ejecutó de verdad en
+el campo, junto a la llamada HTTP que lo provocó, y un N+1 deja de ser una
+sospecha para volverse cuarenta filas al lado de un solo handler.
+
+Una base de datos se declara como cualquier otro servicio, con
+`protocol: postgres` y un upstream que nombra el transporte:
+
+```yaml
+  - name: orders-db
+    listen: 127.0.0.1:9301
+    upstream: postgres://127.0.0.1:5432
+    protocol: postgres
+```
+
+Después se apunta el DSN de la aplicación a la dirección de escucha,
+conservando su propio usuario, su contraseña y su base de datos:
+
+```
+DATABASE_URL=postgres://app:secret@127.0.0.1:9301/orders
+```
+
+**El upstream no lleva credenciales, y Sonda rechaza uno que las traiga.**
+Reenvía el handshake del propio cliente sin tocarlo, así que no tiene ningún uso
+para un usuario ni para una contraseña, y una contraseña en la configuración
+sería una contraseña escrita dentro de `sonda.db`.
+
+### La contraseña nunca llega a la captura
+
+Este es el único lugar donde Sonda reescribe lo que guarda, y la razón es que la
+alternativa ya no se puede corregir después. El intercambio de inicio lleva la
+contraseña. Si los bytes se guardaran tal como llegaron, el secreto quedaría en
+`sonda.db` en texto plano y podría llegar a un agente por MCP, cuya redacción
+recorre cabeceras y claves JSON, y un flujo TCP no es ninguna de las dos cosas.
+
+Por eso los bytes de la credencial se borran en la derivación, al pasar, antes
+de que se guarde nada: el cuerpo del PasswordMessage y de las respuestas SASL,
+los desafíos de autenticación del servidor y la clave de cancelación en ambas
+direcciones. Se reemplazan por relleno del mismo largo, de modo que cada campo
+de longitud del flujo sigue siendo cierto y la captura se sigue leyendo como una
+conversación. Lo que sobrevive es que hubo una autenticación y con qué mecanismo
+—`sasl`, `md5_password`, `cleartext_password`—, que es la parte a la que quien
+lee tiene derecho.
+
+**Lo que se reenvía queda intacto.** La reescritura se aplica a la copia que
+Sonda guarda, nunca a los bytes que recibe la base de datos: la contraseña real
+llega al servidor y el login funciona. Las dos mitades están cubiertas por
+pruebas.
+
+### Cómo se ve una sesión
+
+- **Una captura es una conexión, no una consulta.** La sesión se registra cuando
+  se cierra, igual que un socket, y trae todo lo que la conexión llevó. Detrás
+  de un pool de conexiones eso significa que una sola captura puede contener
+  horas de SQL de la aplicación; ver las limitaciones más abajo.
+- **La ruta es la base de datos**, leída del mensaje de inicio en vez de
+  inventada, y el método es `SESSION` porque una sesión no es una petición y no
+  hay ningún verbo honesto para ella. No hay estado HTTP, y no se muestra
+  ninguno.
+- **El listado lleva un resumen**: la primera sentencia y cómo terminó
+  (`SELECT id FROM orders WHERE total > 100 -> SELECT 12`), o el error si lo
+  hubo. Sin él, cada sesión contra una base de datos se lee como la misma fila
+  repetida.
+- **El inspector muestra los mensajes**: las sentencias, sus parámetros con
+  `NULL` distinguido de la cadena vacía, las columnas descritas, las etiquetas
+  de comando, el estado de la transacción y cualquier error del servidor con su
+  SQLSTATE, su detalle y su sugerencia. Las filas de datos se cuentan en vez de
+  dibujarse una por una.
+
+**Un error de SQL es un fallo.** Llega como un `ErrorResponse` dentro del flujo,
+sin ningún código de estado en ninguna parte, así que una herramienta que solo
+mire el transporte lo mostraría como una sesión sana. Sonda lo cuenta como fallo
+en todos los lugares donde se hace la pregunta: el filtro de fallos, el riel de
+canales, las marcas de fallo del campo, la terminal, el árbol de trazas y
+`recent_failures` por MCP. Es el mismo problema que tienen gRPC y GraphQL, y se
+resuelve igual.
+
+**Una sesión no se puede reenviar.** Es una conversación entera, no una
+petición, y mandarla de nuevo abriría otra distinta. Todas las superficies se
+niegan, incluida la propia API, así que un agente recibe la misma respuesta que
+el navegador.
+
 ## Deriva de contratos
 
 En un monorepo donde nadie versiona un contrato, un campo que se fue callado o
@@ -768,7 +860,7 @@ targets:
   - name: admin-api
     listen: 127.0.0.1:9102
     upstream: http://127.0.0.1:3000
-    protocol: http
+    protocol: http     # http, grpc o postgres
 ```
 
 Después apunta a `127.0.0.1:9102` lo que sea que llame a `admin-api`. El mismo
@@ -858,6 +950,7 @@ leerse como operadores de consulta.
 | 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
 | 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
+| 17 | PostgreSQL: el SQL que hay debajo de la petición, con las credenciales borradas antes de guardarlas | listo |
 
 ### Limitaciones
 
@@ -871,6 +964,19 @@ leerse como operadores de consulta.
 - Las capturas tomadas antes del soporte de GraphQL no reportan operación ni
   errores. Nada se vuelve a leer con efecto retroactivo: una captura vieja que
   cambia de resultado en silencio es peor que una que está honestamente vacía.
+- **Una captura de Postgres es una conexión, no una sentencia.** Detrás de un
+  pool de conexiones una sola fila puede contener todo el SQL de una aplicación,
+  y solo se escribe cuando la conexión se cierra, así que el SQL de una petición
+  concreta no queda de forma fiable debajo de esa petición en el árbol de
+  trazas. Las conexiones de vida corta, `psql` y los pools con un tiempo de
+  inactividad bajo se comportan como uno esperaría; una conexión de pool de vida
+  larga no.
+- Solo la línea de resumen de una sesión de Postgres se puede buscar por texto.
+  El flujo es binario, así que la segunda sentencia de una sesión se encuentra
+  abriendo la captura, no buscándola.
+- Una conexión de Postgres que negocia TLS se reenvía y se captura, pero los
+  bytes posteriores al handshake son registros TLS y nada en ellos se puede
+  leer: el mismo límite que cualquier otro upstream cifrado.
 - La interfaz no tiene cursores ni trigger, dos dispositivos que un instrumento
   real sí tiene, y el siguiente alcance evidente.
 - No se inyecta un id de traza propio. Las peticiones que traen uno se agrupan

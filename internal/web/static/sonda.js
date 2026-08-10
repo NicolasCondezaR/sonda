@@ -76,6 +76,9 @@ function el(tag, className, text) {
 function isFault(call) {
   if (call.error) return true;
   if (call.graphql_errors > 0) return true;
+  /* A Postgres session has no status at all: its failure is an ErrorResponse
+   * inside the stream, counted when the capture was stored. */
+  if (call.postgres_errors > 0) return true;
   if (call.grpc_status !== undefined && call.grpc_status !== null) return call.grpc_status !== 0;
   return call.status >= 400;
 }
@@ -105,15 +108,20 @@ function outcome(call) {
   if (call.grpc_status_text) return call.grpc_status_text.toUpperCase();
   /* "200" here would be the truth about the transport and a lie about the call. */
   if (call.graphql_errors > 0) return "GRAPHQL ERROR";
+  if (call.postgres_errors > 0) return "SQL ERROR";
+  /* There is no status on a session. Printing the zero would invent one. */
+  if (call.protocol === "postgres") return "SESSION";
   return String(call.status);
 }
 
 /* How a call is named in one line. Every GraphQL call to a service is the same
- * method and path, so the operation is the only part that says which one this
- * was — without it a whole lane reads as one call repeated. */
+ * method and path, and every Postgres session to a database is too, so the
+ * operation — or the statement — is the only part that says which one this was.
+ * Without it a whole lane reads as one call repeated. */
 function label(call) {
   const base = call.method + " " + call.path;
-  return call.graphql_op ? base + " · " + call.graphql_op : base;
+  const detail = call.graphql_op || call.postgres_summary;
+  return detail ? base + " · " + detail : base;
 }
 
 /* ------------------------------------------------------------- geometry -- */
@@ -545,7 +553,13 @@ function renderInspector(call) {
   meta.append(
     el("span", null, call.target),
     el("span", null, (call.protocol || "http").toUpperCase()),
-    el("span", null, "HTTP " + call.status),
+  );
+  /* A Postgres session has no HTTP status. "HTTP 0" would be a reading of
+   * something that was never measured. */
+  if (call.protocol !== "postgres") {
+    meta.appendChild(el("span", null, "HTTP " + call.status));
+  }
+  meta.append(
     el("span", null, duration(call.duration_ms)),
     el("span", null, clockTime(call.started_at)),
   );
@@ -564,6 +578,12 @@ function renderInspector(call) {
     head.appendChild(el("div", "insp-head__fault",
       "GraphQL · " + call.graphql_errors +
       (call.graphql_errors === 1 ? " error" : " errors") + " under HTTP " + call.status));
+  }
+  /* Same reason again: nothing about a session's transport says it failed. */
+  if (call.postgres_errors > 0) {
+    head.appendChild(el("div", "insp-head__fault",
+      "Postgres · " + call.postgres_errors +
+      (call.postgres_errors === 1 ? " server error" : " server errors")));
   }
   if (call.error) {
     head.appendChild(el("div", "insp-head__fault", call.error));
@@ -606,6 +626,9 @@ function renderInspector(call) {
   } else if (call.socket) {
     out.appendChild(renderFrames("SENT", call.socket.sent, call.socket.sent_summary, call.socket.sent_incomplete));
     out.appendChild(renderFrames("RECEIVED", call.socket.received, call.socket.received_summary, call.socket.received_incomplete));
+  } else if (call.postgres) {
+    out.appendChild(renderPostgres("SENT", call.postgres.sent, call.postgres.sent_incomplete));
+    out.appendChild(renderPostgres("RECEIVED", call.postgres.received, call.postgres.received_incomplete));
   } else if (call.stream) {
     out.appendChild(renderEvents(call.stream));
   } else if (call.grpc) {
@@ -784,10 +807,15 @@ function renderActions(call) {
   const bar = el("div", "actions");
 
   // Replaying a socket would resend the handshake and open a new, empty
-  // conversation — not the one being read. Offering a control that cannot do
-  // what its label says is worse than not offering it.
+  // conversation — not the one being read. A database session is the same
+  // shape of problem. Offering a control that cannot do what its label says is
+  // worse than not offering it.
   if (call.protocol === "websocket") {
     bar.appendChild(el("span", "note", "A socket cannot be replayed: the handshake would open a new conversation, not this one."));
+    return bar;
+  }
+  if (call.protocol === "postgres") {
+    bar.appendChild(el("span", "note", "A session cannot be replayed: it is a whole conversation, not a request."));
     return bar;
   }
 
@@ -1111,6 +1139,88 @@ function renderGraphQL(g) {
       "The response is not JSON, so whether it carried errors is unknown — the capture was cut short by the body cap, or the server answered something else."));
   }
   return s.wrap;
+}
+
+/* A Postgres session is one exchange carrying two streams of protocol
+   messages, read out of the stored bytes here the same way frames are.
+
+   A session is mostly DataRows, and drawing forty of them would bury the
+   statement that produced them. Rows are counted; the messages that say
+   something a reader came for — the SQL, its parameters, the command tag, the
+   server's error — are drawn. */
+
+function renderPostgres(title, messages, incomplete) {
+  const msgs = messages || [];
+  const s = section(title, msgs.length === 1 ? "1 message" : msgs.length + " messages");
+
+  if (!msgs.length) {
+    s.body.appendChild(el("p", "note", "Nothing in this direction."));
+    return s.wrap;
+  }
+
+  let rows = 0;
+  const flushRows = () => {
+    if (!rows) return;
+    s.body.appendChild(el("p", "note", rows === 1 ? "1 data row" : rows + " data rows"));
+    rows = 0;
+  };
+
+  for (const m of msgs) {
+    if (m.kind === "data_row") { rows++; continue; }
+    flushRows();
+
+    const block = el("div", "msg");
+    const head = el("div", "msg__head");
+    head.append(el("span", "label", m.kind.toUpperCase().replace(/_/g, " ")));
+
+    /* Failure is carried by shape first: an error is its own block with its
+       SQLSTATE spelled out, not a red version of an ordinary one. */
+    if (m.kind === "error_response") {
+      head.appendChild(el("span", "note note--fault", [m.severity, m.code].filter(Boolean).join(" ")));
+    } else if (m.size) {
+      head.appendChild(el("span", "note", bytes(m.size)));
+    }
+    block.appendChild(head);
+
+    if (m.sql) block.appendChild(el("pre", "payload", m.sql));
+    if (m.params && m.params.length) {
+      block.appendChild(kv(m.params.map((p, i) => ["$" + (i + 1), pgValue(p)])));
+    }
+    if (m.tag) block.appendChild(el("p", "note", m.tag));
+    if (m.message) {
+      block.appendChild(el("p", m.kind === "error_response" ? "note note--fault" : "note", m.message));
+    }
+    for (const extra of [m.detail, m.hint]) {
+      if (extra) block.appendChild(el("p", "note", extra));
+    }
+    if (m.parameters) {
+      block.appendChild(kv(Object.keys(m.parameters).sort().map((k) => [k, m.parameters[k]])));
+    }
+    /* Which mechanism, never the exchange: the bytes that carried it were
+       blanked before anything was stored. */
+    if (m.auth) block.appendChild(el("p", "note", "mechanism: " + m.auth));
+    if (m.tx_status) block.appendChild(el("p", "note", m.tx_status.replace(/_/g, " ")));
+    /* A gap the tool knows about is stated, never hidden. */
+    if (m.note) block.appendChild(el("p", "note", m.note));
+
+    s.body.appendChild(block);
+  }
+  flushRows();
+
+  if (incomplete) {
+    s.body.appendChild(el("p", "note",
+      "Bytes remain after the last whole message — the capture was cut short by the body cap, or the session was still open."));
+  }
+  return s.wrap;
+}
+
+/* A NULL and an empty string are different on the wire and different in a WHERE
+   clause, so they read differently here. */
+function pgValue(v) {
+  if (v.null) return "NULL";
+  if (v.text) return v.text;
+  if (!v.size) return "''";
+  return bytes(v.size) + ", not text";
 }
 
 function renderEvents(stream) {
@@ -1512,13 +1622,26 @@ function renderServiceForm(project) {
   const protoWrap = el("div", "form__field");
   protoWrap.appendChild(el("span", "label", "PROTOCOL"));
   const protocol = document.createElement("select");
-  for (const value of ["grpc", "http"]) {
+  for (const value of ["grpc", "http", "postgres"]) {
     const option = document.createElement("option");
     option.value = option.textContent = value;
     protocol.appendChild(option);
   }
   protoWrap.appendChild(protocol);
   form.appendChild(protoWrap);
+
+  /* A database is declared as postgres://host:port, and never with the user and
+   * password from a DATABASE_URL: Sonda forwards the client's own handshake, so
+   * a credential here would only be a password written into the capture file. */
+  const upstreamHint = el("p", "note", "");
+  protocol.addEventListener("change", () => {
+    const pg = protocol.value === "postgres";
+    upstream.placeholder = pg ? "postgres://127.0.0.1:5432" : "http://127.0.0.1:50052";
+    upstreamHint.textContent = pg
+      ? "No user and no password: the client's own handshake is forwarded untouched."
+      : "";
+  });
+  form.appendChild(upstreamHint);
 
   const row = el("div", "form__row");
   const reflection = document.createElement("input");
