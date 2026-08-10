@@ -355,3 +355,32 @@ func TestStdioRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// A protocol Sonda captures but the schema does not offer is a protocol the
+// agent cannot ask about. The enum has to keep up with what the proxy learned
+// to speak, or the tool quietly narrows what the model can see.
+func TestTheProtocolFilterOffersEveryProtocolSondaCaptures(t *testing.T) {
+	s := New(&fakeAPI{}, "test")
+	tools := send(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`).
+		Result.(map[string]any)["tools"].([]map[string]any)
+
+	for _, tool := range tools {
+		if tool["name"] != "search_calls" {
+			continue
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		enum := props["protocol"].(map[string]any)["enum"].([]string)
+
+		offered := map[string]bool{}
+		for _, p := range enum {
+			offered[p] = true
+		}
+		for _, want := range []string{"http", "grpc", "websocket"} {
+			if !offered[want] {
+				t.Errorf("search_calls cannot filter for %q", want)
+			}
+		}
+		return
+	}
+	t.Fatal("search_calls is not listed")
+}

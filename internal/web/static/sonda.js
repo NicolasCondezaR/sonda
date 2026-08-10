@@ -667,6 +667,14 @@ function drawNode(list, node, prefix, last, root, currentID) {
 function renderActions(call) {
   const bar = el("div", "actions");
 
+  // Replaying a socket would resend the handshake and open a new, empty
+  // conversation — not the one being read. Offering a control that cannot do
+  // what its label says is worse than not offering it.
+  if (call.protocol === "websocket") {
+    bar.appendChild(el("span", "note", "A socket cannot be replayed: the handshake would open a new conversation, not this one."));
+    return bar;
+  }
+
   const replay = el("button", "switch__key switch__key--lone", "REPLAY");
   replay.type = "button";
 
