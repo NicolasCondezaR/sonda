@@ -100,14 +100,15 @@ func readTools() []Tool {
 		},
 
 		{
-			Name:        "search_calls",
-			Title:       "Search captured calls",
-			Description: "Find captured calls by service, method, path, protocol, status or free text in the bodies. Every filter is optional and they combine.",
+			Name:  "search_calls",
+			Title: "Search captured calls",
+			Description: "Find captured calls by service, method, path, protocol, status or free text in the bodies. Every filter is optional and they combine. " +
+				"Sockets and event streams are captures like any other, so the same filters reach them.",
 			Schema: obj(map[string]any{
 				"service":  prop("string", "Service name, as Sonda knows it — for example ms-auth."),
 				"method":   prop("string", "HTTP method, or the gRPC method name."),
 				"path":     prop("string", "Path or fragment of one."),
-				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc"}, "description": "Restrict to one protocol."},
+				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "websocket"}, "description": "Restrict to one protocol. A websocket is one capture holding the whole conversation, not one per message."},
 				"text":     prop("string", "Free text to look for inside the request and response bodies."),
 				"status":   prop("integer", "Exact HTTP status."),
 				"failed":   prop("boolean", "Only calls that failed."),
@@ -138,9 +139,11 @@ func readTools() []Tool {
 		},
 
 		{
-			Name:        "get_call",
-			Title:       "Read one call",
-			Description: "One captured call in full: headers, both bodies decoded, timing, gRPC status and trailers. Bodies are shortened unless you ask for detail.",
+			Name:  "get_call",
+			Title: "Read one call",
+			Description: "One captured call in full: headers, both bodies decoded, timing, gRPC status and trailers. " +
+				"A WebSocket comes back as the frames of both directions, unmasked and labelled by kind, with the close code when there is one. " +
+				"A server-sent event stream comes back as its events. Bodies are shortened unless you ask for detail.",
 			Schema: obj(map[string]any{
 				"id":     prop("integer", "The call id, as returned by the other tools."),
 				"detail": prop("boolean", "Return bodies whole instead of shortened. Ask for this only when you need the full payload."),
