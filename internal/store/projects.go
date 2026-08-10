@@ -43,6 +43,15 @@ type Service struct {
 	Protocol   string
 	Reflection bool
 	Position   int
+
+	// TLS makes Sonda answer this port with a certificate instead of plaintext,
+	// so a client that refuses http:// can be pointed at it.
+	TLS bool
+
+	// InsecureSkipVerify stops Sonda checking the upstream's certificate. Stored
+	// per service, never once for the process: trusting one self-signed
+	// container is not the same statement as trusting anything.
+	InsecureSkipVerify bool
 }
 
 var (
@@ -69,10 +78,20 @@ CREATE TABLE IF NOT EXISTS services (
 	protocol   TEXT    NOT NULL,
 	reflection INTEGER NOT NULL DEFAULT 1,
 	position   INTEGER NOT NULL DEFAULT 0,
+	tls        INTEGER NOT NULL DEFAULT 0,
+	insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(project_id, name)
 );
 CREATE INDEX IF NOT EXISTS services_project_idx ON services(project_id, position);
 `
+
+// addedServiceColumns brings a services table created by an earlier version up
+// to date. Both default to off, which is the only safe reading of a row written
+// before the columns existed: a service nobody flagged was never unverified.
+var addedServiceColumns = map[string]string{
+	"tls":                  `ALTER TABLE services ADD COLUMN tls INTEGER NOT NULL DEFAULT 0`,
+	"insecure_skip_verify": `ALTER TABLE services ADD COLUMN insecure_skip_verify INTEGER NOT NULL DEFAULT 0`,
+}
 
 func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
@@ -119,7 +138,8 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 
 func (s *Store) services(ctx context.Context, projectID int64) ([]Service, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, name, listen, upstream, protocol, reflection, position
+		SELECT id, project_id, name, listen, upstream, protocol, reflection, position,
+		       tls, insecure_skip_verify
 		FROM services WHERE project_id = ? ORDER BY position, id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list services: %w", err)
@@ -129,14 +149,16 @@ func (s *Store) services(ctx context.Context, projectID int64) ([]Service, error
 	out := []Service{}
 	for rows.Next() {
 		var (
-			svc        Service
-			reflection int
+			svc                         Service
+			reflection, terminate, skip int
 		)
 		if err := rows.Scan(&svc.ID, &svc.ProjectID, &svc.Name, &svc.Listen,
-			&svc.Upstream, &svc.Protocol, &reflection, &svc.Position); err != nil {
+			&svc.Upstream, &svc.Protocol, &reflection, &svc.Position, &terminate, &skip); err != nil {
 			return nil, err
 		}
 		svc.Reflection = reflection != 0
+		svc.TLS = terminate != 0
+		svc.InsecureSkipVerify = skip != 0
 		out = append(out, svc)
 	}
 	return out, rows.Err()
@@ -283,10 +305,12 @@ func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
 	}
 	if svc.ID == 0 {
 		res, err := s.db.ExecContext(ctx, `
-			INSERT INTO services (project_id, name, listen, upstream, protocol, reflection, position)
-			VALUES (?,?,?,?,?,?,?)`,
+			INSERT INTO services (project_id, name, listen, upstream, protocol, reflection, position,
+			                      tls, insecure_skip_verify)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
 			svc.ProjectID, svc.Name, svc.Listen, svc.Upstream, svc.Protocol,
-			boolToInt(svc.Reflection), svc.Position)
+			boolToInt(svc.Reflection), svc.Position,
+			boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify))
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return 0, fmt.Errorf("this project already has a service called %q", svc.Name)
@@ -298,10 +322,11 @@ func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
 
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE services SET name = ?, listen = ?, upstream = ?, protocol = ?,
-		       reflection = ?, position = ?
+		       reflection = ?, position = ?, tls = ?, insecure_skip_verify = ?
 		WHERE id = ?`,
 		svc.Name, svc.Listen, svc.Upstream, svc.Protocol,
-		boolToInt(svc.Reflection), svc.Position, svc.ID)
+		boolToInt(svc.Reflection), svc.Position,
+		boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -343,7 +368,9 @@ func ValidateService(svc Service) error {
 	if svc.Listen == u.Host {
 		return errors.New("the listen address and the upstream are the same, which would make the service call itself")
 	}
-	return nil
+	// The same rule the configuration file applies, from the same function, so
+	// the form and the YAML cannot disagree about what is allowed.
+	return config.ValidateTLS(svc.Protocol, u.Scheme, svc.TLS, svc.InsecureSkipVerify)
 }
 
 func splitHostPort(addr string) (host, port string, err error) {

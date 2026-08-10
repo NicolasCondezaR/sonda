@@ -48,7 +48,10 @@ type Found struct {
 var envLine = regexp.MustCompile(`^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=\s*["']?([^"'#\s]+)["']?`)
 
 // hostPort pulls an address out of a value that may or may not carry a scheme.
-var hostPort = regexp.MustCompile(`^(?:[a-z][a-z0-9+.-]*://)?([A-Za-z0-9._-]+):(\d{2,5})(?:/.*)?$`)
+// The scheme is captured rather than discarded because https:// is the one
+// piece of it that changes what Sonda has to do: rewriting a TLS upstream as
+// http:// produces a service that is configured, listed, and unreachable.
+var hostPort = regexp.MustCompile(`^(?:([a-z][a-z0-9+.-]*)://)?([A-Za-z0-9._-]+):(\d{2,5})(?:/.*)?$`)
 
 // FromEnv reads a .env-style file.
 func FromEnv(r io.Reader) ([]Found, error) {
@@ -75,7 +78,14 @@ func FromEnv(r io.Reader) ([]Found, error) {
 		if addr == nil {
 			continue
 		}
-		host, port := addr[1], addr[2]
+		scheme, host, port := addr[1], addr[2], addr[3]
+		// Anything else — grpc://, tcp:// — is a transport Sonda speaks over
+		// plaintext HTTP, and inventing https from an unknown scheme would be a
+		// guess. Nothing here ever reads a key that could carry a credential,
+		// and a scheme is not one.
+		if scheme != "https" {
+			scheme = "http"
+		}
 
 		// Anything that is not a service address: database URLs, secrets that
 		// happen to contain a colon, the process's own port.
@@ -90,7 +100,7 @@ func FromEnv(r io.Reader) ([]Found, error) {
 
 		out = append(out, Found{
 			Name:     name,
-			Upstream: "http://" + host + ":" + port,
+			Upstream: scheme + "://" + host + ":" + port,
 			Protocol: protocolFor(key),
 			Listen:   suggestListen(port),
 			Source:   fmt.Sprintf("línea %d: %s", line, key),

@@ -65,6 +65,7 @@ func (s *Server) targets() []config.Target {
 		out = append(out, config.Target{
 			Name: svc.Name, Listen: svc.Listen,
 			Upstream: svc.Upstream, Protocol: svc.Protocol,
+			TLS: svc.TLS, InsecureSkipVerify: svc.InsecureSkipVerify,
 		})
 	}
 	return out
@@ -107,6 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/services/{id}", s.deleteService)
 	mux.HandleFunc("POST /api/discover", s.discoverServices)
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
+	mux.HandleFunc("GET /api/tls", s.tlsAuthority)
+	mux.HandleFunc("GET /api/tls/ca.pem", s.tlsCertificate)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -164,6 +167,19 @@ type summaryJSON struct {
 	// TraceID is what groups this call with the rest of its request. Present
 	// only when something upstream put it in the headers.
 	TraceID string `json:"trace_id,omitempty"`
+
+	// TLS says Sonda terminated the client's encryption, UpstreamTLS that the
+	// service's half was encrypted too, and UpstreamInsecure that its
+	// certificate was not checked.
+	//
+	// The last one is not omitempty-able in spirit: a reader must never have to
+	// wonder whether an unverified connection just failed to mention it. It is
+	// only omitted when false, which is the same thing every other flag here
+	// does, and the interfaces state the verified case explicitly rather than
+	// inferring it from an absent field.
+	TLS              bool `json:"tls,omitempty"`
+	UpstreamTLS      bool `json:"upstream_tls,omitempty"`
+	UpstreamInsecure bool `json:"upstream_insecure,omitempty"`
 }
 
 type messageJSON struct {
@@ -361,12 +377,22 @@ func (s *Server) listTargets(w http.ResponseWriter, _ *http.Request) {
 		Protocol string `json:"protocol"`
 		Color    string `json:"color"`
 		Hollow   bool   `json:"hollow"`
+
+		// Carried here and not only on /api/projects because this is the list
+		// the channel rails are built from, and a rail that names a target
+		// without saying it goes unverified is a rail that hides it.
+		TLS                bool `json:"tls"`
+		InsecureSkipVerify bool `json:"insecure_skip_verify"`
 	}
 	targets := s.targets()
 	out := make([]targetJSON, 0, len(targets))
 	for i, t := range targets {
 		color, hollow := channelFor(i)
-		out = append(out, targetJSON{t.Name, t.Listen, t.Upstream, t.Protocol, color, hollow})
+		out = append(out, targetJSON{
+			Name: t.Name, Listen: t.Listen, Upstream: t.Upstream, Protocol: t.Protocol,
+			Color: color, Hollow: hollow,
+			TLS: t.TLS, InsecureSkipVerify: t.InsecureSkipVerify,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"targets": out})
 }
@@ -410,6 +436,10 @@ func toSummary(c store.Summary) summaryJSON {
 
 		PostgresSummary: c.PostgresSummary,
 		PostgresErrors:  c.PostgresErrors,
+
+		TLS:              c.TLS,
+		UpstreamTLS:      c.UpstreamTLS,
+		UpstreamInsecure: c.UpstreamInsecure,
 	}
 	if c.GRPCStatus != nil {
 		out.GRPCStatusText = codes.Code(*c.GRPCStatus).String()

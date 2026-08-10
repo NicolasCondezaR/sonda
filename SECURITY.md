@@ -17,6 +17,57 @@ Two consequences follow, and neither is a bug report:
   `127.0.0.1` and assumes the only person who can reach it is the person running
   it.
 
+## The certificate authority
+
+The first time a service is set to terminate TLS, Sonda generates a certificate
+authority and writes two files beside the database:
+
+| | |
+|---|---|
+| `sonda-ca.pem` | the certificate. Public, and safe to hand around |
+| `sonda-ca-key.pem` | **the private key.** Written `0600`, owner only |
+
+**The key is the most dangerous thing Sonda holds.** `sonda.db` exposes the
+credentials that happened to cross the wire while it was running; this key
+signs a certificate for *any* name, so anyone who has it can impersonate any
+site to every machine that trusts the authority. Treat it the way you treat an
+SSH private key, not the way you treat a log file. It is never logged, never
+returned by the API, never reachable over MCP, and never written into a
+capture. `GET /api/tls/ca.pem` serves the certificate and there is no endpoint
+that serves the key.
+
+Two things follow from where it lives:
+
+- **Copying `sonda.db` to another machine copies the key too** if you take the
+  whole directory. Take the database on its own.
+- **Deleting Sonda's directory does not untrust the authority.** If you trusted
+  it system-wide, withdraw the trust first and delete the files second —
+  otherwise the machine keeps trusting a root nobody can account for. The
+  removal commands are in the certificate authority panel of the interface, in
+  the `trust_certificate` MCP tool, and in `README.md`.
+
+**Sonda never installs it.** No `certutil`, no `security add-trusted-cert`, no
+writing into `/usr/local/share/ca-certificates`, no registry. Modifying a
+machine's trust store is a decision to make deliberately, and a debugging tool
+that did it quietly would be indistinguishable from malware. Sonda prints the
+exact command for your platform and stops there.
+
+The authority names itself and the machine it was made on — `Sonda local CA
+(hostname)` — and expires after a year, so one forgotten in a trust store stops
+mattering on its own.
+
+## Not verifying an upstream
+
+`insecure_skip_verify` stops Sonda checking an upstream's certificate. It is per
+service, it is refused on anything that is not an `https://` upstream, and there
+is deliberately no process-wide equivalent: "I trust this one self-signed
+container" and "I trust anything" are not the same statement.
+
+It is never quiet. The service is marked in the web interface, in the terminal's
+channel rail and in `list_services`, and **every capture taken through it records
+that it was not verified** — so a response read six months later still says
+whether anyone ever checked who sent it.
+
 ## Do not expose it
 
 Sonda is not hardened for a network. Anyone who can reach its port can read
@@ -47,8 +98,10 @@ leaks a redacted field, a way to make the proxy forward somewhere it was not
 configured to.
 
 What is not: that the database is unencrypted, that there is no authentication,
-or that exposing the port is dangerous. Those are documented above and are
-properties of a local tool, not defects.
+that exposing the port is dangerous, or that a certificate authority you chose
+to trust can sign for any name. Those are documented above and are properties of
+a local tool, not defects. A path that leaks the CA private key, or that skips
+upstream verification without the target being configured for it, very much is.
 
 ## Supported versions
 

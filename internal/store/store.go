@@ -104,6 +104,19 @@ type Call struct {
 	// stream itself goes in untouched.
 	PostgresSummary string
 	PostgresErrors  int
+
+	// TLS, UpstreamTLS and UpstreamInsecure are how this call was encrypted, and
+	// they are three separate facts because "the client's half was encrypted"
+	// and "the service's half was" are answered by different sides of the proxy.
+	//
+	// UpstreamInsecure is the one that matters most and the reason the other two
+	// are stored beside it: a reader looking at a captured response must never
+	// have to go and check the configuration to find out whether the identity of
+	// whoever sent it was ever checked — least of all months later, when the
+	// service may have been reconfigured since.
+	TLS              bool
+	UpstreamTLS      bool
+	UpstreamInsecure bool
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -133,6 +146,10 @@ type Summary struct {
 
 	PostgresSummary string
 	PostgresErrors  int
+
+	TLS              bool
+	UpstreamTLS      bool
+	UpstreamInsecure bool
 }
 
 type Filter struct {
@@ -193,7 +210,10 @@ CREATE TABLE IF NOT EXISTS calls (
 	graphql_op     TEXT    NOT NULL DEFAULT '',
 	graphql_errors INTEGER NOT NULL DEFAULT 0,
 	pg_summary     TEXT    NOT NULL DEFAULT '',
-	pg_errors      INTEGER NOT NULL DEFAULT 0
+	pg_errors      INTEGER NOT NULL DEFAULT 0,
+	tls              INTEGER NOT NULL DEFAULT 0,
+	upstream_tls     INTEGER NOT NULL DEFAULT 0,
+	upstream_insecure INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS calls_started_at_idx ON calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS calls_target_idx     ON calls(target, id DESC);
@@ -220,12 +240,25 @@ var addedColumns = map[string]string{
 	"graphql_errors": `ALTER TABLE calls ADD COLUMN graphql_errors INTEGER NOT NULL DEFAULT 0`,
 	"pg_summary":     `ALTER TABLE calls ADD COLUMN pg_summary TEXT NOT NULL DEFAULT ''`,
 	"pg_errors":      `ALTER TABLE calls ADD COLUMN pg_errors INTEGER NOT NULL DEFAULT 0`,
+	// A capture taken before these columns existed reports plaintext and
+	// unverified-nothing, which is what it was: Sonda could not terminate TLS at
+	// the time and never skipped a check nobody could ask it to skip.
+	"tls":               `ALTER TABLE calls ADD COLUMN tls INTEGER NOT NULL DEFAULT 0`,
+	"upstream_tls":      `ALTER TABLE calls ADD COLUMN upstream_tls INTEGER NOT NULL DEFAULT 0`,
+	"upstream_insecure": `ALTER TABLE calls ADD COLUMN upstream_insecure INTEGER NOT NULL DEFAULT 0`,
 }
 
 func migrate(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(calls)`)
+	if err := addColumns(db, "calls", addedColumns); err != nil {
+		return err
+	}
+	return addColumns(db, "services", addedServiceColumns)
+}
+
+func addColumns(db *sql.DB, table string, wanted map[string]string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
-		return fmt.Errorf("inspect calls table: %w", err)
+		return fmt.Errorf("inspect %s table: %w", table, err)
 	}
 	present := map[string]bool{}
 	for rows.Next() {
@@ -246,12 +279,12 @@ func migrate(db *sql.DB) error {
 	}
 	rows.Close()
 
-	for name, ddl := range addedColumns {
+	for name, ddl := range wanted {
 		if present[name] {
 			continue
 		}
 		if _, err := db.Exec(ddl); err != nil {
-			return fmt.Errorf("add column %s: %w", name, err)
+			return fmt.Errorf("add column %s.%s: %w", table, name, err)
 		}
 	}
 	return nil
@@ -318,8 +351,9 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
 			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-			stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors,
+			tls, upstream_tls, upstream_insecure
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
@@ -327,6 +361,7 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
 		c.Project, c.TraceID, nullableInt64(c.StubOf), boolToInt(c.Injected),
 		c.GraphQLOp, c.GraphQLErrors, c.PostgresSummary, c.PostgresErrors,
+		boolToInt(c.TLS), boolToInt(c.UpstreamTLS), boolToInt(c.UpstreamInsecure),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -401,7 +436,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
 		       replay_of, project, trace_id, stub_of, injected, graphql_op, graphql_errors,
-		       pg_summary, pg_errors
+		       pg_summary, pg_errors, tls, upstream_tls, upstream_insecure
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -425,12 +460,15 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 			replayOf   sql.NullInt64
 			stubOf     sql.NullInt64
 			injected   int
+
+			terminated, upstreamTLS, insecure int
 		)
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
 			&replayOf, &s.Project, &s.TraceID, &stubOf, &injected,
-			&s.GraphQLOp, &s.GraphQLErrors, &s.PostgresSummary, &s.PostgresErrors); err != nil {
+			&s.GraphQLOp, &s.GraphQLErrors, &s.PostgresSummary, &s.PostgresErrors,
+			&terminated, &upstreamTLS, &insecure); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
@@ -439,6 +477,9 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		s.ReplayOf = int64OrNil(replayOf)
 		s.StubOf = int64OrNil(stubOf)
 		s.Injected = injected != 0
+		s.TLS = terminated != 0
+		s.UpstreamTLS = upstreamTLS != 0
+		s.UpstreamInsecure = insecure != 0
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -452,20 +493,24 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		reqTrunc, respTrunc                 int
 		grpcStatus, replayOf, stubOf        sql.NullInt64
 		injectedFlag                        int
+
+		terminated, upstreamTLS, insecure int
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, target, protocol, method, path, status, client_addr, started_at,
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
 		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-		       stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors
+		       stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors,
+		       tls, upstream_tls, upstream_insecure
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
 		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf, &injectedFlag,
-		&c.GraphQLOp, &c.GraphQLErrors, &c.PostgresSummary, &c.PostgresErrors)
+		&c.GraphQLOp, &c.GraphQLErrors, &c.PostgresSummary, &c.PostgresErrors,
+		&terminated, &upstreamTLS, &insecure)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +523,9 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 	c.ReplayOf = int64OrNil(replayOf)
 	c.StubOf = int64OrNil(stubOf)
 	c.Injected = injectedFlag != 0
+	c.TLS = terminated != 0
+	c.UpstreamTLS = upstreamTLS != 0
+	c.UpstreamInsecure = insecure != 0
 	if c.Request.Headers, err = decodeHeaders(reqHeaders); err != nil {
 		return nil, err
 	}
@@ -835,6 +883,7 @@ func (c *Call) Summary() Summary {
 		TraceID: c.TraceID, StubOf: c.StubOf, Injected: c.Injected,
 		GraphQLOp: c.GraphQLOp, GraphQLErrors: c.GraphQLErrors,
 		PostgresSummary: c.PostgresSummary, PostgresErrors: c.PostgresErrors,
+		TLS: c.TLS, UpstreamTLS: c.UpstreamTLS, UpstreamInsecure: c.UpstreamInsecure,
 	}
 }
 

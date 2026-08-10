@@ -48,6 +48,34 @@ targets:
   #   upstream: http://127.0.0.1:3000
   #   protocol: http
 
+  # A hosted API over TLS. The upstream keeps its https:// scheme and Sonda
+  # verifies its certificate like any other client would.
+  # - name: payments
+  #   listen: 127.0.0.1:9103
+  #   upstream: https://api.payments.example.com
+  #   protocol: http
+
+  # A client that refuses to speak http://. `tls: true` makes Sonda answer this
+  # port with a certificate of its own, so the caller is pointed at
+  # https://127.0.0.1:9104 instead. The certificate is signed by an authority
+  # Sonda generates beside the database — nothing is added to this machine's
+  # trust store, and the first run prints the command to trust it yourself.
+  # - name: web-api
+  #   listen: 127.0.0.1:9104
+  #   upstream: http://127.0.0.1:3000
+  #   protocol: http
+  #   tls: true
+
+  # An upstream with a self-signed certificate. This is the only way to stop
+  # Sonda checking it, it applies to this one service, and every capture taken
+  # through it is recorded as unverified and shown as unverified everywhere.
+  # Sonda refuses it on an http:// upstream, where it would mean nothing.
+  # - name: staging
+  #   listen: 127.0.0.1:9105
+  #   upstream: https://staging.internal:8443
+  #   protocol: http
+  #   insecure_skip_verify: true
+
   # A database. Point the application's DSN at the listen address — keeping its
   # own user, password and database name — and the SQL it runs shows up as
   # captures beside the HTTP calls that caused it:

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -110,8 +109,13 @@ func (p *Proxy) serveWebSocket(w http.ResponseWriter, r *http.Request, started t
 		TraceID:    trace.ID(r.Header),
 		Request:    store.Message{Headers: r.Header.Clone()},
 	}
+	p.markTLS(call, r, true)
 
-	upstream, err := net.DialTimeout("tcp", p.target.UpstreamURL().Host, 10*time.Second)
+	// A socket hijacks the connection, so it never touches the reverse proxy's
+	// transport and has to make the same TLS decision itself. Without this an
+	// https:// upstream would be dialled in the clear and answer with a TLS
+	// alert the client would report as a broken handshake.
+	upstream, err := p.dialUpstream()
 	if err != nil {
 		p.failSocket(w, call, started, fmt.Errorf("could not reach %s: %w", p.target.Upstream, err))
 		return true

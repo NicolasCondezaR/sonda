@@ -122,7 +122,8 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 	want := map[string]bool{
 		"recent_failures": true, "search_calls": true, "get_call": true,
 		"diff_calls": true, "trace_call": true, "contract_drift": true, "list_services": true, "wait_for_call": true,
-		"replay_call": true, "connect_project": true, "configure_service": true,
+		"trust_certificate": true,
+		"replay_call":       true, "connect_project": true, "configure_service": true,
 		"activate_project": true, "disconnect_project": true, "set_stub": true, "break_service": true,
 	}
 	got := map[string]bool{}

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -196,7 +197,10 @@ func run() error {
 
 	recorder := store.NewRecorder(db, cfg.BufferSize)
 	stubs, faults := stub.New(db), fault.New()
-	rt := runtime.New(db, recorder, cfg.MaxBodyBytes).WithStubs(stubs).WithFaults(faults)
+	// The certificate authority lives beside the database, because the two are
+	// equally dangerous and are copied, backed up and deleted together.
+	rt := runtime.New(db, recorder, cfg.MaxBodyBytes).
+		WithStubs(stubs).WithFaults(faults).WithCADir(filepath.Dir(cfg.Database))
 	apiServer := api.New(db, recorder, rt).WithStubs(stubs).WithFaults(faults)
 
 	// Wire the live view before anything starts reading from the recorder.
@@ -278,6 +282,9 @@ func seedFromConfig(ctx context.Context, db *store.Store, cfg *config.Config, pa
 			Protocol:   target.Protocol,
 			Reflection: target.ReflectionEnabled(),
 			Position:   i,
+
+			TLS:                target.TLS,
+			InsecureSkipVerify: target.InsecureSkipVerify,
 		}); err != nil {
 			return fmt.Errorf("seed service %s: %w", target.Name, err)
 		}

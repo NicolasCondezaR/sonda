@@ -167,6 +167,24 @@ targets:
 			wantMsg: "only apply to",
 		},
 		{
+			// Accepting it would leave the target reading as unverified in every
+			// interface while nothing was ever verified or skipped.
+			name: "skipping verification on a plaintext upstream",
+			yaml: `
+targets:
+  - {name: api, listen: 127.0.0.1:9101, upstream: "http://127.0.0.1:3000", insecure_skip_verify: true}
+`,
+			wantMsg: "only means something when the upstream is https",
+		},
+		{
+			name: "terminating tls in front of a database",
+			yaml: `
+targets:
+  - {name: db, listen: 127.0.0.1:9101, upstream: "postgres://127.0.0.1:5432", protocol: postgres, tls: true}
+`,
+			wantMsg: "tls is not available",
+		},
+		{
 			name: "descriptor set that does not exist",
 			yaml: `
 targets:

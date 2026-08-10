@@ -35,6 +35,31 @@ type Target struct {
 	Listen   string `json:"listen"`
 	Upstream string `json:"upstream"`
 	Protocol string `json:"protocol"`
+
+	TLS                bool `json:"tls"`
+	InsecureSkipVerify bool `json:"insecure_skip_verify"`
+}
+
+// TLSNote is the one line an inspector shows about encryption, or "" when there
+// is nothing worth saying — a plaintext call between plaintext ends.
+//
+// It lives beside Fault() and Outcome() for the same reason those do: the
+// terminal and the web client have to reach the same verdict from the same
+// three flags, and two hand-written readings of them is how they start
+// disagreeing about whether something was verified.
+func (c Call) TLSNote() string {
+	switch {
+	case c.UpstreamInsecure:
+		return "TLS · upstream certificate NOT VERIFIED — this service is configured to skip the check"
+	case c.TLS && c.UpstreamTLS:
+		return "TLS · client encrypted to Sonda, upstream verified"
+	case c.UpstreamTLS:
+		return "TLS · upstream verified"
+	case c.TLS:
+		return "TLS · client encrypted to Sonda, upstream in the clear"
+	default:
+		return ""
+	}
 }
 
 type Call struct {
@@ -65,6 +90,13 @@ type Call struct {
 	StubOf          *int64 `json:"stub_of"`
 	Injected        bool   `json:"injected"`
 	TraceID         string `json:"trace_id"`
+
+	// How this call was encrypted. UpstreamInsecure is the one worth a line of
+	// its own: a reader must never have to go and check the configuration to
+	// find out whether the service that answered was ever identified.
+	TLS              bool `json:"tls"`
+	UpstreamTLS      bool `json:"upstream_tls"`
+	UpstreamInsecure bool `json:"upstream_insecure"`
 
 	started time.Time // parsed once, on the way in
 }

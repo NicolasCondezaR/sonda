@@ -115,6 +115,20 @@ function outcome(call) {
   return String(call.status);
 }
 
+/* The one sentence a capture gets about encryption, or "" when both ends were
+ * in the clear and there is nothing to say. It mirrors Call.TLSNote in the
+ * terminal client clause for clause: two hand-written readings of the same three
+ * flags is how the two interfaces start disagreeing about what was verified. */
+function tlsNote(call) {
+  if (call.upstream_insecure) {
+    return "upstream certificate NOT VERIFIED — this service is configured to skip the check";
+  }
+  if (call.tls && call.upstream_tls) return "client encrypted to Sonda, upstream verified";
+  if (call.upstream_tls) return "upstream verified";
+  if (call.tls) return "client encrypted to Sonda, upstream in the clear";
+  return "";
+}
+
 /* How a call is named in one line. Every GraphQL call to a service is the same
  * method and path, and every Postgres capture against a database is too, so the
  * operation — or the statement — is the only part that says which one this was.
@@ -196,6 +210,17 @@ function renderRail() {
     if (state.broken.has(target.name)) {
       row.appendChild(el("span", "channel__stub channel__stub--broken", "BROKEN"));
       row.title += " — broken on purpose: " + state.broken.get(target.name);
+    }
+    /* Terminating TLS is a mode too, and not checking the upstream's
+     * certificate is the one nobody may have to go looking for: the rail is
+     * where a reader picks which service to look at. */
+    if (target.tls) {
+      row.appendChild(el("span", "channel__stub", "TLS"));
+      row.title += " — Sonda terminates TLS on this port; point the caller at https://" + target.listen;
+    }
+    if (target.insecure_skip_verify) {
+      row.appendChild(el("span", "channel__stub channel__stub--broken", "NO VERIFY"));
+      row.title += " — the upstream's certificate is not being checked";
     }
     row.append(
       el("span", "channel__calls", "0"),
@@ -610,6 +635,16 @@ function renderInspector(call) {
     link.type = "button";
     link.addEventListener("click", () => select(call.stub_of));
     line.appendChild(link);
+    head.appendChild(line);
+  }
+
+  /* Also before the payload. Whether the far end was ever identified decides
+   * what the payload is worth, and going to read the configuration to find out
+   * is exactly the trip this line saves. */
+  const encryption = tlsNote(call);
+  if (encryption) {
+    const line = el("div", "insp-head__stub" + (call.upstream_insecure ? " insp-head__stub--broken" : ""));
+    line.append(el("b", null, "TLS"), document.createTextNode(" · " + encryption));
     head.appendChild(line);
   }
 
@@ -1444,12 +1479,19 @@ const admin = {
   projects: [],
   found: null,
   target: null,   // project the import panel belongs to
+  ca: null,       // the certificate authority, once one exists
 };
 
 async function loadProjects() {
   const res = await fetch("api/projects");
   if (!res.ok) throw new Error("could not read projects");
   admin.projects = (await res.json()).projects;
+
+  /* Read alongside the projects because it changes with them: the authority is
+   * created the moment a service is set to terminate TLS, and the panel that
+   * says how to trust it has to appear in the same redraw. */
+  const authority = await fetch("api/tls");
+  admin.ca = authority.ok ? await authority.json() : null;
 }
 
 function note(text, kind) {
@@ -1509,8 +1551,62 @@ function renderAdmin() {
     out.appendChild(el("p", "note", "No projects yet. Create one, then add the services it talks to — or import them from a file the project already has."));
   }
   out.appendChild(renderNewProject());
+  const authority = renderAuthority();
+  if (authority) out.appendChild(authority);
 
   dom.adminBody.replaceChildren(out);
+}
+
+/* What to run to trust Sonda's certificate authority, and what to run to get rid
+ * of it again.
+ *
+ * The commands are the panel. Sonda deliberately does not touch the trust store
+ * — that is the user's decision to make deliberately — and "install the CA" with
+ * no exact line is how a deliberate decision turns into a browser warning
+ * clicked through. The removal half is here for the same reason: a root nobody
+ * can find later is worse than no root at all.
+ *
+ * The private key is not shown, not linked and not downloadable. */
+function renderAuthority() {
+  if (!admin.ca || !admin.ca.exists) return null;
+  const i = admin.ca.instructions;
+
+  const box = el("section", "prj");
+  const head = el("div", "prj__head");
+  head.append(el("span", "prj__name", "CERTIFICATE AUTHORITY"));
+  const download = el("a", "switch__key switch__key--lone", "DOWNLOAD");
+  download.href = "api/tls/ca.pem";
+  download.download = "sonda-ca.pem";
+  download.title = "The public certificate only. Useful when Sonda runs in a container and the file is not on this machine.";
+  head.appendChild(download);
+  box.appendChild(head);
+
+  for (const [label, value] of [["file", i.path], ["subject", i.subject], ["sha256", i.fingerprint_sha256], ["expires", i.expires]]) {
+    const row = el("div", "svc__point");
+    row.append(el("span", null, label), el("code", "svc__command", value));
+    box.appendChild(row);
+  }
+
+  const group = (title, steps) => {
+    box.appendChild(el("p", "label", title));
+    for (const step of steps) {
+      const row = el("div", "svc__point");
+      row.append(
+        el("span", null, step.where),
+        el("code", "svc__command", step.command),
+        button("COPY", () => copy(step.command)),
+      );
+      box.appendChild(row);
+    }
+  };
+
+  group("TRUST IT IN ONE PROGRAM — no administrator, nothing left behind", i.per_tool);
+  group("OR FOR THE WHOLE MACHINE — run it yourself, Sonda will not", i.trust_system_wide);
+  group("REMOVE IT — withdraw the trust first, then delete the files", i.remove);
+
+  box.appendChild(el("p", "note",
+    "Sonda never adds this to your trust store. It generated the authority, wrote it beside the database with the private key readable only by you, and stops there."));
+  return box;
 }
 
 function renderProject(project) {
@@ -1557,13 +1653,28 @@ function renderProject(project) {
   return box;
 }
 
+function upstreamCell(svc) {
+  if (!svc.insecure_skip_verify) {
+    return el("span", "svc__cell svc__cell--faint", svc.upstream);
+  }
+  const cell = el("span", "svc__cell svc__state--off", svc.upstream + " · NO VERIFY");
+  cell.title = "Sonda does not check this upstream's certificate for this service. Every capture taken through it is recorded as unverified.";
+  return cell;
+}
+
 function renderService(project, svc) {
   const row = el("div", "svc");
   row.append(
     el("span", "svc__name", svc.name),
     el("span", "svc__cell svc__cell--faint", svc.protocol),
-    el("span", "svc__cell", svc.listen),
-    el("span", "svc__cell svc__cell--faint", svc.upstream),
+    /* The scheme is part of the address once Sonda terminates TLS: a caller
+     * pointed at http:// on this port gets nothing. */
+    el("span", "svc__cell", (svc.tls ? "https://" : "") + svc.listen),
+    /* Said in the upstream's own cell, in the colour failure owns, because that
+     * is what is not being checked — and because the grid has a column for the
+     * upstream and none for a badge. Someone scanning the list for "which of
+     * these am I not verifying" must not have to open anything. */
+    upstreamCell(svc),
   );
 
   // What is really happening on the port, not what was configured. Named for
@@ -1635,24 +1746,60 @@ function renderServiceForm(project) {
    * password from a DATABASE_URL: Sonda forwards the client's own handshake, so
    * a credential here would only be a password written into the capture file. */
   const upstreamHint = el("p", "note", "");
+  form.appendChild(upstreamHint);
+
+  const checkbox = (id, text) => {
+    const row = el("div", "form__row");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = id;
+    const label = el("label", "note", " " + text);
+    label.htmlFor = input.id;
+    row.append(input, label);
+    form.appendChild(row);
+    return input;
+  };
+
+  const reflection = checkbox(`refl-${project.id}`,
+    "ask this service for its schema (reflection)");
+
+  /* Two separate switches because they are two separate decisions, and folding
+   * them into one "use TLS" would make turning on encryption also turn off the
+   * check that gives it any value. */
+  const terminate = checkbox(`tls-${project.id}`,
+    "answer this port with TLS, so the caller can use https://");
+  const skipVerify = checkbox(`noverify-${project.id}`,
+    "do not check the upstream's certificate (only for https:// upstreams)");
+
+  const skipHint = el("p", "note note--fault", "");
+  skipVerify.addEventListener("change", () => {
+    /* Said at the moment of the decision rather than buried in documentation:
+     * whoever ticks this is about to stop identifying the far end, and the
+     * consequences follow the service everywhere afterwards. */
+    skipHint.textContent = skipVerify.checked
+      ? "Anything that answers on that address will be trusted. Every capture taken through this service is recorded as unverified, and the service is shown as unverified everywhere."
+      : "";
+  });
+  form.appendChild(skipHint);
+
+  /* A database is declared as postgres://host:port, and never with the user and
+   * password from a DATABASE_URL: Sonda forwards the client's own handshake, so
+   * a credential here would only be a password written into the capture file. */
   protocol.addEventListener("change", () => {
     const pg = protocol.value === "postgres";
     upstream.placeholder = pg ? "postgres://127.0.0.1:5432" : "http://127.0.0.1:50052";
     upstreamHint.textContent = pg
-      ? "No user and no password: the client's own handshake is forwarded untouched."
+      ? "No user and no password: the client's own handshake is forwarded untouched. A database negotiates encryption inside its own protocol, so Sonda cannot terminate TLS in front of it."
       : "";
+    /* Offering a switch Sonda will refuse to save is worse than not offering
+     * it: the refusal arrives after the form has been filled in. */
+    terminate.disabled = pg;
+    if (pg) terminate.checked = false;
   });
-  form.appendChild(upstreamHint);
 
-  const row = el("div", "form__row");
-  const reflection = document.createElement("input");
-  reflection.type = "checkbox";
-  reflection.id = `refl-${project.id}`;
-  const reflLabel = el("label", "note", " ask this service for its schema (reflection)");
-  reflLabel.htmlFor = reflection.id;
-  row.append(reflection, reflLabel);
-  row.appendChild(submit("ADD SERVICE"));
-  form.appendChild(row);
+  const actions = el("div", "form__row");
+  actions.appendChild(submit("ADD SERVICE"));
+  form.appendChild(actions);
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1662,6 +1809,8 @@ function renderServiceForm(project) {
       upstream: upstream.value.trim(),
       protocol: protocol.value,
       reflection: reflection.checked,
+      tls: terminate.checked,
+      insecure_skip_verify: skipVerify.checked,
     }), "added");
   });
   return form;
