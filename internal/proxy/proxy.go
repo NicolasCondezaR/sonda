@@ -35,7 +35,12 @@ type Proxy struct {
 
 	// stubs is nil unless something wired one in, and a nil one never stubs:
 	// forwarding is what a proxy does until told otherwise.
-	stubs   Stubs
+	stubs Stubs
+
+	// faults is nil unless something wired one in, and a nil one never breaks
+	// anything.
+	faults Faults
+
 	reverse *httputil.ReverseProxy
 	handler http.Handler
 }
@@ -50,8 +55,8 @@ type exchange struct {
 
 type ctxKey struct{}
 
-func New(target config.Target, maxBody int64, recorder Recorder, stubs Stubs) *Proxy {
-	p := &Proxy{target: target, maxBody: maxBody, recorder: recorder, stubs: stubs}
+func New(target config.Target, maxBody int64, recorder Recorder, stubs Stubs, faults Faults) *Proxy {
+	p := &Proxy{target: target, maxBody: maxBody, recorder: recorder, stubs: stubs, faults: faults}
 	upstream := target.UpstreamURL()
 
 	p.reverse = &httputil.ReverseProxy{
@@ -105,8 +110,16 @@ func (p *Proxy) Handler() http.Handler { return p.handler }
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 
-	// Answering from a recording happens before anything else: there is no
-	// upstream request to capture, so none of the machinery below applies.
+	// Breaking the call on purpose comes first: a rule that cuts the connection
+	// or answers with a status has to win over both the recording and the
+	// service, or the fault was not injected at all. A rule that only adds
+	// latency lets the call carry on afterwards.
+	if p.injectFault(w, r, started) {
+		return
+	}
+
+	// Answering from a recording comes next: there is no upstream request to
+	// capture, so none of the machinery below applies.
 	if p.serveFromCapture(w, r, started) {
 		return
 	}

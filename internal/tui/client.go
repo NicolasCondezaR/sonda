@@ -53,6 +53,7 @@ type Call struct {
 	GRPCMessage    string  `json:"grpc_message"`
 	ReplayOf       *int64  `json:"replay_of"`
 	StubOf         *int64  `json:"stub_of"`
+	Injected       bool    `json:"injected"`
 	TraceID        string  `json:"trace_id"`
 
 	started time.Time // parsed once, on the way in

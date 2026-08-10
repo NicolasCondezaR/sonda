@@ -24,6 +24,7 @@ import (
 
 	"github.com/NicolasCondezaR/sonda/internal/api"
 	"github.com/NicolasCondezaR/sonda/internal/config"
+	"github.com/NicolasCondezaR/sonda/internal/fault"
 	"github.com/NicolasCondezaR/sonda/internal/mcp"
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
@@ -194,9 +195,9 @@ func run() error {
 	}
 
 	recorder := store.NewRecorder(db, cfg.BufferSize)
-	stubs := stub.New(db)
-	rt := runtime.New(db, recorder, cfg.MaxBodyBytes).WithStubs(stubs)
-	apiServer := api.New(db, recorder, rt).WithStubs(stubs)
+	stubs, faults := stub.New(db), fault.New()
+	rt := runtime.New(db, recorder, cfg.MaxBodyBytes).WithStubs(stubs).WithFaults(faults)
+	apiServer := api.New(db, recorder, rt).WithStubs(stubs).WithFaults(faults)
 
 	// Wire the live view before anything starts reading from the recorder.
 	// Registering the hook once Run is already going is a data race on the

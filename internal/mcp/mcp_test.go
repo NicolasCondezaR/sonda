@@ -123,7 +123,7 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 		"recent_failures": true, "search_calls": true, "get_call": true,
 		"diff_calls": true, "trace_call": true, "list_services": true, "wait_for_call": true,
 		"replay_call": true, "connect_project": true, "configure_service": true,
-		"activate_project": true, "disconnect_project": true, "set_stub": true,
+		"activate_project": true, "disconnect_project": true, "set_stub": true, "break_service": true,
 	}
 	got := map[string]bool{}
 	for _, tool := range tools {
@@ -166,7 +166,7 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 func TestOnlyTheToolsThatChangeWhatIsRunningAskFirst(t *testing.T) {
 	shouldAsk := map[string]bool{
 		"replay_call": true, "activate_project": true, "disconnect_project": true,
-		"set_stub": true,
+		"set_stub": true, "break_service": true,
 	}
 
 	s := New(&fakeAPI{}, "test")

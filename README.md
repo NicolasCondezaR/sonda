@@ -17,7 +17,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 13.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 14.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode) and an
 > [MCP server for coding agents](#agents) all work, and the whole thing runs
@@ -508,6 +508,7 @@ that is already running, so it is still the same data:
 | `activate_project` | Open the ports. Asks first |
 | `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
+| `break_service` | Add latency, force a status, or cut the connection. Asks first |
 
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
 the agent makes a change, triggers the action, and waits for what should have
@@ -589,6 +590,40 @@ same body cap as any other capture, and says how much it did not keep.
 Server-sent events need none of that — the response is ordinary HTTP — so they
 are captured as they always were and split back into their events for display,
 comments and keepalives dropped, a partial last event shown as partial.
+
+## Breaking things on purpose
+
+Retry logic, timeouts and degradation are written once and then never
+exercised, because making a real service fail on demand is awkward enough that
+nobody does it. Sonda is already in the path of every call.
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-rates","latency_ms":2000}'
+curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-seo","status":503,"one_in":3}'
+curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-auth","cut":true}'
+```
+
+From an agent, `break_service` does the same, and it asks first.
+
+**Latency lets the call through** — the service still answers, it just takes
+longer, which is the case a timeout is meant to catch. **A status or a cut ends
+the call at Sonda**: the service is never reached.
+
+### Deterministic, not random
+
+`one_in: 3` means one call in every three, in that order, every run. A
+percentage would behave differently each time and turn a failing test into a
+coin toss; a sequence you can reproduce is the only kind worth debugging
+against. Changing a rule restarts its schedule.
+
+### It can never pass for a real failure
+
+Every injected failure carries **`X-Sonda-Fault`** with the reason, is recorded
+as injected, and is marked as such in the field, the inspector and the terminal.
+The channel shows **BROKEN** while a rule is in force. Rules are forgotten when
+Sonda restarts, for the same reason stubbing is: a service that has been failing
+since Tuesday because of a rule nobody remembers setting is a worse afternoon
+than the bug being chased.
 
 ## Stub mode
 
@@ -676,6 +711,8 @@ host. See `sonda.docker.yaml`.
 | `GET /api/trace?call=` | The whole request a call belonged to, as a tree. |
 | `GET /api/stub` | Which services are answering from recordings. |
 | `POST /api/stub` | Turn stubbing on or off for a service, or clear it. |
+| `GET /api/faults` | Which services are being broken on purpose, and how. |
+| `POST /api/faults` | Set or clear a fault rule. |
 | `GET /api/projects` | Projects, their services, and what is really listening. |
 | `POST /api/projects` | Create one. `PATCH`/`DELETE /api/projects/{id}` rename and remove. |
 | `POST /api/projects/{id}/activate` | Close the current project's ports and open this one's. |
@@ -733,6 +770,7 @@ operators.
 | 11 | Stub mode: answer from a recording instead of forwarding | done |
 | 12 | The tree and the stub, on every surface: web, terminal, MCP | done |
 | 13 | WebSocket and server-sent events | done |
+| 14 | Fault injection: latency, forced statuses, cut connections | done |
 
 ### Limitations
 

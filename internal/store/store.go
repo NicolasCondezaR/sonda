@@ -70,6 +70,11 @@ type Call struct {
 	// and a fact, and everything that displays a call has to be able to tell
 	// them apart.
 	StubOf *int64
+
+	// Injected says Sonda broke this call on purpose. Without it the field
+	// would show the tool's own interference as if the service had produced
+	// it, and someone would go hunting a bug that does not exist.
+	Injected bool
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -92,6 +97,7 @@ type Summary struct {
 	Project      string
 	TraceID      string
 	StubOf       *int64
+	Injected     bool
 }
 
 type Filter struct {
@@ -166,6 +172,7 @@ var addedColumns = map[string]string{
 	"project":       `ALTER TABLE calls ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
 	"trace_id":      `ALTER TABLE calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`,
 	"stub_of":       `ALTER TABLE calls ADD COLUMN stub_of INTEGER`,
+	"injected":      `ALTER TABLE calls ADD COLUMN injected INTEGER NOT NULL DEFAULT 0`,
 }
 
 func migrate(db *sql.DB) error {
@@ -258,14 +265,14 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
 			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-			stub_of
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			stub_of, injected
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
-		c.Project, c.TraceID, nullableInt64(c.StubOf),
+		c.Project, c.TraceID, nullableInt64(c.StubOf), boolToInt(c.Injected),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -339,7 +346,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of, project, trace_id, stub_of
+		       replay_of, project, trace_id, stub_of, injected
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -362,11 +369,12 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 			grpcStatus sql.NullInt64
 			replayOf   sql.NullInt64
 			stubOf     sql.NullInt64
+			injected   int
 		)
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
-			&replayOf, &s.Project, &s.TraceID, &stubOf); err != nil {
+			&replayOf, &s.Project, &s.TraceID, &stubOf, &injected); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
@@ -374,6 +382,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		s.GRPCStatus = int32OrNil(grpcStatus)
 		s.ReplayOf = int64OrNil(replayOf)
 		s.StubOf = int64OrNil(stubOf)
+		s.Injected = injected != 0
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -386,19 +395,20 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		reqHeaders, respHeader, respTrailer string
 		reqTrunc, respTrunc                 int
 		grpcStatus, replayOf, stubOf        sql.NullInt64
+		injectedFlag                        int
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, target, protocol, method, path, status, client_addr, started_at,
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
 		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-		       stub_of
+		       stub_of, injected
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf)
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf, &injectedFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -410,6 +420,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 	c.GRPCStatus = int32OrNil(grpcStatus)
 	c.ReplayOf = int64OrNil(replayOf)
 	c.StubOf = int64OrNil(stubOf)
+	c.Injected = injectedFlag != 0
 	if c.Request.Headers, err = decodeHeaders(reqHeaders); err != nil {
 		return nil, err
 	}
@@ -746,6 +757,6 @@ func (c *Call) Summary() Summary {
 		RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
 		GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
 		ReplayOf: c.ReplayOf, Project: c.Project,
-		TraceID: c.TraceID, StubOf: c.StubOf,
+		TraceID: c.TraceID, StubOf: c.StubOf, Injected: c.Injected,
 	}
 }

@@ -18,7 +18,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 13.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 14.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
 > [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
@@ -520,6 +520,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `activate_project` | Abre los puertos. Pregunta antes |
 | `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
+| `break_service` | Agregar latencia, forzar un estado o cortar la conexión. Pregunta antes |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
@@ -602,6 +603,39 @@ Los eventos server-sent no necesitan nada de eso —la respuesta es HTTP
 corriente— así que se capturan como siempre y se parten en sus eventos para
 mostrarlos, descartando comentarios y keepalives, y marcando como parcial un
 último evento cortado.
+
+## Romper a propósito
+
+La lógica de reintentos, los timeouts y la degradación se escriben una vez y
+después no se ejercitan nunca, porque hacer fallar un servicio de verdad es lo
+bastante engorroso como para que nadie lo haga. Sonda ya está en el camino.
+
+```bash
+curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-rates","latency_ms":2000}'
+curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-seo","status":503,"one_in":3}'
+```
+
+Desde un agente, `break_service` hace lo mismo, y pregunta antes.
+
+**La latencia deja pasar la llamada** — el servicio igual responde, solo que
+tarda más, que es el caso que un timeout debe atrapar. **Un estado o un corte
+terminan la llamada en Sonda**: el servicio nunca se alcanza.
+
+### Determinista, no aleatorio
+
+`one_in: 3` significa una llamada de cada tres, en ese orden, en cada corrida.
+Un porcentaje se comportaría distinto cada vez y convertiría un test que falla
+en una moneda al aire; una secuencia que puedes reproducir es la única que sirve
+para depurar. Cambiar una regla reinicia su cuenta.
+
+### Nunca puede pasar por un fallo real
+
+Todo fallo inyectado lleva **`X-Sonda-Fault`** con el motivo, se guarda marcado
+como inyectado, y aparece señalado en el campo, en el inspector y en el
+terminal. El canal muestra **BROKEN** mientras hay una regla en vigor. Las
+reglas se olvidan al reiniciar Sonda, por lo mismo que el stub: un servicio que
+falla desde el martes por una regla que nadie recuerda haber puesto es una peor
+tarde que el bug que se estaba persiguiendo.
 
 ## Modo stub
 
@@ -691,6 +725,8 @@ en el host. Ver `sonda.docker.yaml`.
 | `GET /api/trace?call=` | La petición completa a la que perteneció una llamada, como árbol. |
 | `GET /api/stub` | Qué servicios están respondiendo desde grabaciones. |
 | `POST /api/stub` | Activar o desactivar el stub de un servicio, o limpiarlo todo. |
+| `GET /api/faults` | Qué servicios se están rompiendo a propósito, y cómo. |
+| `POST /api/faults` | Poner o quitar una regla de fallo. |
 | `GET /api/projects` | Los proyectos, sus servicios y qué está escuchando de verdad. |
 | `POST /api/projects` | Crear uno. `PATCH`/`DELETE /api/projects/{id}` renombran y borran. |
 | `POST /api/projects/{id}/activate` | Cierra los puertos del proyecto actual y abre los de este. |
@@ -751,6 +787,7 @@ leerse como operadores de consulta.
 | 11 | Modo stub: responder desde una grabación en vez de reenviar | listo |
 | 12 | El árbol y el stub, en todas las superficies: web, terminal y MCP | listo |
 | 13 | WebSocket y eventos server-sent | listo |
+| 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
 
 ### Limitaciones
 
