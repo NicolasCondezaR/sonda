@@ -220,3 +220,24 @@ func TestNonJSONBodiesArePassedThroughUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// The decoded GraphQL view hands variables out as real JSON rather than as a
+// string holding JSON, so the walk sees the keys directly. A login mutation is
+// the highest-value secret in a whole capture file, and it travels here.
+func TestGraphQLVariablesAreRedactedLikeAnyOtherPayload(t *testing.T) {
+	out := cleaned(t, `{
+	  "graphql": {
+	    "operations": [
+	      {"label": "mutation Login",
+	       "variables": {"email": "nico@delpaintl.com", "password": "hunter2"}}
+	    ]
+	  }
+	}`, true)
+
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("a password in GraphQL variables left the machine:\n%s", out)
+	}
+	if !strings.Contains(out, "nico@delpaintl.com") {
+		t.Errorf("the rest of the variables were lost with it:\n%s", out)
+	}
+}

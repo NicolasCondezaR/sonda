@@ -132,6 +132,14 @@ type summaryJSON struct {
 	GRPCStatusText string `json:"grpc_status_text,omitempty"`
 	GRPCMessage    string `json:"grpc_message,omitempty"`
 
+	// GraphQL has both of gRPC's problems at once. Every operation is the same
+	// POST to the same path, so GraphQLOp is what stops a service's whole lane
+	// from reading as one repeated call; and a GraphQL failure arrives under
+	// HTTP 200, so GraphQLErrors is what stops the listing calling it a
+	// success.
+	GraphQLOp     string `json:"graphql_op,omitempty"`
+	GraphQLErrors int    `json:"graphql_errors,omitempty"`
+
 	// ReplayOf turns "did the fix work?" into a diff instead of a memory
 	// exercise, so it travels with the summary and reaches the live view.
 	ReplayOf *int64 `json:"replay_of,omitempty"`
@@ -168,10 +176,11 @@ type callJSON struct {
 	ResponseTrailers http.Header `json:"response_trailers,omitempty"`
 	GRPC             *grpcView   `json:"grpc,omitempty"`
 
-	// Socket and Stream are the same idea as GRPC: one exchange that carried
-	// many messages, read back out of the stored stream when someone looks.
-	Socket *socketView `json:"socket,omitempty"`
-	Stream *streamView `json:"stream,omitempty"`
+	// Socket, Stream and GraphQL are the same idea as GRPC: what a body means,
+	// read back out of the stored bytes when someone looks.
+	Socket  *socketView  `json:"socket,omitempty"`
+	Stream  *streamView  `json:"stream,omitempty"`
+	GraphQL *graphqlView `json:"graphql,omitempty"`
 }
 
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
@@ -269,6 +278,7 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 	if isEventStream(c) {
 		out.Stream = buildStreamView(c)
 	}
+	out.GraphQL = buildGraphQLView(c)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -367,23 +377,25 @@ const timeLayout = time.RFC3339Nano
 
 func toSummary(c store.Summary) summaryJSON {
 	out := summaryJSON{
-		ID:           c.ID,
-		Target:       c.Target,
-		Protocol:     c.Protocol,
-		Method:       c.Method,
-		Path:         c.Path,
-		Status:       c.Status,
-		StartedAt:    c.StartedAt.Format(timeLayout),
-		DurationMS:   float64(c.Duration.Microseconds()) / 1000,
-		Error:        c.Error,
-		RequestSize:  c.RequestSize,
-		ResponseSize: c.ResponseSize,
-		GRPCStatus:   c.GRPCStatus,
-		GRPCMessage:  c.GRPCMessage,
-		ReplayOf:     c.ReplayOf,
-		StubOf:       c.StubOf,
-		Injected:     c.Injected,
-		TraceID:      c.TraceID,
+		ID:            c.ID,
+		Target:        c.Target,
+		Protocol:      c.Protocol,
+		Method:        c.Method,
+		Path:          c.Path,
+		Status:        c.Status,
+		StartedAt:     c.StartedAt.Format(timeLayout),
+		DurationMS:    float64(c.Duration.Microseconds()) / 1000,
+		Error:         c.Error,
+		RequestSize:   c.RequestSize,
+		ResponseSize:  c.ResponseSize,
+		GRPCStatus:    c.GRPCStatus,
+		GRPCMessage:   c.GRPCMessage,
+		ReplayOf:      c.ReplayOf,
+		StubOf:        c.StubOf,
+		Injected:      c.Injected,
+		TraceID:       c.TraceID,
+		GraphQLOp:     c.GraphQLOp,
+		GraphQLErrors: c.GraphQLErrors,
 	}
 	if c.GRPCStatus != nil {
 		out.GRPCStatusText = codes.Code(*c.GRPCStatus).String()

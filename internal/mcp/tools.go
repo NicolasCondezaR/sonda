@@ -84,9 +84,10 @@ func allTools() []Tool {
 func readTools() []Tool {
 	return []Tool{
 		{
-			Name:        "recent_failures",
-			Title:       "Recent failures",
-			Description: "What has failed recently: transport errors, HTTP 4xx and 5xx, and non-zero gRPC statuses, newest first. This is the first thing to ask when something is broken and you do not know where.",
+			Name:  "recent_failures",
+			Title: "Recent failures",
+			Description: "What has failed recently: transport errors, HTTP 4xx and 5xx, non-zero gRPC statuses, and GraphQL responses carrying errors, newest first. " +
+				"The last two are the ones a status code hides — both report failure under HTTP 200. This is the first thing to ask when something is broken and you do not know where.",
 			Schema: obj(map[string]any{
 				"limit": prop("integer", "How many to return. Defaults to 20."),
 			}),
@@ -103,15 +104,20 @@ func readTools() []Tool {
 			Name:  "search_calls",
 			Title: "Search captured calls",
 			Description: "Find captured calls by service, method, path, protocol, status or free text in the bodies. Every filter is optional and they combine. " +
-				"Sockets and event streams are captures like any other, so the same filters reach them.",
+				"Sockets and event streams are captures like any other, so the same filters reach them. " +
+				"GraphQL rides on http and every operation shares one path, so search it by operation name in text rather than by path.",
 			Schema: obj(map[string]any{
-				"service":  prop("string", "Service name, as Sonda knows it — for example ms-auth."),
-				"method":   prop("string", "HTTP method, or the gRPC method name."),
-				"path":     prop("string", "Path or fragment of one."),
-				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "websocket"}, "description": "Restrict to one protocol. A websocket is one capture holding the whole conversation, not one per message."},
-				"text":     prop("string", "Free text to look for inside the request and response bodies."),
+				"service": prop("string", "Service name, as Sonda knows it — for example ms-auth."),
+				"method":  prop("string", "HTTP method, or the gRPC method name."),
+				"path":    prop("string", "Path or fragment of one."),
+				// GraphQL is not in the enum because it is not a transport
+				// Sonda proxies: a GraphQL service is configured as http and
+				// its calls are stored as http. Offering it here would filter
+				// on a value no capture can ever hold.
+				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "websocket"}, "description": "Restrict to one protocol. A websocket is one capture holding the whole conversation, not one per message. GraphQL is http."},
+				"text":     prop("string", "Free text to look for inside the request and response bodies — a GraphQL operation name finds its calls this way."),
 				"status":   prop("integer", "Exact HTTP status."),
-				"failed":   prop("boolean", "Only calls that failed."),
+				"failed":   prop("boolean", "Only calls that failed, including GraphQL responses carrying errors under HTTP 200."),
 				"since_minutes": prop("integer",
 					"Only calls from the last N minutes. Useful right after triggering something."),
 				"limit": prop("integer", "How many to return. Defaults to 20, capped at 200."),
@@ -143,7 +149,9 @@ func readTools() []Tool {
 			Title: "Read one call",
 			Description: "One captured call in full: headers, both bodies decoded, timing, gRPC status and trailers. " +
 				"A WebSocket comes back as the frames of both directions, unmasked and labelled by kind, with the close code when there is one. " +
-				"A server-sent event stream comes back as its events. Bodies are shortened unless you ask for detail.",
+				"A server-sent event stream comes back as its events. " +
+				"A GraphQL POST comes back as the operations it carried — type, name, the fields asked for, the variables sent, and any errors the response held, with their path and code. " +
+				"Bodies are shortened unless you ask for detail.",
 			Schema: obj(map[string]any{
 				"id":     prop("integer", "The call id, as returned by the other tools."),
 				"detail": prop("boolean", "Return bodies whole instead of shortened. Ask for this only when you need the full payload."),
@@ -246,7 +254,7 @@ func readTools() []Tool {
 				"service":         prop("string", "Only calls to this service."),
 				"path":            prop("string", "Only calls whose path contains this."),
 				"method":          prop("string", "Only calls with this method."),
-				"failed":          prop("boolean", "Only wait for a failure."),
+				"failed":          prop("boolean", "Only wait for a failure, GraphQL errors under HTTP 200 included."),
 				"timeout_seconds": prop("integer", "How long to wait. Defaults to 30, capped at 120."),
 			}),
 			Annotations: readOnly,

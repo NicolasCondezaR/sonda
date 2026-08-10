@@ -218,7 +218,7 @@ func (m Model) renderInspector() string {
 
 	d := m.detail
 	var lines []string
-	lines = append(lines, styleInk.Render(" "+d.Method+" "+truncate(d.Path, m.width-2)))
+	lines = append(lines, styleInk.Render(" "+truncate(d.Label(), m.width-1)))
 
 	// The protocol is only worth a column when it is not the obvious one:
 	// "HTTP   HTTP 200" says the same thing twice.
@@ -259,11 +259,20 @@ func (m Model) renderInspector() string {
 		}
 		lines = append(lines, style.Render(truncate(text, m.width-1)))
 	}
+	// Said in the header and not only in the payload below: this call answered
+	// HTTP 200, and a reader who takes the status line at its word closes the
+	// inspector believing it worked.
+	if d.GraphQLErrors > 0 {
+		lines = append(lines, styleFault.Render(truncate(
+			fmt.Sprintf(" GRAPHQL · %d error(s) under HTTP %d", d.GraphQLErrors, d.Status), m.width-1)))
+	}
 	if d.Error != "" {
 		lines = append(lines, styleFault.Render(" "+truncate(d.Error, m.width-2)))
 	}
 
 	switch {
+	case d.GraphQL != nil:
+		lines = append(lines, m.renderGraphQL(d.GraphQL)...)
 	case d.Socket != nil:
 		lines = append(lines, m.renderFrames("SENT", d.Socket.Sent, d.Socket.SentSummary)...)
 		lines = append(lines, m.renderFrames("RECEIVED", d.Socket.Received, d.Socket.ReceivedSummary)...)
@@ -332,6 +341,48 @@ func (m Model) renderEvents(v *StreamView) []string {
 	}
 	if v.Incomplete {
 		lines = append(lines, styleFaint.Render("  the last event has no terminator: cut by the body cap, or still open"))
+	}
+	return lines
+}
+
+// renderGraphQL shows a GraphQL POST as the operations it actually carried.
+//
+// The request body is one long string with the document escaped into it, which
+// is unreadable and identical on every call to the endpoint. What is worth the
+// space is the operation, what it asked for, and what came back wrong.
+func (m Model) renderGraphQL(v *GraphQLView) []string {
+	head := " GRAPHQL"
+	if v.Batch {
+		head += fmt.Sprintf("   batch of %d", len(v.Operations))
+	}
+	lines := []string{"", styleLabel.Render(head)}
+
+	for _, op := range v.Operations {
+		lines = append(lines, styleInk.Render("  "+truncate(op.Label, m.width-3)))
+		if len(op.Fields) > 0 {
+			lines = append(lines, styleFaint.Render(
+				"   asks for "+truncate(strings.Join(op.Fields, ", "), m.width-14)))
+		}
+		if len(op.Variables) > 0 {
+			lines = append(lines, indent(compactJSON(op.Variables), "   ", m.width)...)
+		}
+		for _, e := range op.Errors {
+			where := e.Path
+			if e.Code != "" {
+				where = strings.TrimPrefix(where+" "+e.Code, " ")
+			}
+			lines = append(lines, styleFault.Render("   "+truncate(e.Message, m.width-4)))
+			if where != "" {
+				lines = append(lines, styleFaint.Render("   at "+truncate(where, m.width-7)))
+			}
+		}
+	}
+
+	// The gap is reported rather than read as "no errors": a body cut by the
+	// cap cannot say whether the call worked.
+	if v.Unreadable {
+		lines = append(lines, styleFaint.Render(
+			"  the response is not JSON, so whether it carried errors is unknown"))
 	}
 	return lines
 }
