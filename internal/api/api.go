@@ -94,6 +94,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/stub", s.setStub)
 	mux.HandleFunc("GET /api/faults", s.faultState)
 	mux.HandleFunc("POST /api/faults", s.setFault)
+	mux.HandleFunc("GET /api/drift", s.driftForEndpoint)
 
 	mux.HandleFunc("GET /api/projects", s.listProjects)
 	mux.HandleFunc("POST /api/projects", s.createProject)
