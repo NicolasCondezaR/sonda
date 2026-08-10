@@ -1,9 +1,12 @@
 # Configuration used by compose.yaml. The only difference from
 # sonda.example.yaml is that addresses are container names on the compose
-# network instead of 127.0.0.1, and Sonda binds 0.0.0.0 so the published
-# ports reach it.
+# network instead of 127.0.0.1, and targets bind 0.0.0.0 so the published ports
+# reach them.
+#
+# api_listen is deliberately absent: the image already passes
+# `-api-listen 0.0.0.0:9000`, and a second value here would be silently
+# overridden. Compose publishes those ports to the host's loopback only.
 
-api_listen: 0.0.0.0:9000
 database: /data/sonda.db
 max_body_bytes: 262144
 buffer_size: 1024

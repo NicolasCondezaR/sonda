@@ -169,6 +169,12 @@ func runMCP(argv []string) error {
 
 func run() error {
 	configPath := flag.String("config", "sonda.yaml", "configuration file; its targets seed a fresh database")
+	// The default stays empty rather than 127.0.0.1 so the configuration file
+	// keeps deciding, and this only overrides when someone asked. It exists
+	// because a container has no useful configuration file to edit: the image
+	// binds 0.0.0.0 through this flag, which is correct there — the isolation is
+	// the container's job — and wrong on a laptop, where the default holds.
+	apiListen := flag.String("api-listen", "", "address for the API and the interface, overriding the configuration file")
 	showVersion := flag.Bool("version", false, "print the build this binary came from and exit")
 	flag.Parse()
 
@@ -180,6 +186,9 @@ func run() error {
 	cfg, err := config.LoadOrDefaults(*configPath)
 	if err != nil {
 		return err
+	}
+	if *apiListen != "" {
+		cfg.APIListen = *apiListen
 	}
 
 	db, err := store.Open(cfg.Database)
