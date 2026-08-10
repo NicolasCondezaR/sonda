@@ -18,11 +18,11 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 17.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 18.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
-> [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
-> funcionan, y todo se levanta con `docker compose up`.
+> [modo stub](#modo-stub) un [servidor MCP para agentes de código](#agentes)
+> y [TLS](#tls) funcionan, y todo se levanta con `docker compose up`.
 > Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
@@ -531,6 +531,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
 | `break_service` | Agregar latencia, forzar un estado o cortar la conexión. Pregunta antes |
 | `contract_drift` | Si esta respuesta cambió de forma desde que funcionaba |
+| `trust_certificate` | Dónde vive la autoridad certificadora de Sonda y qué ejecutar para confiar en ella o quitarla |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
@@ -754,6 +755,142 @@ una transacción que ya no existen, y mandar el SQL de nuevo lo ejecutaría en
 otro lugar. Todas las superficies se niegan, incluida la propia API, así que un
 agente recibe la misma respuesta que el navegador.
 
+## TLS
+
+Bajo las mismas tres letras hay dos problemas distintos, y Sonda los resuelve
+por separado.
+
+### El upstream habla TLS
+
+Se declara con el esquema que tiene y nada más cambia:
+
+```yaml
+- name: payments
+  listen: 127.0.0.1:9103
+  upstream: https://api.payments.example.com
+  protocol: http
+```
+
+El certificado se verifica igual que lo verificaría cualquier otro cliente. Un
+target gRPC detrás de TLS funciona igual —negocia HTTP/2 por ALPN en vez de
+h2c— y un upstream escrito sin puerto recibe el que implica su esquema.
+
+Un upstream cuyo certificado no verifica responde 502 con el motivo, y la
+captura registra el error de transporte. Es deliberado: un proxy que aceptara
+cualquier certificado en silencio dejaría sin valor cada lectura de "verificado"
+de la herramienta.
+
+### El cliente habla TLS
+
+Hay clientes que se niegan a usar `http://`. Con `tls: true` Sonda responde ese
+puerto con un certificado propio:
+
+```yaml
+- name: web-api
+  listen: 127.0.0.1:9104
+  upstream: http://127.0.0.1:3000
+  protocol: http
+  tls: true
+```
+
+Entonces se apunta al llamador a `https://127.0.0.1:9104`, y la interfaz entrega
+esa línea exacta. El certificado se emite al vuelo para el nombre que pidió el
+cliente —el nombre SNI, o la dirección a la que se conectó cuando no envió
+ninguno—, se guarda en memoria por nombre y lo firma una autoridad que Sonda
+genera la primera vez que hace falta.
+
+Postgres es la excepción. Una base de datos negocia el cifrado dentro de su
+propio protocolo y no antes, así que un listener TLS delante de ella estaría
+respondiendo un handshake que ningún cliente envía. Sonda rechaza la opción en
+ese caso en vez de aceptarla e ignorarla.
+
+### Confiar en la autoridad certificadora
+
+**Sonda no instala nada.** Escribe dos archivos junto a la base de datos
+—`sonda-ca.pem` y `sonda-ca-key.pem`, la clave legible solo por su dueño—,
+imprime qué hay que ejecutar y se detiene ahí. Modificar el almacén de
+confianza de la máquina es una decisión que le corresponde tomar a quien la usa,
+y una herramienta de depuración que lo hiciera en silencio sería
+indistinguible de un programa malicioso.
+
+Los comandos se imprimen en la primera ejecución, aparecen en el panel de
+autoridad certificadora de la interfaz y los devuelve la herramienta MCP
+`trust_certificate`. La opción acotada suele ser la correcta, porque no confía
+en nada más de la máquina y no deja nada que deshacer:
+
+```bash
+curl --cacert ./sonda-ca.pem https://127.0.0.1:9104/
+NODE_EXTRA_CA_CERTS=./sonda-ca.pem npm start
+SSL_CERT_FILE=./sonda-ca.pem go run ./cmd/whatever
+REQUESTS_CA_BUNDLE=./sonda-ca.pem python app.py
+```
+
+Para toda la máquina —que es lo que necesita un navegador— hay que ejecutar uno
+mismo la línea de su plataforma:
+
+```bash
+# macOS
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ./sonda-ca.pem
+# Windows
+certutil -user -addstore Root .\sonda-ca.pem
+# Linux (Debian, Ubuntu)
+sudo cp ./sonda-ca.pem /usr/local/share/ca-certificates/sonda-ca.crt && sudo update-ca-certificates
+# Linux (Fedora, RHEL)
+sudo cp ./sonda-ca.pem /etc/pki/ca-trust/source/anchors/sonda-ca.pem && sudo update-ca-trust
+```
+
+Firefox mantiene su propio almacén: **Configuración → Privacidad y seguridad →
+Certificados → Ver certificados → Autoridades → Importar**, y marcar *Confiar en
+esta CA para identificar sitios web*.
+
+Y para quitarla de nuevo —primero se retira la confianza y después se borran los
+archivos, o la máquina queda confiando en una raíz de la que nadie puede dar
+cuenta—:
+
+```bash
+# macOS
+sudo security delete-certificate -c "Sonda local CA (tu-hostname)" /Library/Keychains/System.keychain
+# Windows — el número de serie se imprime con el certificado y se ve en la interfaz
+certutil -user -delstore Root <serie>
+# Linux (Debian, Ubuntu)
+sudo rm /usr/local/share/ca-certificates/sonda-ca.crt && sudo update-ca-certificates --fresh
+# Linux (Fedora, RHEL)
+sudo rm /etc/pki/ca-trust/source/anchors/sonda-ca.pem && sudo update-ca-trust
+
+rm ./sonda-ca.pem ./sonda-ca-key.pem
+```
+
+La autoridad se identifica a sí misma y nombra la máquina donde se creó —`Sonda
+local CA (hostname)`—, así que se encuentra en un almacén de confianza un año
+después, y caduca al año, de modo que una que quedó olvidada deja de importar
+sola. La clave privada nunca se escribe en los logs, nunca la devuelve la API,
+nunca es accesible por MCP y nunca queda dentro de una captura; `SECURITY.md`
+explica qué significa eso al copiar la base de datos de una máquina a otra.
+
+### No verificar un upstream
+
+El caso real para el que esto existe es un servicio con certificado
+autofirmado. Hay exactamente una forma de saltarse la verificación, y es por
+servicio:
+
+```yaml
+- name: staging
+  listen: 127.0.0.1:9105
+  upstream: https://staging.internal:8443
+  protocol: http
+  insecure_skip_verify: true
+```
+
+No hay un interruptor global y no va a haberlo: "confío en este contenedor" y
+"confío en cualquier cosa" no son la misma afirmación. Sonda rechaza la opción
+en un upstream en claro, donde no significaría nada mientras el servicio
+seguiría apareciendo como no verificado en todas partes.
+
+Y nunca es silenciosa. El servicio queda marcado en la interfaz web, en el riel
+de canales de la terminal y en `list_services`, y cada captura tomada a través
+de él lleva `upstream_insecure`, así que una respuesta leída meses después sigue
+diciendo si alguien llegó a comprobar quién la envió.
+
 ## Deriva de contratos
 
 En un monorepo donde nadie versiona un contrato, un campo que se fue callado o
@@ -885,6 +1022,13 @@ targets:
     listen: 127.0.0.1:9102
     upstream: http://127.0.0.1:3000
     protocol: http     # http, grpc o postgres
+
+  - name: payments
+    listen: 127.0.0.1:9103
+    upstream: https://api.payments.example.com  # verificado como lo haría cualquier cliente
+    protocol: http
+    tls: true                    # responder este puerto con certificado, para clientes que rechazan http://
+    insecure_skip_verify: false  # por servicio, nunca global. Ver la sección TLS
 ```
 
 Después apunta a `127.0.0.1:9102` lo que sea que llame a `admin-api`. El mismo
@@ -919,6 +1063,8 @@ en el host. Ver `sonda.docker.yaml`.
 | `POST /api/projects/{id}/services` | Agrega o actualiza un servicio. `DELETE /api/services/{id}` quita uno. |
 | `POST /api/discover` | Lee servicios de un `.env` o un compose sin guardar nada. |
 | `GET /api/runtime` | Qué proyecto está activo y qué está escuchando de verdad. |
+| `GET /api/tls` | La autoridad certificadora y los comandos exactos para confiar en ella y para quitarla. Nunca la clave privada. |
+| `GET /api/tls/ca.pem` | Descarga el certificado de la CA. Útil cuando Sonda corre en un contenedor. |
 | `GET /api/stats` | Cantidad de capturas, rango de tiempo y llamadas descartadas bajo carga. |
 | `GET /api/stream` | Eventos server-sent: cada captura en el momento en que se guarda. Es lo que lee el campo en vivo. |
 | `GET /health` | Liveness. |
@@ -975,11 +1121,14 @@ leerse como operadores de consulta.
 | 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
 | 17 | PostgreSQL: una captura por sentencia, colgada bajo la petición que la ejecutó, con las credenciales borradas antes de guardarlas | listo |
+| 18 | TLS: terminado para el cliente desde una autoridad local que Sonda nunca instala, hablado hacia el upstream, y registrado en cada captura como verificado o no | listo |
 
 ### Limitaciones
 
-- Solo tráfico en claro. Un upstream con TLS se reenvía pero no se puede
-  inspeccionar.
+- Sonda es un proxy explícito, no un interceptor. Lee un intercambio TLS solo
+  cuando es ella quien termina la conexión del cliente, lo que exige que al
+  llamador se le apunte a Sonda y que confíe en su autoridad. El tráfico que
+  solo pasa de camino a otro sitio se reenvía, no se decodifica.
 - Los mensajes gRPC comprimidos no se descomprimen.
 - La cabecera `Host` se reescribe al upstream, como en cualquier reverse proxy.
 - Una captura truncada no se puede reenviar; la negativa es deliberada.
@@ -1000,7 +1149,12 @@ leerse como operadores de consulta.
   llegar.
 - Una conexión de Postgres que negocia TLS se reenvía y se captura, pero los
   bytes posteriores al handshake son registros TLS y nada en ellos se puede
-  leer: el mismo límite que cualquier otro upstream cifrado.
+  leer. Terminarlo no es el mismo trabajo que terminar HTTPS: el cliente pide
+  el cifrado con un `SSLRequest` dentro del protocolo y no antes, así que
+  Sonda tendría que responder ese byte, mantener una sesión TLS en cada
+  dirección y retomar el enmarcado en el segundo mensaje de arranque. Por eso
+  `tls: true` se rechaza en un target postgres en vez de aceptarse e
+  ignorarse.
 - La interfaz no tiene cursores ni trigger, dos dispositivos que un instrumento
   real sí tiene, y el siguiente alcance evidente.
 - No se inyecta un id de traza propio. Las peticiones que traen uno se agrupan

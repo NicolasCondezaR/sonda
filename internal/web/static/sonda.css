@@ -139,6 +139,11 @@ body {
 .switch__key:last-child { border-right: 0; }
 .switch__key:hover { color: var(--ink-dim); }
 
+/* Downloading the certificate is a link, not a button — the browser has to save
+   a file — but it is the same control, so it wears the same key rather than
+   introducing a second kind. */
+a.switch__key { display: inline-block; text-decoration: none; }
+
 .switch__key[aria-pressed="true"] { color: var(--ink); }
 
 .switch__key[aria-pressed="true"]::after {

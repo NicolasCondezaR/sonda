@@ -187,8 +187,18 @@ func (m Model) renderLanes(fieldWidth int) string {
 			faultStyle = styleFault
 		}
 
+		// The rail is the only place the terminal lists targets, so "which of
+		// these am I not checking the certificate of" has to be answerable from
+		// it. The mark goes before the name so it survives a narrow column, and
+		// the fault colour wins over the selection style because the cursor
+		// already says which lane is selected.
+		name := target.Name
+		if target.InsecureSkipVerify {
+			name, nameStyle = "!"+name, styleFault
+		}
+
 		b.WriteString(cursor + swatch +
-			nameStyle.Render(pad(target.Name, colName)) +
+			nameStyle.Render(pad(name, colName)) +
 			styleFaint.Render(pad(fmt.Sprint(stat.Calls), colCalls)) +
 			faultStyle.Render(pad(fmt.Sprint(stat.Faults), colFaults)) +
 			styleRule.Render(ruleV) +
@@ -254,6 +264,17 @@ func (m Model) renderInspector() string {
 	if d.StubOf != nil {
 		lines = append(lines, styleInk.Render(
 			fmt.Sprintf(" FROM RECORDING · the service was not called. Answered from capture #%d", *d.StubOf)))
+	}
+
+	// Also before the payload. Whether the far end was ever identified decides
+	// what the payload below is worth, and finding that out by going to read the
+	// configuration is exactly the trip this line exists to save.
+	if note := d.TLSNote(); note != "" {
+		style := styleDim
+		if d.UpstreamInsecure {
+			style = styleFault
+		}
+		lines = append(lines, style.Render(" "+truncate(note, m.width-2)))
 	}
 
 	if d.GRPCStatusText != "" {

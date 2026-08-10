@@ -201,3 +201,38 @@ func TestSuggestedPortsDoNotCollideForCommonLayouts(t *testing.T) {
 		seen[f.Listen] = f.Name
 	}
 }
+
+// An https:// value has to survive the reading. Rewriting it as http:// used to
+// produce a service that looked configured, appeared in every listing, and
+// answered nothing — and it never carried a credential either way, so keeping
+// the scheme costs the discovery pass none of its caution.
+func TestTheSchemeSurvivesWhenItIsHTTPS(t *testing.T) {
+	env := `
+PAYMENTS_URL=https://payments.example.com:443
+LEGACY_URL=grpc://legacy.internal:50051
+PLAIN_URL=localhost:3000
+`
+	found, err := FromEnv(strings.NewReader(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"payments": "https://payments.example.com:443",
+		// Anything that is not https is forwarded in the clear, and guessing
+		// otherwise from an unknown scheme would be a guess.
+		"legacy": "http://legacy.internal:50051",
+		"plain":  "http://localhost:3000",
+	}
+	for _, f := range found {
+		if want[f.Name] == "" {
+			continue
+		}
+		if f.Upstream != want[f.Name] {
+			t.Errorf("%s read as %q, want %q", f.Name, f.Upstream, want[f.Name])
+		}
+		delete(want, f.Name)
+	}
+	for name := range want {
+		t.Errorf("%s was not found at all", name)
+	}
+}

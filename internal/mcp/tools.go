@@ -241,13 +241,27 @@ func readTools() []Tool {
 		},
 
 		{
-			Name:        "list_services",
-			Title:       "Services being observed",
-			Description: "Which services Sonda is proxying right now, on which ports, and whether each one is actually listening. Also reports which project is active. Ask this first if you are unsure whether the traffic you expect is even being captured.",
+			Name:  "list_services",
+			Title: "Services being observed",
+			Description: "Which services Sonda is proxying right now, on which ports, and whether each one is actually listening. Also reports which project is active. Ask this first if you are unsure whether the traffic you expect is even being captured. " +
+				"Each service also reports tls — whether Sonda answers that port with a certificate — and insecure_skip_verify, which means the upstream's certificate is not being checked for that one service.",
 			Schema:      obj(map[string]any{}),
 			Annotations: readOnly,
 			Run: func(ctx context.Context, s *Server, a args) (any, error) {
 				return s.get(ctx, "/api/projects", false)
+			},
+		},
+
+		{
+			Name:  "trust_certificate",
+			Title: "How to trust Sonda's certificate authority",
+			Description: "Where Sonda's local certificate authority lives, what it identifies as, and the exact commands to trust it and to remove it again, per platform. " +
+				"Sonda never installs it: modifying a machine's trust store is the user's decision, so hand these commands to them rather than running one. " +
+				"Ask for this after setting a service to terminate TLS, or when a client refuses Sonda's certificate. The private key is not available here or anywhere else in this API.",
+			Schema:      obj(map[string]any{}),
+			Annotations: readOnly,
+			Run: func(ctx context.Context, s *Server, a args) (any, error) {
+				return s.get(ctx, "/api/tls", false)
 			},
 		},
 

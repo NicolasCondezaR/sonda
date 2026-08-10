@@ -17,10 +17,10 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 17.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 18.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode) and an
-> [MCP server for coding agents](#agents) all work, and the whole thing runs
+> [MCP server for coding agents](#agents) and [TLS](#tls) all work, and the whole thing runs
 > from `docker compose up`. See [Roadmap](#roadmap).
 
 ## How it works
@@ -520,6 +520,7 @@ that is already running, so it is still the same data:
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
 | `break_service` | Add latency, force a status, or cut the connection. Asks first |
 | `contract_drift` | Has this response changed shape since it used to work |
+| `trust_certificate` | Where Sonda's certificate authority lives, and what to run to trust it or take it back out |
 
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
 the agent makes a change, triggers the action, and waits for what should have
@@ -735,6 +736,139 @@ transaction that are gone, and sending the SQL again would run it somewhere
 else. Every surface refuses, including the API itself, so an agent gets the same
 answer the browser does.
 
+## TLS
+
+Two different problems wear the same three letters, and Sonda answers them
+separately.
+
+### The upstream speaks TLS
+
+Declare it with the scheme it has and nothing else changes:
+
+```yaml
+- name: payments
+  listen: 127.0.0.1:9103
+  upstream: https://api.payments.example.com
+  protocol: http
+```
+
+The certificate is verified the way any other client would verify it. A gRPC
+target behind TLS works the same way — it negotiates HTTP/2 over ALPN instead of
+h2c — and an upstream written without a port gets the one its scheme implies.
+
+An upstream whose certificate does not verify answers 502 with the reason, and
+the capture records the transport error. That is deliberate: a proxy that
+quietly accepted any certificate would make every "verified" reading in the tool
+worthless.
+
+### The client speaks TLS
+
+Some clients refuse `http://` outright. `tls: true` makes Sonda answer that port
+with a certificate of its own:
+
+```yaml
+- name: web-api
+  listen: 127.0.0.1:9104
+  upstream: http://127.0.0.1:3000
+  protocol: http
+  tls: true
+```
+
+The caller is then pointed at `https://127.0.0.1:9104`, and the interface hands
+over that exact line. The certificate is minted on the fly for whatever name the
+client asked for — the SNI name, or the address it connected to when it sent
+none — cached in memory per name, and signed by an authority Sonda generates the
+first time one is needed.
+
+Postgres is the exception. A database negotiates encryption inside its own
+protocol rather than before it, so a TLS listener in front of it would be
+answering a handshake no client sends. Sonda refuses the flag there rather than
+accepting it and ignoring it.
+
+### Trusting the certificate authority
+
+**Sonda does not install anything.** It writes two files beside the database —
+`sonda-ca.pem` and `sonda-ca-key.pem`, the key owner-only — prints what to run,
+and stops. Modifying your machine's trust store is your decision to make
+deliberately; a debugging tool that did it quietly would be indistinguishable
+from malware.
+
+The commands are printed on the first run, shown in the interface's certificate
+authority panel, and returned by the `trust_certificate` MCP tool. The narrow
+option is usually the right one, because it trusts nothing else on the machine
+and leaves nothing to undo:
+
+```bash
+curl --cacert ./sonda-ca.pem https://127.0.0.1:9104/
+NODE_EXTRA_CA_CERTS=./sonda-ca.pem npm start
+SSL_CERT_FILE=./sonda-ca.pem go run ./cmd/whatever
+REQUESTS_CA_BUNDLE=./sonda-ca.pem python app.py
+```
+
+For the whole machine — which is what a browser needs — run the line for your
+platform yourself:
+
+```bash
+# macOS
+sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ./sonda-ca.pem
+# Windows
+certutil -user -addstore Root .\sonda-ca.pem
+# Linux (Debian, Ubuntu)
+sudo cp ./sonda-ca.pem /usr/local/share/ca-certificates/sonda-ca.crt && sudo update-ca-certificates
+# Linux (Fedora, RHEL)
+sudo cp ./sonda-ca.pem /etc/pki/ca-trust/source/anchors/sonda-ca.pem && sudo update-ca-trust
+```
+
+Firefox keeps its own store: **Settings → Privacy & Security → Certificates →
+View Certificates → Authorities → Import**, then tick *Trust this CA to identify
+websites*.
+
+And to take it back out again — withdraw the trust first, delete the files
+second, or the machine keeps trusting a root nobody can account for:
+
+```bash
+# macOS
+sudo security delete-certificate -c "Sonda local CA (your-hostname)" /Library/Keychains/System.keychain
+# Windows — the serial is printed with the certificate and shown in the interface
+certutil -user -delstore Root <serial>
+# Linux (Debian, Ubuntu)
+sudo rm /usr/local/share/ca-certificates/sonda-ca.crt && sudo update-ca-certificates --fresh
+# Linux (Fedora, RHEL)
+sudo rm /etc/pki/ca-trust/source/anchors/sonda-ca.pem && sudo update-ca-trust
+
+rm ./sonda-ca.pem ./sonda-ca-key.pem
+```
+
+The authority names itself and the machine it was made on — `Sonda local CA
+(hostname)` — so it is findable in a trust store a year later, and it expires
+after a year, so one that is forgotten stops mattering on its own. The private
+key is never logged, never returned by the API, never reachable over MCP and
+never written into a capture; `SECURITY.md` says what that means for copying the
+database around.
+
+### Not verifying an upstream
+
+The developer case this exists for is a service with a self-signed certificate.
+There is exactly one way to skip the check, and it is per service:
+
+```yaml
+- name: staging
+  listen: 127.0.0.1:9105
+  upstream: https://staging.internal:8443
+  protocol: http
+  insecure_skip_verify: true
+```
+
+There is no process-wide switch and there is not going to be: "I trust this one
+container" and "I trust anything" are not the same statement. Sonda refuses the
+flag on a plaintext upstream, where it would mean nothing while still reading as
+unverified everywhere.
+
+And it is never quiet. The service is marked in the web interface, in the
+terminal's channel rail and in `list_services`, and every capture taken through
+it carries `upstream_insecure` — so a response read months later still says
+whether anyone ever checked who sent it.
+
 ## Contract drift
 
 In a monorepo where nobody versions a contract, a field that quietly went away
@@ -867,6 +1001,13 @@ targets:
     listen: 127.0.0.1:9102
     upstream: http://127.0.0.1:3000
     protocol: http     # http, grpc or postgres
+
+  - name: payments
+    listen: 127.0.0.1:9103
+    upstream: https://api.payments.example.com  # verified like any other client
+    protocol: http
+    tls: true                    # answer this port with a certificate, for callers that refuse http://
+    insecure_skip_verify: false  # per service, never global. See TLS below
 ```
 
 Then point whatever calls `admin-api` at `127.0.0.1:9102`. The same binary and
@@ -900,6 +1041,8 @@ host. See `sonda.docker.yaml`.
 | `POST /api/projects/{id}/services` | Add or update a service. `DELETE /api/services/{id}` removes one. |
 | `POST /api/discover` | Read services out of a `.env` or compose file without saving anything. |
 | `GET /api/runtime` | Which project is active and what is really listening. |
+| `GET /api/tls` | The certificate authority, and the exact commands to trust it and to remove it. Never the private key. |
+| `GET /api/tls/ca.pem` | Download the CA certificate. Useful when Sonda runs in a container. |
 | `GET /api/stats` | Capture count, time span, and calls dropped under load. |
 | `GET /api/stream` | Server-sent events: every capture the moment it is stored. What the live field reads. |
 | `GET /health` | Liveness. |
@@ -953,10 +1096,14 @@ operators.
 | 15 | Contract drift: a field gone, a field retyped | done |
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
 | 17 | PostgreSQL: one capture per statement, hung under the request that ran it, with the credentials blanked before they are stored | done |
+| 18 | TLS: terminated for the client from a local authority Sonda never installs, spoken to the upstream, and recorded on every capture as verified or not | done |
 
 ### Limitations
 
-- Plaintext only. A TLS upstream is forwarded but cannot be inspected.
+- Sonda is an explicit proxy, not an interceptor. It reads a TLS exchange only
+  when it is the one terminating the client's connection, which means the
+  caller has to be pointed at Sonda and has to trust its authority. Traffic
+  that merely passes through on its way elsewhere is forwarded, not decoded.
 - Compressed gRPC messages are not decompressed.
 - The `Host` header is rewritten to the upstream, like any reverse proxy.
 - A truncated capture cannot be replayed; the refusal is deliberate.
@@ -974,8 +1121,13 @@ operators.
   has the oldest written as it stands rather than held: nothing may pile up in
   memory waiting for an answer that is not coming.
 - A Postgres connection that negotiates TLS is forwarded and captured, but the
-  bytes after the handshake are TLS records and nothing in them can be read —
-  the same limit as any other encrypted upstream.
+  bytes after the handshake are TLS records and nothing in them can be read.
+  Terminating it is a different job from terminating HTTPS: the client asks
+  for encryption with an `SSLRequest` inside the protocol rather than before
+  it, so Sonda would have to answer that byte itself, hold a TLS session in
+  each direction, and pick the framing back up at the second startup message.
+  `tls: true` is therefore refused on a postgres target rather than accepted
+  and ignored.
 - The interface has no cursors and no trigger — two devices a real instrument
   has, and the obvious next reach.
 - No trace id of its own is injected. Requests that carry one are grouped

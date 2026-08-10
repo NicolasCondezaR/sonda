@@ -127,6 +127,9 @@ func (p *Proxy) recordStub(r *http.Request, body []byte, from *store.Call, statu
 		// one that looks like it was never called.
 		TraceID: trace.ID(r.Header),
 	}
+	// Not forwarded: the answer came out of the database, so the upstream's
+	// certificate was neither checked nor skipped on this call.
+	p.markTLS(call, r, false)
 	if isGRPCRequest(r.Header) {
 		call.Protocol = config.ProtocolGRPC
 	}

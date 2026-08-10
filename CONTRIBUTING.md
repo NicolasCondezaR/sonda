@@ -48,6 +48,7 @@ trace id, a stubbed answer. Confident nonsense is worse than an honest gap.
 |---|---|
 | `internal/proxy` | Forwards and captures. The gRPC, WebSocket, stub and fault paths live here |
 | `internal/store` | SQLite: captures, projects, services, search, retention |
+| `internal/tlsca` | The local certificate authority and the certificates issued from it. It never installs anything |
 | `internal/api` | The HTTP API every client reads, including the decoded views |
 | `internal/mcp` | The tools an agent calls, over HTTP or a pipe |
 | `internal/web` | The interface, embedded in the binary. Plain HTML, CSS and JavaScript |

@@ -20,6 +20,7 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/proxy"
 	"github.com/NicolasCondezaR/sonda/internal/store"
 	"github.com/NicolasCondezaR/sonda/internal/supervisor"
+	"github.com/NicolasCondezaR/sonda/internal/tlsca"
 )
 
 type Runtime struct {
@@ -39,10 +40,20 @@ type Runtime struct {
 	// faults decides, per service, whether to break the call on purpose.
 	faults proxy.Faults
 
+	// caDir is where the certificate authority is kept, and it is the database's
+	// own directory: the CA key is as dangerous as the captures are, so the two
+	// live together and are backed up, copied or deleted together.
+	caDir string
+
 	mu        sync.RWMutex
 	active    *store.Project
 	resolvers map[string]*protoschema.Resolver
 	status    []supervisor.Status
+
+	// ca is created the first time a service actually asks Sonda to terminate
+	// TLS, never at startup. A user who does not use the feature never finds a
+	// certificate authority sitting in their project directory.
+	ca *tlsca.CA
 }
 
 // WithStubs lets the runtime answer for services from recordings. Separate
@@ -52,12 +63,32 @@ func (r *Runtime) WithStubs(s proxy.Stubs) *Runtime { r.stubs = s; return r }
 // WithFaults lets the runtime break services on purpose.
 func (r *Runtime) WithFaults(f proxy.Faults) *Runtime { r.faults = f; return r }
 
+// WithCADir says where the certificate authority lives. Callers pass the
+// directory holding the database; the default is the working directory, which
+// is where a database given as a bare filename ends up anyway.
+func (r *Runtime) WithCADir(dir string) *Runtime {
+	if dir != "" {
+		r.caDir = dir
+	}
+	return r
+}
+
+// CA is the authority, or nil when nothing has needed one yet. The API reads it
+// to tell the user how to trust it; there is deliberately no accessor anywhere
+// for the private key.
+func (r *Runtime) CA() *tlsca.CA {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.ca
+}
+
 func New(db *store.Store, recorder proxy.Recorder, maxBody int64) *Runtime {
 	return &Runtime{
 		store:      db,
 		recorder:   recorder,
 		supervisor: supervisor.New(),
 		maxBody:    maxBody,
+		caDir:      ".",
 		resolvers:  map[string]*protoschema.Resolver{},
 	}
 }
@@ -117,13 +148,22 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 
 	resolvers := r.buildResolvers(project)
 
+	// Asked for once per reconcile rather than per service: the authority is one
+	// file on disk, and every TLS listener in the project answers from it.
+	ca, err := r.certificateAuthority(project)
+	if err != nil {
+		return err
+	}
+
 	desired := make([]supervisor.Desired, 0, len(project.Services))
 	for _, svc := range project.Services {
 		target := config.Target{
-			Name:     svc.Name,
-			Listen:   svc.Listen,
-			Upstream: svc.Upstream,
-			Protocol: svc.Protocol,
+			Name:               svc.Name,
+			Listen:             svc.Listen,
+			Upstream:           svc.Upstream,
+			Protocol:           svc.Protocol,
+			TLS:                svc.TLS,
+			InsecureSkipVerify: svc.InsecureSkipVerify,
 		}
 		p := proxy.New(target, r.maxBody, taggedRecorder{
 			inner:   r.recorder,
@@ -138,6 +178,9 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			want.Serve = p.ServePostgres
 		} else {
 			want.Handler = p.Handler()
+			if svc.TLS {
+				want.TLS = ca.Config()
+			}
 		}
 		desired = append(desired, want)
 	}
@@ -145,11 +188,47 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 	status := r.supervisor.Apply(desired)
 
 	r.mu.Lock()
-	r.active, r.resolvers, r.status = project, resolvers, status
+	r.active, r.resolvers, r.status, r.ca = project, resolvers, status, ca
 	r.mu.Unlock()
 
 	slog.Info("project active", "project", project.Name, "services", len(project.Services))
 	return nil
+}
+
+// certificateAuthority returns the authority, opening it the first time a
+// project actually wants a TLS listener.
+//
+// Once open it stays open even if every TLS service is later switched off: the
+// files are still on disk and the user still needs to be told where they are and
+// how to remove them.
+func (r *Runtime) certificateAuthority(project *store.Project) (*tlsca.CA, error) {
+	r.mu.RLock()
+	existing := r.ca
+	r.mu.RUnlock()
+	if existing != nil {
+		return existing, nil
+	}
+
+	wanted := false
+	for _, svc := range project.Services {
+		if svc.TLS {
+			wanted = true
+			break
+		}
+	}
+	if !wanted {
+		return nil, nil
+	}
+
+	ca, err := tlsca.Open(r.caDir)
+	if err != nil {
+		// Fatal for the whole reconcile rather than for one service: this is a
+		// disk or permissions problem that affects every TLS listener equally,
+		// and opening the ports as plaintext instead would be the tool
+		// contradicting what every interface says about them.
+		return nil, fmt.Errorf("open the certificate authority in %s: %w", r.caDir, err)
+	}
+	return ca, nil
 }
 
 // buildResolvers gives every gRPC service in the project a schema resolver.

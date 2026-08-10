@@ -41,6 +41,11 @@ type Proxy struct {
 	// anything.
 	faults Faults
 
+	// upstreamTLS is read from the declared scheme once, because it belongs on
+	// every capture and re-parsing the URL per call to answer a fixed question
+	// would be silly.
+	upstreamTLS bool
+
 	reverse *httputil.ReverseProxy
 	handler http.Handler
 }
@@ -58,6 +63,7 @@ type ctxKey struct{}
 func New(target config.Target, maxBody int64, recorder Recorder, stubs Stubs, faults Faults) *Proxy {
 	p := &Proxy{target: target, maxBody: maxBody, recorder: recorder, stubs: stubs, faults: faults}
 	upstream := target.UpstreamURL()
+	p.upstreamTLS = upstream.Scheme == "https"
 
 	p.reverse = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -92,12 +98,15 @@ func New(target config.Target, maxBody int64, recorder Recorder, stubs Stubs, fa
 		// returning, so it failed roughly one run in a hundred.
 	}
 
+	p.reverse.Transport = upstreamTransport(target)
+
 	p.handler = p
 	if target.Protocol == config.ProtocolGRPC {
-		p.reverse.Transport = h2cTransport()
 		// gRPC clients speak HTTP/2 over cleartext with prior knowledge, which
 		// net/http does not accept on its own — it only negotiates HTTP/2 over
-		// TLS. h2c is what makes the plaintext case work.
+		// TLS. h2c is what makes the plaintext case work, and it stays wrapped
+		// even on a TLS listener: there the http2 server handles the framing and
+		// this passes straight through.
 		p.handler = h2cHandler(p)
 	}
 	return p
@@ -187,6 +196,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Truncated: ex.response.truncated(),
 		},
 	}
+
+	p.markTLS(call, r, true)
 
 	// A gRPC target can still carry ordinary HTTP — health checks, metrics —
 	// so the content type decides per call rather than the configuration.

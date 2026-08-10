@@ -91,6 +91,9 @@ func (p *Proxy) recordFault(r *http.Request, started time.Time, status int, acti
 		Request:    store.Message{Headers: r.Header.Clone()},
 		Injected:   true,
 	}
+	// Not forwarded: the service was never reached, so there is no upstream
+	// connection to report as verified or otherwise.
+	p.markTLS(call, r, false)
 	if isGRPCRequest(r.Header) {
 		call.Protocol = config.ProtocolGRPC
 	}

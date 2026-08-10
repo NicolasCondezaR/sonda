@@ -52,6 +52,19 @@ type Target struct {
 	// Reflection is a pointer so an unset value can default to on while an
 	// explicit `reflection: false` still turns it off.
 	Reflection *bool `yaml:"reflection"`
+
+	// TLS makes Sonda terminate the client's encryption itself: the caller is
+	// pointed at https://sonda-port instead of http://, and Sonda answers with a
+	// certificate it mints for whatever name was asked for. It says nothing
+	// about the upstream, which keeps whatever scheme it was declared with.
+	TLS bool `yaml:"tls"`
+
+	// InsecureSkipVerify stops Sonda checking the upstream's certificate. It is
+	// per target and never global, because "I trust this one self-signed
+	// container" and "I trust anything" are not the same statement, and the
+	// second one is not a debugging setting. Every surface that shows the target
+	// shows this, and every capture taken through it records it.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
 }
 
 // ReflectionEnabled reports whether Sonda should ask the service for its
@@ -254,6 +267,29 @@ func (c *Config) validateTargets() error {
 		if err := refuseUpstreamCredentials(u); err != nil {
 			return fmt.Errorf("%s (%s): %w", where, t.Name, err)
 		}
+		if err := ValidateTLS(t.Protocol, u.Scheme, t.TLS, t.InsecureSkipVerify); err != nil {
+			return fmt.Errorf("%s (%s): %w", where, t.Name, err)
+		}
+	}
+	return nil
+}
+
+// ValidateTLS is exported for the same reason SupportedProtocol is: a target is
+// declared in the YAML file and in the projects table, and two answers to "may
+// this one skip verification" is how one of them accepts what the other refuses
+// to run.
+func ValidateTLS(protocol, upstreamScheme string, terminate, insecure bool) error {
+	if terminate && protocol == ProtocolPostgres {
+		// The Postgres listener is raw framed bytes, and its own encryption is
+		// negotiated inside the protocol rather than before it, so a TLS
+		// listener in front of it would be answering a handshake no client
+		// sends. Accepting the flag and ignoring it would be worse.
+		return fmt.Errorf("tls is not available for a %s target: a database negotiates encryption inside its own protocol, not before it", ProtocolPostgres)
+	}
+	if insecure && upstreamScheme != "https" {
+		// Silently accepting it would leave a target flagged as unverified in
+		// every interface while nothing was ever verified or skipped.
+		return fmt.Errorf("insecure_skip_verify only means something when the upstream is https://, and this one is %s://", upstreamScheme)
 	}
 	return nil
 }

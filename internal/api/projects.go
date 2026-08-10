@@ -38,6 +38,14 @@ type serviceJSON struct {
 	Protocol   string `json:"protocol"`
 	Reflection bool   `json:"reflection"`
 
+	// TLS says Sonda answers this port with a certificate, and
+	// InsecureSkipVerify that the upstream's certificate is not checked. Both
+	// travel with the service and not just with the captures, because the
+	// question "is what I am looking at verified" is asked of the configuration
+	// as often as of a single call.
+	TLS                bool `json:"tls"`
+	InsecureSkipVerify bool `json:"insecure_skip_verify"`
+
 	// Running is what is actually happening on the port, which is not always
 	// what was configured — a port held by something else is the common case.
 	Running bool   `json:"running"`
@@ -87,6 +95,7 @@ func toProjectJSON(p store.Project, status map[string]supervisor.Status) project
 		out.Services = append(out.Services, serviceJSON{
 			ID: svc.ID, Name: svc.Name, Listen: svc.Listen,
 			Upstream: svc.Upstream, Protocol: svc.Protocol, Reflection: svc.Reflection,
+			TLS: svc.TLS, InsecureSkipVerify: svc.InsecureSkipVerify,
 			Running: st.Running, Error: st.Error,
 			PointAt: pointAt(svc),
 		})
@@ -104,6 +113,11 @@ func pointAt(svc store.Service) string {
 	suffix := "_URL"
 	if svc.Protocol == "grpc" {
 		suffix = "_GRPC_URL"
+	}
+	// A TLS listener answers nothing on http://, so the line handed over has to
+	// carry the scheme or it is an address that will not work.
+	if svc.TLS {
+		return name + suffix + "=https://" + svc.Listen
 	}
 	return name + suffix + "=" + svc.Listen
 }
@@ -235,6 +249,9 @@ func (s *Server) saveService(w http.ResponseWriter, r *http.Request) {
 		Upstream:   strings.TrimSpace(body.Upstream),
 		Protocol:   body.Protocol,
 		Reflection: body.Reflection,
+
+		TLS:                body.TLS,
+		InsecureSkipVerify: body.InsecureSkipVerify,
 	}
 
 	if svc.ID == 0 {
@@ -310,6 +327,50 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, _ *http.Request) {
 		out["project_id"] = active.ID
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// tlsAuthority reports the certificate authority Sonda signs with, and what to
+// run to trust it and to take it back out.
+//
+// The commands are the answer, not a link to one: the whole point of Sonda not
+// touching the trust store is that the user performs the act, and telling them
+// to "install the CA" without the exact line is how that becomes a shrug and a
+// browser warning clicked through.
+//
+// The private key is not here, is not derivable from here, and there is no
+// endpoint that returns it.
+func (s *Server) tlsAuthority(w http.ResponseWriter, _ *http.Request) {
+	ca := s.rt.CA()
+	if ca == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"exists": false,
+			"note": "Sonda has not created a certificate authority. It creates one the first time a service is set to terminate TLS, " +
+				"and nothing is ever added to this machine's trust store on your behalf.",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"exists":       true,
+		"instructions": ca.Instructions(),
+		"download":     "/api/tls/ca.pem",
+	})
+}
+
+// tlsCertificate hands over the public certificate.
+//
+// The path in the instructions is enough when Sonda runs on the same machine as
+// the client. It is not when Sonda runs in the container this repository ships,
+// where the file exists somewhere the developer's browser cannot reach — so the
+// bytes are downloadable. Only the certificate: the key has no endpoint.
+func (s *Server) tlsCertificate(w http.ResponseWriter, _ *http.Request) {
+	ca := s.rt.CA()
+	if ca == nil {
+		writeError(w, http.StatusNotFound, "there is no certificate authority yet; set a service to terminate TLS and Sonda creates one")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", `attachment; filename="sonda-ca.pem"`)
+	_, _ = w.Write(ca.CertificatePEM())
 }
 
 // reconcile applies the stored configuration and answers with the new state.

@@ -66,15 +66,20 @@ func configureTools() []Tool {
 		},
 
 		{
-			Name:        "configure_service",
-			Title:       "Add or change a service",
-			Description: "Add a service to a project, or change one that is already there. Use it to fix a port Sonda could not take, or to add something the configuration file did not mention.",
+			Name:  "configure_service",
+			Title: "Add or change a service",
+			Description: "Add a service to a project, or change one that is already there. Use it to fix a port Sonda could not take, or to add something the configuration file did not mention. " +
+				"Set tls when the caller refuses to speak http:// — Sonda then answers that port with a certificate it mints itself, and trust_certificate says what the user has to run to trust it.",
 			Schema: obj(map[string]any{
 				"project":  prop("string", "Project name."),
 				"name":     prop("string", "Service name, as you want to see it."),
 				"listen":   prop("string", "Address Sonda should listen on, like 127.0.0.1:9152."),
-				"upstream": prop("string", "Where the real service is, like http://localhost:50052, or postgres://localhost:5432 for a database. Never include a user or a password: Sonda forwards the client's own handshake and refuses an upstream that carries credentials."),
+				"upstream": prop("string", "Where the real service is, like http://localhost:50052, https://api.example.com, or postgres://localhost:5432 for a database. Never include a user or a password: Sonda forwards the client's own handshake and refuses an upstream that carries credentials."),
 				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "postgres"}, "description": "Defaults to http. Use postgres for a database: it gets a raw listener rather than an HTTP one."},
+				"tls":      prop("boolean", "Make Sonda terminate TLS on this port: the caller is pointed at https://listen instead of http://. Not available for postgres, which negotiates encryption inside its own protocol."),
+				"insecure_skip_verify": prop("boolean",
+					"Stop checking the upstream's certificate. Only for an https:// upstream, only for this one service, and never as a way to silence a certificate error you have not read. "+
+						"Every capture taken through it is recorded as unverified and every interface shows the service as unverified, so this cannot be turned on quietly."),
 			}, "project", "name", "listen", "upstream"),
 			Annotations: writing,
 			Run:         configureService,
@@ -266,6 +271,7 @@ func configureService(ctx context.Context, s *Server, a args) (any, error) {
 	body, err := json.Marshal(map[string]any{
 		"name": a.str("name"), "listen": a.str("listen"),
 		"upstream": a.str("upstream"), "protocol": protocol, "reflection": true,
+		"tls": a.boolean("tls"), "insecure_skip_verify": a.boolean("insecure_skip_verify"),
 	})
 	if err != nil {
 		return nil, err
