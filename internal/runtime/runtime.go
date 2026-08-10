@@ -129,13 +129,17 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			inner:   r.recorder,
 			project: project.Name,
 		}, r.stubs, r.faults)
-		desired = append(desired, supervisor.Desired{
-			// Keyed by service id, so renaming a service does not close its
-			// port and moving it to another port does.
-			Key:     fmt.Sprintf("svc-%d", svc.ID),
-			Listen:  svc.Listen,
-			Handler: p.Handler(),
-		})
+		// Keyed by service id, so renaming a service does not close its port
+		// and moving it to another port does.
+		want := supervisor.Desired{Key: fmt.Sprintf("svc-%d", svc.ID), Listen: svc.Listen}
+		if svc.Protocol == config.ProtocolPostgres {
+			// A database connection is framed messages from its first byte, so
+			// there is no request an HTTP handler could be given.
+			want.Serve = p.ServePostgres
+		} else {
+			want.Handler = p.Handler()
+		}
+		desired = append(desired, want)
 	}
 
 	status := r.supervisor.Apply(desired)

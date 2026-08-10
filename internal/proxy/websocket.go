@@ -50,6 +50,16 @@ func isWebSocketUpgrade(h http.Header) bool {
 // The full byte count is kept, so the capture says how much it did not keep.
 type tap struct {
 	limit int64
+
+	// blank rewrites the credential-bearing parts of the stream before anything
+	// is kept, and is nil for every protocol that has none. It runs here rather
+	// than at display time because the capture is a plaintext file an agent can
+	// read: what is never written cannot leak.
+	//
+	// It is a state machine over the whole stream, so it must see every chunk
+	// even after the cap is reached, or it loses track of where it is.
+	blank func([]byte) []byte
+
 	mu    sync.Mutex
 	head  []byte
 	total int64
@@ -58,14 +68,23 @@ type tap struct {
 func (t *tap) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.total += int64(len(p))
+
+	// Counted before anything else, and reported whatever happens below: the
+	// count is of what crossed the wire, and a tap that reported a short write
+	// would make io.MultiWriter abort the relay it is observing.
+	n := len(p)
+	t.total += int64(n)
+
+	if t.blank != nil {
+		p = t.blank(p)
+	}
 	if room := t.limit - int64(len(t.head)); room > 0 {
 		if int64(len(p)) > room {
 			p = p[:room]
 		}
 		t.head = append(t.head, p...)
 	}
-	return len(p), nil
+	return n, nil
 }
 
 func (t *tap) result() (head []byte, total int64) {
@@ -174,16 +193,12 @@ func (p *Proxy) serveWebSocket(w http.ResponseWriter, r *http.Request, started t
 		_, _ = io.Copy(io.MultiWriter(upstream, sent), fromClient)
 		// Closing the write half tells the upstream the client is done, which
 		// is what unblocks the other direction and ends the conversation.
-		if c, ok := upstream.(*net.TCPConn); ok {
-			_ = c.CloseWrite()
-		}
+		closeWrite(upstream)
 	}()
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(io.MultiWriter(client, received), fromUpstream)
-		if c, ok := client.(*net.TCPConn); ok {
-			_ = c.CloseWrite()
-		}
+		closeWrite(client)
 	}()
 	wg.Wait()
 

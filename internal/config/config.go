@@ -68,6 +68,13 @@ const (
 	// not requests and responses any more, but two streams of frames.
 	ProtocolWebSocket = "websocket"
 
+	// ProtocolPostgres is the one target that never speaks HTTP at all. It is
+	// framed messages from the first byte, so it needs a raw listener rather
+	// than a handler, and its upstream is declared as postgres://host:port
+	// because calling a database "http://" would be the tool lying in its own
+	// configuration file.
+	ProtocolPostgres = "postgres"
+
 	defaultAPIListen    = "127.0.0.1:9000"
 	defaultDatabase     = "sonda.db"
 	defaultMaxBodyBytes = 256 << 10
@@ -220,8 +227,9 @@ func (c *Config) validateTargets() error {
 		}
 		listens[t.Listen] = true
 
-		if t.Protocol != ProtocolHTTP && t.Protocol != ProtocolGRPC {
-			return fmt.Errorf("%s (%s): protocol %q is not supported, use %q or %q", where, t.Name, t.Protocol, ProtocolHTTP, ProtocolGRPC)
+		if !SupportedProtocol(t.Protocol) {
+			return fmt.Errorf("%s (%s): protocol %q is not supported, use %q, %q or %q",
+				where, t.Name, t.Protocol, ProtocolHTTP, ProtocolGRPC, ProtocolPostgres)
 		}
 
 		if t.Protocol != ProtocolGRPC && (t.DescriptorSet != "" || t.Reflection != nil) {
@@ -237,11 +245,14 @@ func (c *Config) validateTargets() error {
 		// it as an unhelpful "first path segment cannot contain colon". Both
 		// cases collapse into the message that says what to fix.
 		u, err := url.Parse(t.Upstream)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("%s (%s): upstream %q must start with http:// or https://", where, t.Name, t.Upstream)
+		if err != nil || !UpstreamSchemeOK(t.Protocol, u.Scheme) {
+			return fmt.Errorf("%s (%s): upstream %q must start with %s", where, t.Name, t.Upstream, upstreamHint(t.Protocol))
 		}
 		if u.Host == "" {
 			return fmt.Errorf("%s (%s): upstream %q has no host", where, t.Name, t.Upstream)
+		}
+		if err := refuseUpstreamCredentials(u); err != nil {
+			return fmt.Errorf("%s (%s): %w", where, t.Name, err)
 		}
 	}
 	return nil
@@ -251,4 +262,52 @@ func (c *Config) validateTargets() error {
 func (t Target) UpstreamURL() *url.URL {
 	u, _ := url.Parse(t.Upstream)
 	return u
+}
+
+// SupportedProtocol, UpstreamSchemeOK and UpstreamPrefix are exported because
+// a target is declared in two places — the YAML file and the projects table —
+// and two copies of "what may a service be" is how one of them ends up
+// accepting something the other refuses to run.
+func SupportedProtocol(p string) bool {
+	return p == ProtocolHTTP || p == ProtocolGRPC || p == ProtocolPostgres
+}
+
+// UpstreamSchemeOK reports whether a scheme names the transport the target
+// declared. Postgres is kept separate rather than folded into http:// because
+// the scheme is the one place a reader can see what a service actually is.
+func UpstreamSchemeOK(protocol, scheme string) bool {
+	if protocol == ProtocolPostgres {
+		return scheme == "postgres" || scheme == "postgresql"
+	}
+	return scheme == "http" || scheme == "https"
+}
+
+// UpstreamPrefix is the shape to suggest when the scheme was wrong.
+func UpstreamPrefix(protocol string) string {
+	if protocol == ProtocolPostgres {
+		return "postgres://"
+	}
+	return "http://"
+}
+
+func upstreamHint(protocol string) string {
+	if protocol == ProtocolPostgres {
+		return "postgres://"
+	}
+	return "http:// or https://"
+}
+
+// refuseUpstreamCredentials rejects the DATABASE_URL someone will paste in
+// whole.
+//
+// Sonda forwards the client's own handshake, so it has no use for a user or a
+// password — and accepting them would write a live database password into
+// sonda.db in plaintext, which is exactly what the capture path goes to some
+// trouble to avoid.
+func refuseUpstreamCredentials(u *url.URL) error {
+	if u.User == nil {
+		return nil
+	}
+	return fmt.Errorf("upstream %q carries a user and password; Sonda forwards the client's own handshake, so give it just %s://%s",
+		u.Redacted(), u.Scheme, u.Host)
 }

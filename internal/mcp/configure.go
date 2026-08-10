@@ -73,8 +73,8 @@ func configureTools() []Tool {
 				"project":  prop("string", "Project name."),
 				"name":     prop("string", "Service name, as you want to see it."),
 				"listen":   prop("string", "Address Sonda should listen on, like 127.0.0.1:9152."),
-				"upstream": prop("string", "Where the real service is, like http://localhost:50052."),
-				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc"}, "description": "Defaults to http."},
+				"upstream": prop("string", "Where the real service is, like http://localhost:50052, or postgres://localhost:5432 for a database. Never include a user or a password: Sonda forwards the client's own handshake and refuses an upstream that carries credentials."),
+				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "postgres"}, "description": "Defaults to http. Use postgres for a database: it gets a raw listener rather than an HTTP one."},
 			}, "project", "name", "listen", "upstream"),
 			Annotations: writing,
 			Run:         configureService,
@@ -337,11 +337,22 @@ func reversePatch(projects any) map[string]any {
 			}
 			changes[variable] = map[string]string{
 				"from": listen,
-				"to":   strings.TrimPrefix(strings.TrimPrefix(upstream, "http://"), "https://"),
+				// The scheme is dropped whatever it is, so a postgres:// target
+				// comes back as the host:port the caller has to swap, not as a
+				// URL that would be wrong to paste into a DSN.
+				"to": hostPortOf(upstream),
 			}
 		}
 	}
 	return changes
+}
+
+// hostPortOf strips whatever scheme an upstream was declared with.
+func hostPortOf(upstream string) string {
+	if _, after, found := strings.Cut(upstream, "://"); found {
+		return after
+	}
+	return upstream
 }
 
 // summarise turns the project listing every mutation answers with into the

@@ -104,6 +104,8 @@ func toTraceCall(c store.Summary) trace.Call {
 		}
 	case c.GraphQLErrors > 0:
 		out.Detail = fmt.Sprintf("%s: %d GraphQL error(s)", c.GraphQLOp, c.GraphQLErrors)
+	case c.PostgresErrors > 0:
+		out.Detail = c.PostgresSummary
 	}
 	return out
 }
@@ -122,8 +124,9 @@ func summaryFailed(c store.Summary) bool {
 		return true
 	}
 	// A GraphQL error arrives under HTTP 200 with no transport complaint. It is
-	// checked before the status for exactly that reason.
-	if c.GraphQLErrors > 0 {
+	// checked before the status for exactly that reason, and a Postgres session
+	// has no HTTP status at all.
+	if c.GraphQLErrors > 0 || c.PostgresErrors > 0 {
 		return true
 	}
 	if c.GRPCStatus != nil {
