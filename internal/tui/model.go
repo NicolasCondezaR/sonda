@@ -54,6 +54,7 @@ type Model struct {
 	detail  *CallDetail
 	diff    *Diff
 	trace   *Trace
+	drift   *Drift
 
 	failedOnly bool
 	windowIdx  int
@@ -114,6 +115,11 @@ type detailMsg struct {
 	detail *CallDetail
 	err    error
 }
+type driftMsg struct {
+	drift *Drift
+	err   error
+}
+
 type traceMsg struct {
 	trace *Trace
 	err   error
@@ -178,6 +184,13 @@ func (m Model) loadDetail(id int64) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := m.client.Detail(m.ctx, id)
 		return detailMsg{detail: detail, err: err}
+	}
+}
+
+func (m Model) loadDrift(call Call) tea.Cmd {
+	return func() tea.Msg {
+		d, err := m.client.Drift(m.ctx, call)
+		return driftMsg{drift: d, err: err}
 	}
 }
 
@@ -258,6 +271,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.withError(msg.err), nil
 		}
 		m.detail, m.diff = msg.detail, nil
+		return m, nil
+
+	case driftMsg:
+		if msg.err != nil {
+			// Fewer than two captures, or a response that is not JSON. Neither
+			// is a failure; there is simply nothing to compare.
+			m.status = "nothing to compare this endpoint against yet"
+			return m, nil
+		}
+		m.drift, m.trace, m.diff, m.status = msg.drift, nil, nil, ""
 		return m, nil
 
 	case traceMsg:

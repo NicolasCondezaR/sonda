@@ -572,6 +572,7 @@ function renderInspector(call) {
   out.appendChild(head);
   out.appendChild(renderActions(call));
   out.appendChild(renderTracePlaceholder(call));
+  out.appendChild(renderDriftPlaceholder(call));
 
   if (call.socket) {
     out.appendChild(renderFrames("SENT", call.socket.sent, call.socket.sent_summary, call.socket.sent_incomplete));
@@ -594,6 +595,66 @@ function renderInspector(call) {
   dom.inspectorBody.replaceChildren(out);
   dom.inspectorBody.scrollTop = 0;
   dom.diffBody.hidden = true;
+}
+
+/* --------------------------------------------------------------- drift -- */
+
+/* Whether this endpoint still answers the shape it used to. Fetched after the
+   payload is on screen, like the tree: it is context, not the reason the
+   inspector was opened. */
+
+function renderDriftPlaceholder(call) {
+  const s = section("CONTRACT");
+  s.body.classList.add("insp-sec__body--loading");
+  s.body.textContent = "comparing…";
+  loadDrift(call, s);
+  return s.wrap;
+}
+
+async function loadDrift(call, s) {
+  let report;
+  try {
+    const q = new URLSearchParams({ target: call.target, path: call.path, method: call.method });
+    const res = await fetch("api/drift?" + q);
+    // Fewer than two captures, or a response that is not JSON. Neither is a
+    // failure worth a red box; there is simply nothing to compare.
+    if (!res.ok) { s.wrap.remove(); return; }
+    report = await res.json();
+  } catch {
+    s.wrap.remove();
+    return;
+  }
+
+  s.body.classList.remove("insp-sec__body--loading");
+  s.body.replaceChildren();
+
+  const head = s.wrap.querySelector(".insp-sec__head");
+  head.appendChild(el("span", "note", "vs capture #" + report.baseline));
+
+  if (!report.changes.length) {
+    s.body.appendChild(el("p", "note", "The shape has not changed since then."));
+    return;
+  }
+
+  const list = el("div", "tree");
+  for (const c of report.changes) {
+    const row = el("div", "tree__row" + (c.kind === "added" ? "" : " tree__row--fault"));
+    const left = el("span");
+    left.appendChild(el("span", "tree__pipe", c.kind === "gone" ? "− " : c.kind === "added" ? "+ " : "~ "));
+    left.appendChild(el("span", "tree__name", c.path));
+    row.append(left, el("span", "tree__dur",
+      c.kind === "retyped" ? c.was + " → " + c.now : c.kind === "gone" ? "was " + c.was : c.now));
+    list.appendChild(row);
+  }
+  s.body.appendChild(list);
+
+  // Adding a field is safe. Losing one or changing its type is what takes a
+  // caller down, and saying which is the difference between a report worth
+  // acting on and a list worth ignoring.
+  s.body.appendChild(el("p", "note",
+    report.breaking.length
+      ? report.breaking.length + " of these would break a caller."
+      : "All additive — nothing here breaks a caller."));
 }
 
 /* ---------------------------------------------------------------- tree -- */

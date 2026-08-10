@@ -203,6 +203,9 @@ func (m Model) renderSeparator(fieldWidth int) string {
 /* ------------------------------------------------------------ inspector -- */
 
 func (m Model) renderInspector() string {
+	if m.drift != nil {
+		return m.renderDrift()
+	}
 	if m.trace != nil {
 		return m.renderTrace()
 	}
@@ -380,6 +383,32 @@ func (m Model) renderBody(label string, msg Message) []string {
 
 /* ----------------------------------------------------------------- diff -- */
 
+// renderDrift shows whether this endpoint still answers the shape it used to.
+// The report arrives already drawn from the API, so the terminal and the agent
+// read the same one.
+func (m Model) renderDrift() string {
+	d := m.drift
+	lines := []string{styleInk.Render(fmt.Sprintf(" CONTRACT   vs capture #%d", d.Baseline))}
+
+	for _, line := range strings.Split(strings.TrimRight(d.Rendered, "\n"), "\n") {
+		style := styleDim
+		// Losing a field or changing its type is what takes a caller down.
+		// Adding one is safe, and colouring both the same would hide which is
+		// which.
+		if strings.HasPrefix(line, "-") || strings.HasPrefix(line, "~") {
+			style = styleFault
+		}
+		lines = append(lines, style.Render(" "+truncate(line, m.width-2)))
+	}
+
+	verdict := "all additive — nothing here breaks a caller"
+	if n := len(d.Breaking); n > 0 {
+		verdict = fmt.Sprintf("%d of these would break a caller", n)
+	}
+	lines = append(lines, "", styleFaint.Render(" "+verdict), styleFaint.Render(" esc to go back"))
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // renderTrace shows the whole request a call belonged to. The drawing arrives
 // already made from the API, so the terminal and the agent read the same one.
 func (m Model) renderTrace() string {
@@ -485,7 +514,7 @@ func (m Model) renderFooter() string {
 	// terminal is narrow — but quit is re-appended every time. A legend that
 	// silently loses the way out is worse than a short one.
 	keys := []string{
-		"↑↓ chan", "←→ call", "⏎ read", "t tree", "r replay", "d diff",
+		"↑↓ chan", "←→ call", "⏎ read", "t tree", "c contract", "r replay", "d diff",
 		"f faults", "w window", "h hold", "/ find",
 	}
 	prefix := " "

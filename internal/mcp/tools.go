@@ -177,6 +177,38 @@ func readTools() []Tool {
 		},
 
 		{
+			Name:  "contract_drift",
+			Title: "Has this response changed shape",
+			Description: "Compare the shape of a service's newest response against the oldest one Sonda holds for the same endpoint: fields that went away, fields that changed type, fields that appeared. " +
+				"This is about shape, not values — two calls returning different prices are not drift; one returning a price as a number and the other as a string is. " +
+				"Ask it when a caller broke and nothing in its own code changed.",
+			Schema: obj(map[string]any{
+				"service": prop("string", "Service name."),
+				"path":    prop("string", "Restrict to one path, or a fragment of one."),
+				"method":  prop("string", "Restrict to one method."),
+				"a":       prop("integer", "Compare these two calls instead, when you already know which."),
+				"b":       prop("integer", "The second call id."),
+			}),
+			Annotations: readOnly,
+			Run: func(ctx context.Context, s *Server, a args) (any, error) {
+				q := url.Values{}
+				if a.has("a") && a.has("b") {
+					q.Set("a", strconv.Itoa(a.num("a", 0)))
+					q.Set("b", strconv.Itoa(a.num("b", 0)))
+				} else {
+					service := a.str("service")
+					if service == "" {
+						return nil, fmt.Errorf("pass a service, or two call ids as a and b")
+					}
+					q.Set("target", service)
+					setIf(q, "path", a.str("path"))
+					setIf(q, "method", a.str("method"))
+				}
+				return s.get(ctx, "/api/drift?"+q.Encode(), false)
+			},
+		},
+
+		{
 			Name:        "diff_calls",
 			Title:       "Compare two calls",
 			Description: "Structurally compare two captured calls and report what changed: headers, bodies, status, timing. Answers \"this one worked and this one did not, why\" without you having to hold both payloads in context.",

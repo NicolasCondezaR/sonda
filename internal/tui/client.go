@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
 	"strconv"
 	"strings"
 	"time"
@@ -315,6 +316,32 @@ type Trace struct {
 		Failed  int  `json:"failed"`
 		Certain bool `json:"certain"`
 	} `json:"trace"`
+}
+
+// Drift asks whether an endpoint still answers the shape it used to.
+func (c *Client) Drift(ctx context.Context, call Call) (*Drift, error) {
+	q := url.Values{}
+	q.Set("target", call.Target)
+	q.Set("path", call.Path)
+	q.Set("method", call.Method)
+
+	var out Drift
+	if err := c.get(ctx, "/api/drift?"+q.Encode(), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type Drift struct {
+	Baseline int64         `json:"baseline"`
+	Rendered string        `json:"rendered"`
+	Breaking []DriftChange `json:"breaking"`
+	Changes  []DriftChange `json:"changes"`
+}
+
+type DriftChange struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 func (c *Client) Replay(ctx context.Context, id int64) (*ReplayResult, error) {

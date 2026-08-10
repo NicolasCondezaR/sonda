@@ -17,7 +17,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 14.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 15.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode) and an
 > [MCP server for coding agents](#agents) all work, and the whole thing runs
@@ -245,7 +245,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
      "message": "no tienes acceso a este pedido"
    }
  RESPONSE  0 message(s)
- ↑↓ chan · ←→ call · ⏎ read · t tree · r replay · d diff · f faults · w window · h hold · / find · q quit
+ ↑↓ chan · ←→ call · ⏎ read · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
 The translation is mostly direct — monospace is free here, hairlines become
@@ -264,6 +264,7 @@ needed a different expression:
 | `←` `→` | step along it, call by call |
 | `enter` | read the selected call |
 | `t` | show the whole request it belonged to, as a tree |
+| `c` | has this endpoint changed shape since it used to work |
 | `r` | replay it |
 | `d` | diff a replay against its original |
 | `f` | faults only, or everything |
@@ -509,6 +510,7 @@ that is already running, so it is still the same data:
 | `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
 | `break_service` | Add latency, force a status, or cut the connection. Asks first |
+| `contract_drift` | Has this response changed shape since it used to work |
 
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
 the agent makes a change, triggers the action, and waits for what should have
@@ -590,6 +592,40 @@ same body cap as any other capture, and says how much it did not keep.
 Server-sent events need none of that — the response is ordinary HTTP — so they
 are captured as they always were and split back into their events for display,
 comments and keepalives dropped, a partial last event shown as partial.
+
+## Contract drift
+
+In a monorepo where nobody versions a contract, a field that quietly went away
+or changed type breaks the caller days later, far from the change that caused
+it. Sonda already holds every response a service ever gave.
+
+```
+CONTRACT                                vs capture #412
+−  data.items[].currency                    was string
+~  data.total                          number -> string
++  data.meta.cached                              boolean
+
+2 of these would break a caller.
+```
+
+It compares **shapes, not values**. Two calls returning different prices are not
+drift; one returning a price as a number and the other as a string is.
+
+- The baseline is the **oldest capture Sonda holds** of the same endpoint, not a
+  schema someone has to maintain — a baseline nobody keeps up to date is a
+  baseline that is gone in three weeks.
+- A list collapses to the shape of its items. Two hundred orders report the
+  shape of one order, or the field that changed would be buried under itself.
+- A **nullable field is not drift.** Flagging every one of them buries the
+  changes that matter under noise nobody can act on.
+- An empty list claims nothing about what it holds. Guessing would invent a
+  contract nobody wrote.
+- **Adding a field is safe**; losing one or changing its type is what takes a
+  caller down, and the report says which is which.
+
+In the interface it is a section of the inspector, in the terminal it is `c`,
+and for an agent it is `contract_drift`. This is the one thing in Sonda that
+never touches the proxy: it only reads what was already stored.
 
 ## Breaking things on purpose
 
@@ -712,6 +748,7 @@ host. See `sonda.docker.yaml`.
 | `GET /api/stub` | Which services are answering from recordings. |
 | `POST /api/stub` | Turn stubbing on or off for a service, or clear it. |
 | `GET /api/faults` | Which services are being broken on purpose, and how. |
+| `GET /api/drift?target=` | Whether an endpoint still answers the shape it used to. |
 | `POST /api/faults` | Set or clear a fault rule. |
 | `GET /api/projects` | Projects, their services, and what is really listening. |
 | `POST /api/projects` | Create one. `PATCH`/`DELETE /api/projects/{id}` rename and remove. |
@@ -771,6 +808,7 @@ operators.
 | 12 | The tree and the stub, on every surface: web, terminal, MCP | done |
 | 13 | WebSocket and server-sent events | done |
 | 14 | Fault injection: latency, forced statuses, cut connections | done |
+| 15 | Contract drift: a field gone, a field retyped | done |
 
 ### Limitations
 

@@ -18,7 +18,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 14.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 15.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
 > [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
@@ -247,7 +247,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
      "message": "no tienes acceso a este pedido"
    }
  RESPONSE  0 message(s)
- ↑↓ chan · ←→ call · ⏎ read · t tree · r replay · d diff · f faults · w window · h hold · / find · q quit
+ ↑↓ chan · ←→ call · ⏎ read · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
 La traducción es casi directa: la monoespaciada es gratis acá, las líneas de un
@@ -267,6 +267,7 @@ iguales. Dos cosas necesitaron otra expresión:
 | `←` `→` | recorrerlo, llamada por llamada |
 | `enter` | leer la llamada seleccionada |
 | `t` | ver la petición completa a la que perteneció, como árbol |
+| `c` | si este endpoint cambió de forma desde que funcionaba |
 | `r` | reenviarla |
 | `d` | comparar un reenvío contra su original |
 | `f` | solo fallos, o todo |
@@ -521,6 +522,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
 | `break_service` | Agregar latencia, forzar un estado o cortar la conexión. Pregunta antes |
+| `contract_drift` | Si esta respuesta cambió de forma desde que funcionaba |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
@@ -603,6 +605,39 @@ Los eventos server-sent no necesitan nada de eso —la respuesta es HTTP
 corriente— así que se capturan como siempre y se parten en sus eventos para
 mostrarlos, descartando comentarios y keepalives, y marcando como parcial un
 último evento cortado.
+
+## Deriva de contratos
+
+En un monorepo donde nadie versiona un contrato, un campo que se fue callado o
+que cambió de tipo rompe al que llama días después, lejos del cambio que lo
+causó. Sonda ya tiene todas las respuestas que un servicio dio alguna vez.
+
+```
+CONTRACT                                vs capture #412
+−  data.items[].currency                    was string
+~  data.total                          number -> string
++  data.meta.cached                              boolean
+
+2 of these would break a caller.
+```
+
+Compara **formas, no valores**. Dos llamadas que devuelven precios distintos no
+son deriva; una que devuelve el precio como número y otra como texto, sí.
+
+- La referencia es la **captura más vieja que Sonda tenga** del mismo endpoint,
+  no un esquema que alguien deba mantener — una referencia que nadie actualiza
+  es una referencia que en tres semanas ya no está.
+- Una lista se colapsa a la forma de sus elementos. Doscientos pedidos reportan
+  la forma de un pedido, o el campo que cambió quedaría enterrado bajo sí mismo.
+- Un **campo nullable no es deriva.** Marcarlos todos entierra los cambios que
+  importan bajo ruido sobre el que nadie puede actuar.
+- Una lista vacía no afirma nada sobre lo que contiene.
+- **Agregar un campo es seguro**; perder uno o cambiarle el tipo es lo que tumba
+  a quien llama, y el reporte dice cuál es cuál.
+
+En la interfaz es una sección del inspector, en el terminal es `c`, y para un
+agente es `contract_drift`. Es lo único en Sonda que no toca el proxy: solo lee
+lo que ya estaba guardado.
 
 ## Romper a propósito
 
@@ -726,6 +761,7 @@ en el host. Ver `sonda.docker.yaml`.
 | `GET /api/stub` | Qué servicios están respondiendo desde grabaciones. |
 | `POST /api/stub` | Activar o desactivar el stub de un servicio, o limpiarlo todo. |
 | `GET /api/faults` | Qué servicios se están rompiendo a propósito, y cómo. |
+| `GET /api/drift?target=` | Si un endpoint sigue respondiendo la forma que respondía. |
 | `POST /api/faults` | Poner o quitar una regla de fallo. |
 | `GET /api/projects` | Los proyectos, sus servicios y qué está escuchando de verdad. |
 | `POST /api/projects` | Crear uno. `PATCH`/`DELETE /api/projects/{id}` renombran y borran. |
@@ -788,6 +824,7 @@ leerse como operadores de consulta.
 | 12 | El árbol y el stub, en todas las superficies: web, terminal y MCP | listo |
 | 13 | WebSocket y eventos server-sent | listo |
 | 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
+| 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
 
 ### Limitaciones
 
