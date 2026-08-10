@@ -1097,6 +1097,36 @@ operators.
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
 | 17 | PostgreSQL: one capture per statement, hung under the request that ran it, with the credentials blanked before they are stored | done |
 | 18 | TLS: terminated for the client from a local authority Sonda never installs, spoken to the upstream, and recorded on every capture as verified or not | done |
+| 19 | AMQP 0-9-1: the wire decoder, with the credentials named but not decoded | decoder done, capture not built |
+
+Kafka is deliberately absent from that table. Why, and what to do instead, is below.
+
+### Capturing Kafka
+
+Sonda can capture Kafka, but not by being pointed at a broker.
+
+A Kafka client uses its first connection only to ask where the brokers are. The
+answer is whatever the broker publishes as its `advertised.listeners`, and the
+client then opens **new connections straight to those addresses** and sends
+everything that matters — produces, fetches, every group call — down those. A
+proxy in the middle sees the handshake and then nothing, forever, while the
+traffic someone attached a debugger to flows around it.
+
+Point the broker at Sonda instead of putting Sonda in front of the broker:
+
+```yaml
+# docker-compose.yml — the broker listens on 9192, Sonda owns 9092
+KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+```
+
+Now every connection comes through, bootstrap and broker alike, and **nothing is
+rewritten**. You will see two sockets to the same address, which is not a
+duplicate — it is what the client really does.
+
+On a real multi-broker cluster this stops working, and Sonda stops there. Making
+a client stay would mean editing the broker addresses in the responses as they
+cross, which would make every capture a record of a cluster that does not exist.
+That is what a Kafka gateway is for, and it is the opposite of what this is.
 
 ### Limitations
 
