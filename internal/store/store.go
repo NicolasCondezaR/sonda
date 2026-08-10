@@ -731,3 +731,21 @@ func (s *Store) MatchForStub(ctx context.Context, target, method, path string, b
 	}
 	return s.Get(ctx, id)
 }
+
+// Summary is the listing form of a call, without the bodies.
+//
+// It exists so the mapping lives in one place. It used to be written out by
+// hand wherever a detail had to be shown as a summary, and a hand-written copy
+// of a struct silently drops whatever field was added last — which is exactly
+// how stub_of reached the listing and never reached the detail.
+func (c *Call) Summary() Summary {
+	return Summary{
+		ID: c.ID, Target: c.Target, Protocol: c.Protocol, Method: c.Method,
+		Path: c.Path, Status: c.Status, StartedAt: c.StartedAt,
+		Duration: c.Duration, Error: c.Error,
+		RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
+		GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
+		ReplayOf: c.ReplayOf, Project: c.Project,
+		TraceID: c.TraceID, StubOf: c.StubOf,
+	}
+}

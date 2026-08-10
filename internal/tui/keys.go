@@ -84,8 +84,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadDiff(*call.ReplayOf, call.ID)
 
+	case "t":
+		call, ok := m.selectedCall()
+		if !ok {
+			return m, nil
+		}
+		return m, m.loadTrace(call.ID)
+
 	case "esc":
-		m.detail, m.diff, m.status = nil, nil, ""
+		m.detail, m.diff, m.trace, m.status = nil, nil, nil, ""
 		return m, nil
 	}
 

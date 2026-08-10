@@ -17,7 +17,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 11.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 12.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode) and an
 > [MCP server for coding agents](#agents) all work, and the whole thing runs
@@ -243,7 +243,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
      "message": "no tienes acceso a este pedido"
    }
  RESPONSE  0 message(s)
- ↑↓ chan · ←→ call · ⏎ read · r replay · d diff · f faults · w window · h hold · / find · q quit
+ ↑↓ chan · ←→ call · ⏎ read · t tree · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
 The translation is mostly direct — monospace is free here, hairlines become
@@ -261,6 +261,7 @@ needed a different expression:
 | `↑` `↓` | pick a channel |
 | `←` `→` | step along it, call by call |
 | `enter` | read the selected call |
+| `t` | show the whole request it belonged to, as a tree |
 | `r` | replay it |
 | `d` | diff a replay against its original |
 | `f` | faults only, or everything |
@@ -700,6 +701,7 @@ operators.
 | 9 | Configuration over MCP: connect a whole project by asking | done |
 | 10 | Correlation: the calls of one request, arranged as a tree | done |
 | 11 | Stub mode: answer from a recording instead of forwarding | done |
+| 12 | The tree and the stub, on every surface: web, terminal, MCP | done |
 
 ### Limitations
 
@@ -710,9 +712,8 @@ operators.
 - A truncated capture cannot be replayed; the refusal is deliberate.
 - The interface has no cursors and no trigger — two devices a real instrument
   has, and the obvious next reach.
-- The web interface does not yet draw the request tree or flag a stubbed
-  answer. Both are in the API and in the MCP tools; the field still shows a flat
-  list, which is a gap and not a decision.
+- No trace id of its own is injected. Requests that carry one are grouped
+  exactly; the rest are grouped by nesting and the tree says it inferred them.
 
 ## Development
 

@@ -125,6 +125,15 @@ type summaryJSON struct {
 	// ReplayOf turns "did the fix work?" into a diff instead of a memory
 	// exercise, so it travels with the summary and reaches the live view.
 	ReplayOf *int64 `json:"replay_of,omitempty"`
+
+	// StubOf says the service was never called: this answer came out of a
+	// recording. It has to reach every listing, because a stub that looks like
+	// live traffic is the one thing that feature must never be.
+	StubOf *int64 `json:"stub_of,omitempty"`
+
+	// TraceID is what groups this call with the rest of its request. Present
+	// only when something upstream put it in the headers.
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 type messageJSON struct {
@@ -225,14 +234,7 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := callJSON{
-		summaryJSON: toSummary(store.Summary{
-			ID: c.ID, Target: c.Target, Protocol: c.Protocol, Method: c.Method,
-			Path: c.Path, Status: c.Status, StartedAt: c.StartedAt,
-			Duration: c.Duration, Error: c.Error,
-			RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
-			GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
-			ReplayOf: c.ReplayOf,
-		}),
+		summaryJSON:      toSummary(c.Summary()),
 		ClientAddr:       c.ClientAddr,
 		Request:          toMessage(c.Request),
 		Response:         toMessage(c.Response),
@@ -353,6 +355,8 @@ func toSummary(c store.Summary) summaryJSON {
 		GRPCStatus:   c.GRPCStatus,
 		GRPCMessage:  c.GRPCMessage,
 		ReplayOf:     c.ReplayOf,
+		StubOf:       c.StubOf,
+		TraceID:      c.TraceID,
 	}
 	if c.GRPCStatus != nil {
 		out.GRPCStatusText = codes.Code(*c.GRPCStatus).String()

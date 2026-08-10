@@ -124,3 +124,32 @@ func TestStubOfSurvivesStorage(t *testing.T) {
 		t.Error("a real capture came back marked as a stub")
 	}
 }
+
+// The listing and the detail have to agree about a call. They used to be built
+// by two different pieces of code, and the detail quietly lost whichever field
+// was added last — stub_of reached one and not the other.
+func TestSummaryCarriesEveryFieldTheListingShows(t *testing.T) {
+	s := stubStore(t)
+	origin := record(t, s, "orders", "POST", "/get", "", "x", nil)
+	id := record(t, s, "orders", "POST", "/get", "", "x", &origin)
+
+	full, err := s.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full.TraceID = "abc-123"
+
+	got := full.Summary()
+	if got.StubOf == nil || *got.StubOf != origin {
+		t.Errorf("StubOf = %v, want %d", got.StubOf, origin)
+	}
+	if got.TraceID != "abc-123" {
+		t.Errorf("TraceID = %q, want it carried across", got.TraceID)
+	}
+	if got.ID != full.ID || got.Target != full.Target || got.Status != full.Status {
+		t.Errorf("identity was lost: %+v", got)
+	}
+	if got.RequestSize != full.Request.Size || got.ResponseSize != full.Response.Size {
+		t.Error("the sizes were lost")
+	}
+}

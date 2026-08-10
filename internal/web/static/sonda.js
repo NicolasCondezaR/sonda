@@ -28,6 +28,7 @@ const state = {
   selected: null,
   detail: null,             // the call currently in the inspector
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
+  stubbed: new Set(),        // services answering from recordings, not the wire
   pxPerMs: 0,
   epoch: Date.now(),
   laneWidth: 0,
@@ -153,9 +154,18 @@ function renderRail() {
     row.setAttribute("aria-pressed", String(state.channel === target.name));
     row.title = target.name + " → " + target.upstream;
 
-    const swatch = el("span", "channel__swatch" + (target.hollow ? " channel__swatch--hollow" : ""));
+    const stubbed = state.stubbed.has(target.name);
+    const swatch = el("span", "channel__swatch" +
+      (target.hollow ? " channel__swatch--hollow" : "") +
+      (stubbed ? " channel__swatch--stub" : ""));
     row.append(swatch, el("span", "channel__name", target.name));
     if (target.protocol === "grpc") row.appendChild(el("span", "channel__proto", "gRPC"));
+    // Stubbing is a mode the service is in, not a property of one call, so it
+    // is engraved on the channel rather than repeated on every event.
+    if (stubbed) {
+      row.appendChild(el("span", "channel__stub", "STUB"));
+      row.title += " — answering from recordings, not being called";
+    }
     row.append(
       el("span", "channel__calls", "0"),
       el("span", "channel__faults", "0"),
@@ -207,15 +217,20 @@ function addEvent(call, isNew) {
   if (!target || !target.track) return;
 
   const fault = isFault(call);
-  const node = el("button", "ev" + (fault ? " ev--fault" : "") + (isNew ? " ev--new" : ""));
+  const stub = Boolean(call.stub_of);
+  const node = el("button", "ev" + (fault ? " ev--fault" : "") +
+    (stub ? " ev--stub" : "") + (isNew ? " ev--new" : ""));
   node.type = "button";
   node.style.left = xFor(call.started_at) + "px";
   if (!fault) {
     node.style.width = Math.max(3, call.duration_ms * state.pxPerMs) + "px";
   }
   node.setAttribute("aria-pressed", "false");
+  // Said in words as well: the hatch carries it at a glance, and a screen
+  // reader has no hatch.
+  const served = stub ? ", answered from a recording" : "";
   node.setAttribute("aria-label",
-    `${call.method} ${call.path} on ${call.target}, ${outcome(call)}, ${duration(call.duration_ms)}`);
+    `${call.method} ${call.path} on ${call.target}, ${outcome(call)}${served}, ${duration(call.duration_ms)}`);
   node.title = `${outcome(call)}  ${call.method} ${call.path}\n${duration(call.duration_ms)} · ${clockTime(call.started_at)}`;
 
   node.addEventListener("click", () => select(call.id));
@@ -339,13 +354,26 @@ function query() {
 
 async function reload() {
   try {
-    const [callsRes, statsRes] = await Promise.all([
+    const [callsRes, statsRes, stubRes] = await Promise.all([
       fetch("api/calls?" + query()),
       fetch("api/stats"),
+      fetch("api/stub"),
     ]);
     if (!callsRes.ok) throw new Error("calls " + callsRes.status);
 
     const { calls } = await callsRes.json();
+
+    // Which services are answering from recordings. Read on every reload
+    // rather than remembered, because it can be changed from the terminal or
+    // by an agent while this window is open.
+    if (stubRes.ok) {
+      const { stubbed } = await stubRes.json();
+      const next = new Set(stubbed || []);
+      const changed = next.size !== state.stubbed.size ||
+        [...next].some((name) => !state.stubbed.has(name));
+      state.stubbed = next;
+      if (changed) renderRail();
+    }
     if (statsRes.ok) {
       const stats = await statsRes.json();
       state.totals.calls = stats.calls || 0;
@@ -500,8 +528,24 @@ function renderInspector(call) {
   if (call.error) {
     head.appendChild(el("div", "insp-head__fault", call.error));
   }
+
+  // Provenance before anything else. Everything below is a reading of something
+  // recorded earlier, and a reader who scrolls straight to the payload would
+  // otherwise take it for what just happened.
+  if (call.stub_of) {
+    const line = el("div", "insp-head__stub");
+    line.append(el("b", null, "FROM RECORDING"), document.createTextNode(" · "));
+    line.appendChild(document.createTextNode("the service was not called. Answered from capture "));
+    const link = el("button", null, "#" + call.stub_of);
+    link.type = "button";
+    link.addEventListener("click", () => select(call.stub_of));
+    line.appendChild(link);
+    head.appendChild(line);
+  }
+
   out.appendChild(head);
   out.appendChild(renderActions(call));
+  out.appendChild(renderTracePlaceholder(call));
 
   if (call.grpc) {
     out.appendChild(renderGRPC(call.grpc));
@@ -519,6 +563,98 @@ function renderInspector(call) {
   dom.inspectorBody.replaceChildren(out);
   dom.inspectorBody.scrollTop = 0;
   dom.diffBody.hidden = true;
+}
+
+/* ---------------------------------------------------------------- tree -- */
+
+/* One call is a reading; the request it belonged to is the thing that broke.
+   Fetched after the inspector is already on screen, because the payload is what
+   the reader came for and it must not wait on this. */
+
+function renderTracePlaceholder(call) {
+  // Not "REQUEST": that name already belongs to this call's own payload, two
+  // sections below. And not "TRACE", which on this surface is the moving line.
+  const s = section("CALL TREE");
+  s.body.classList.add("insp-sec__body--loading");
+  s.body.textContent = "arranging…";
+  loadTrace(call, s);
+  return s.wrap;
+}
+
+async function loadTrace(call, s) {
+  let tree;
+  try {
+    const res = await fetch("api/trace?call=" + call.id);
+    if (!res.ok) throw new Error(String(res.status));
+    ({ trace: tree } = await res.json());
+  } catch {
+    // Not a failure worth shouting about: the payload below is still the
+    // answer, and the tree is context.
+    s.wrap.remove();
+    return;
+  }
+
+  // A lone call is not a tree, and drawing one would suggest Sonda found
+  // relations it did not.
+  if (!tree || tree.calls < 2) {
+    s.wrap.remove();
+    return;
+  }
+
+  s.body.classList.remove("insp-sec__body--loading");
+  s.body.replaceChildren();
+
+  const head = s.wrap.querySelector(".insp-sec__head");
+  head.appendChild(el("span", "note",
+    tree.calls + " calls" + (tree.failed ? " · " + tree.failed + " failed" : "")));
+
+  // Principle three of the product: label the guesses. A tree grouped by
+  // timing alone is an inference, and one presented as measurement is worse
+  // than no tree.
+  if (!tree.certain) {
+    s.body.appendChild(el("div", "note",
+      "grouped by timing — no trace id in these requests, so the shape is inferred"));
+  }
+
+  const list = el("div", "tree");
+  drawNode(list, tree.root, "", true, true, call.id);
+  s.body.appendChild(list);
+}
+
+function drawNode(list, node, prefix, last, root, currentID) {
+  const c = node.call;
+  const row = el("button", "tree__row" +
+    (c.failed ? " tree__row--fault" : "") +
+    (node.inferred ? " tree__row--guess" : ""));
+  row.type = "button";
+  row.setAttribute("aria-current", String(c.id === currentID));
+
+  const target = state.byName.get(c.target);
+  if (target) row.style.setProperty("--ch", target.color);
+
+  const left = el("span");
+  left.appendChild(el("span", "tree__pipe", prefix + (root ? "" : last ? "└─ " : "├─ ")));
+  // The same hatch as the rail and the field: this branch is a recording, which
+  // is also the answer to why it came back suspiciously fast.
+  left.appendChild(el("span", "tree__swatch" + (c.stubbed ? " tree__swatch--stub" : "")));
+  // Only a failure gets a mark. Giving a healthy row one too would put a second
+  // coloured square on every line and turn the exception into wallpaper.
+  if (c.failed) left.appendChild(el("span", "tree__mark", "█"));
+  left.appendChild(el("span", "tree__name", c.target + (c.path ? " " + c.path : "")));
+  if (c.stubbed) left.appendChild(el("span", "note", "  from recording"));
+  if (node.ambiguous) left.appendChild(el("span", "note", "  may belong elsewhere"));
+
+  row.append(left, el("span", "tree__dur", duration(c.duration_ms)));
+  row.addEventListener("click", () => select(c.id));
+  list.appendChild(row);
+
+  if (c.detail) list.appendChild(el("div", "tree__detail", c.detail));
+
+  const children = node.children || [];
+  const indent = prefix + (root ? "" : last ? "   " : "│  ");
+  children.forEach((child, i) => {
+    drawNode(list, child, indent, i === children.length - 1, false, currentID);
+  });
 }
 
 /* ------------------------------------------------------------- actions -- */
@@ -1076,13 +1212,33 @@ function renderService(project, svc) {
     el("span", "svc__cell svc__cell--faint", svc.upstream),
   );
 
-  // What is really happening on the port, not what was configured.
-  const state = project.active
+  // What is really happening on the port, not what was configured. Named for
+  // the port and not `state`, which is the module's own and is read below.
+  const portState = project.active
     ? el("span", "svc__state " + (svc.running ? "svc__state--on" : "svc__state--off"),
         svc.running ? "LISTENING" : "FAILED")
     : el("span", "svc__state svc__cell--faint", "IDLE");
-  if (svc.error) state.title = svc.error;
-  row.appendChild(state);
+  if (svc.error) portState.title = svc.error;
+  row.appendChild(portState);
+
+  // A latched position, not a verb: the label says where the switch sits, and
+  // pressing it moves it. Only offered on the project that is actually
+  // listening, since stubbing a project whose ports are closed does nothing.
+  if (project.active) {
+    const stubbed = state.stubbed.has(svc.name);
+    const toggle = button(stubbed ? "FROM RECORDING" : "LIVE", async () => {
+      await mutate(() => call("POST", "api/stub",
+        { service: svc.name, enabled: !stubbed }),
+        stubbed ? `${svc.name} is being called again` : `${svc.name} answers from recordings`);
+      await reload();
+      renderAdmin();
+    });
+    toggle.title = stubbed
+      ? `${svc.name} is not being called. Press to forward again.`
+      : `${svc.name} is being called for real. Press to answer from recordings instead.`;
+    if (stubbed) toggle.setAttribute("aria-pressed", "true");
+    row.appendChild(toggle);
+  }
 
   row.appendChild(button("REMOVE", () => {
     if (confirm(`Remove ${svc.name}?`)) {

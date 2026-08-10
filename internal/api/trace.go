@@ -87,6 +87,7 @@ func toTraceCall(c store.Summary) trace.Call {
 		Status: c.Status, Started: c.StartedAt, Duration: c.Duration,
 		TraceID: c.TraceID,
 		Failed:  summaryFailed(c),
+		Stubbed: c.StubOf != nil,
 	}
 
 	// What to say about a failure, most specific first. For gRPC the HTTP
