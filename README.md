@@ -593,6 +593,35 @@ Server-sent events need none of that — the response is ordinary HTTP — so th
 are captured as they always were and split back into their events for display,
 comments and keepalives dropped, a partial last event shown as partial.
 
+## GraphQL
+
+A GraphQL client sends every operation as the same POST to the same path, so a
+service that speaks GraphQL arrives in the field as one call repeated a hundred
+times and the timeline stops being useful for it. Sonda reads the operation out
+of the body and labels the call with it: `POST /graphql · mutation Pay`.
+
+- **The document is detected by its body, not its path.** A POST whose JSON
+  carries a `query` string is a GraphQL request wherever it was sent — behind a
+  gateway prefix, on `/api`, or on `/graphql`.
+- **A batch is every operation in it.** Clients send arrays of operations as one
+  request; reading only the first would hide the rest.
+- **The inspector shows the operation**: its type and name, the top-level fields
+  it asked for, the variables it sent, and every error the response carried with
+  its path and its `extensions.code`. The raw bodies stay alongside it.
+
+**A GraphQL error is a failure.** The server answers HTTP 200 with an `errors`
+array, so a tool that reads the status code alone shows the thing you came to
+find as a success. Sonda counts it as a fault everywhere the question is asked:
+the fault filter, the channel rail's counts, the field's fault marks, the
+terminal, the trace tree and `recent_failures` over MCP. This is the same
+problem gRPC has, and it is answered the same way.
+
+Sonda reads enough of the document to name the operation and no more. It is not
+a parser: it does not validate, resolve fragment spreads into their fields, or
+know your schema. A response that is not JSON — cut by the body cap, or an error
+page from something in front of the service — is reported as unreadable rather
+than as a call with no errors.
+
 ## Contract drift
 
 In a monorepo where nobody versions a contract, a field that quietly went away
@@ -809,6 +838,7 @@ operators.
 | 13 | WebSocket and server-sent events | done |
 | 14 | Fault injection: latency, forced statuses, cut connections | done |
 | 15 | Contract drift: a field gone, a field retyped | done |
+| 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
 
 ### Limitations
 
@@ -816,6 +846,11 @@ operators.
 - Compressed gRPC messages are not decompressed.
 - The `Host` header is rewritten to the upstream, like any reverse proxy.
 - A truncated capture cannot be replayed; the refusal is deliberate.
+- GraphQL fragment spreads are not resolved: a top-level `...Fields` contributes
+  no field names, because naming them would need the fragment and the schema.
+- Captures taken before GraphQL support existed report no operation and no
+  errors. Nothing is re-read retroactively: an old capture that quietly changed
+  outcome is worse than one that is honestly blank.
 - The interface has no cursors and no trigger — two devices a real instrument
   has, and the obvious next reach.
 - No trace id of its own is injected. Requests that carry one are grouped

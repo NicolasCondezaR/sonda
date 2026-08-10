@@ -18,6 +18,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/NicolasCondezaR/sonda/internal/graphql"
 )
 
 // Message is one side of an exchange: the headers, the bytes Sonda kept, and
@@ -75,6 +77,18 @@ type Call struct {
 	// would show the tool's own interference as if the service had produced
 	// it, and someone would go hunting a bug that does not exist.
 	Injected bool
+
+	// GraphQLOp and GraphQLErrors are the only two things read out of a body
+	// and kept as columns, and both exist because a listing carries no bodies.
+	//
+	// Every GraphQL call is the same POST to the same path, so without the
+	// operation the field shows a service as one repeated call. And a GraphQL
+	// failure arrives under HTTP 200, so without the error count the SQL that
+	// decides what counts as a fault cannot see it — and the field would show
+	// the failure someone came here to find as a success. Both are derived on
+	// insert; the bodies themselves go in untouched.
+	GraphQLOp     string
+	GraphQLErrors int
 }
 
 // Summary is the list view. It deliberately carries no bodies: a listing of a
@@ -98,6 +112,9 @@ type Summary struct {
 	TraceID      string
 	StubOf       *int64
 	Injected     bool
+
+	GraphQLOp     string
+	GraphQLErrors int
 }
 
 type Filter struct {
@@ -154,7 +171,9 @@ CREATE TABLE IF NOT EXISTS calls (
 	grpc_status    INTEGER,
 	grpc_message   TEXT    NOT NULL DEFAULT '',
 	replay_of      INTEGER,
-	project        TEXT    NOT NULL DEFAULT ''
+	project        TEXT    NOT NULL DEFAULT '',
+	graphql_op     TEXT    NOT NULL DEFAULT '',
+	graphql_errors INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS calls_started_at_idx ON calls(started_at DESC);
 CREATE INDEX IF NOT EXISTS calls_target_idx     ON calls(target, id DESC);
@@ -173,6 +192,12 @@ var addedColumns = map[string]string{
 	"trace_id":      `ALTER TABLE calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`,
 	"stub_of":       `ALTER TABLE calls ADD COLUMN stub_of INTEGER`,
 	"injected":      `ALTER TABLE calls ADD COLUMN injected INTEGER NOT NULL DEFAULT 0`,
+	// Calls captured before this column existed report no operation and no
+	// errors. Backfilling would mean re-reading every stored body to write a
+	// value nobody measured at the time, and an old capture that quietly
+	// changed outcome is worse than one that is honestly blank.
+	"graphql_op":     `ALTER TABLE calls ADD COLUMN graphql_op TEXT NOT NULL DEFAULT ''`,
+	"graphql_errors": `ALTER TABLE calls ADD COLUMN graphql_errors INTEGER NOT NULL DEFAULT 0`,
 }
 
 func migrate(db *sql.DB) error {
@@ -253,6 +278,11 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 		return 0, err
 	}
 
+	// Derived here rather than by each caller: the proxy, the stub path and the
+	// fault path all record through this one function, and a reading taken in
+	// three places is a reading that disagrees with itself.
+	describeGraphQL(c)
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -265,14 +295,15 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
 			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-			stub_of, injected
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			stub_of, injected, graphql_op, graphql_errors
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
 		c.Project, c.TraceID, nullableInt64(c.StubOf), boolToInt(c.Injected),
+		c.GraphQLOp, c.GraphQLErrors,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
@@ -346,7 +377,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of, project, trace_id, stub_of, injected
+		       replay_of, project, trace_id, stub_of, injected, graphql_op, graphql_errors
 		FROM calls`
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -374,7 +405,8 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
-			&replayOf, &s.Project, &s.TraceID, &stubOf, &injected); err != nil {
+			&replayOf, &s.Project, &s.TraceID, &stubOf, &injected,
+			&s.GraphQLOp, &s.GraphQLErrors); err != nil {
 			return nil, err
 		}
 		s.StartedAt = time.UnixMicro(startedAt).UTC()
@@ -402,13 +434,14 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
 		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-		       stub_of, injected
+		       stub_of, injected, graphql_op, graphql_errors
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf, &injectedFlag)
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf, &injectedFlag,
+		&c.GraphQLOp, &c.GraphQLErrors)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +486,11 @@ type TargetStats struct {
 
 // faultPredicate is one definition of failure, shared by the stats rollup and
 // the FailedOnly filter so the rail and the field can never disagree.
-const faultPredicate = `(error != '' OR status >= 400 OR (grpc_status IS NOT NULL AND grpc_status != 0))`
+//
+// The last two clauses are the same problem twice: gRPC and GraphQL both report
+// failure under HTTP 200, so a definition that trusted the status alone would
+// show the failure someone opened this tool to find as a success.
+const faultPredicate = `(error != '' OR status >= 400 OR (grpc_status IS NOT NULL AND grpc_status != 0) OR graphql_errors > 0)`
 
 func (s *Store) Stats(ctx context.Context, project string) (Stats, error) {
 	var (
@@ -758,5 +795,20 @@ func (c *Call) Summary() Summary {
 		GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
 		ReplayOf: c.ReplayOf, Project: c.Project,
 		TraceID: c.TraceID, StubOf: c.StubOf, Injected: c.Injected,
+		GraphQLOp: c.GraphQLOp, GraphQLErrors: c.GraphQLErrors,
 	}
+}
+
+// describeGraphQL reads the operation and the error count off a call's bodies.
+//
+// It writes nothing back into either body: the record stays the exact bytes
+// that crossed the proxy, and these two values are a reading taken from them,
+// the same way the search index is.
+func describeGraphQL(c *Call) {
+	e := graphql.Decode(c.Method, c.Request.Body, c.Response.Body)
+	if e == nil {
+		return
+	}
+	c.GraphQLOp = e.Label()
+	c.GraphQLErrors = e.Errors()
 }

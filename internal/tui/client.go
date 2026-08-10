@@ -52,6 +52,8 @@ type Call struct {
 	GRPCStatus     *int32  `json:"grpc_status"`
 	GRPCStatusText string  `json:"grpc_status_text"`
 	GRPCMessage    string  `json:"grpc_message"`
+	GraphQLOp      string  `json:"graphql_op"`
+	GraphQLErrors  int     `json:"graphql_errors"`
 	ReplayOf       *int64  `json:"replay_of"`
 	StubOf         *int64  `json:"stub_of"`
 	Injected       bool    `json:"injected"`
@@ -65,9 +67,15 @@ type Call struct {
 func (c Call) Started() time.Time { return c.started }
 
 // Fault applies the same definition the server does, so the terminal and the
-// web client can never disagree about what counts as a failure.
+// web client can never disagree about what counts as a failure. It mirrors
+// summaryFailed in internal/api, clause for clause and in the same order.
 func (c Call) Fault() bool {
 	if c.Error != "" {
+		return true
+	}
+	// A GraphQL error arrives under HTTP 200 with no transport complaint, so it
+	// has to be asked about before the status is trusted.
+	if c.GraphQLErrors > 0 {
 		return true
 	}
 	if c.GRPCStatus != nil {
@@ -83,9 +91,23 @@ func (c Call) Outcome() string {
 		return "TRANSPORT"
 	case c.GRPCStatusText != "":
 		return strings.ToUpper(c.GRPCStatusText)
+	case c.GraphQLErrors > 0:
+		// "200" here would be the truth about the transport and a lie about
+		// the call.
+		return "GRAPHQL ERROR"
 	default:
 		return strconv.Itoa(c.Status)
 	}
+}
+
+// Label is how a call is named in one line. For GraphQL the method and path are
+// the same on every call a service makes, and the operation is the only part
+// that says which one this was.
+func (c Call) Label() string {
+	if c.GraphQLOp == "" {
+		return c.Method + " " + c.Path
+	}
+	return c.Method + " " + c.Path + " · " + c.GraphQLOp
 }
 
 type Message struct {
@@ -125,9 +147,33 @@ type CallDetail struct {
 	GRPC             *GRPCView           `json:"grpc"`
 
 	// A socket and an event stream are the same shape as a gRPC stream: one
-	// exchange that carried many messages, decoded by the API.
-	Socket *SocketView `json:"socket"`
-	Stream *StreamView `json:"stream"`
+	// exchange that carried many messages, decoded by the API. GraphQL is the
+	// same arrangement over a single POST.
+	Socket  *SocketView  `json:"socket"`
+	Stream  *StreamView  `json:"stream"`
+	GraphQL *GraphQLView `json:"graphql"`
+}
+
+type GraphQLView struct {
+	Batch      bool               `json:"batch"`
+	Operations []GraphQLOperation `json:"operations"`
+	Errors     int                `json:"errors"`
+	Unreadable bool               `json:"unreadable"`
+}
+
+type GraphQLOperation struct {
+	Type      string          `json:"type"`
+	Name      string          `json:"name"`
+	Label     string          `json:"label"`
+	Fields    []string        `json:"fields"`
+	Variables json.RawMessage `json:"variables"`
+	Errors    []GraphQLError  `json:"errors"`
+}
+
+type GraphQLError struct {
+	Message string `json:"message"`
+	Path    string `json:"path"`
+	Code    string `json:"code"`
 }
 
 type SocketView struct {

@@ -69,8 +69,13 @@ function el(tag, className, text) {
   return node;
 }
 
+/* The definition of failure, mirroring summaryFailed in internal/api and
+ * Call.Fault in the terminal client, clause for clause and in the same order.
+ * A GraphQL error arrives under HTTP 200 with no transport complaint, so it is
+ * asked about before the status is trusted. */
 function isFault(call) {
   if (call.error) return true;
+  if (call.graphql_errors > 0) return true;
   if (call.grpc_status !== undefined && call.grpc_status !== null) return call.grpc_status !== 0;
   return call.status >= 400;
 }
@@ -98,7 +103,17 @@ function clockTime(iso) {
 function outcome(call) {
   if (call.error) return "TRANSPORT";
   if (call.grpc_status_text) return call.grpc_status_text.toUpperCase();
+  /* "200" here would be the truth about the transport and a lie about the call. */
+  if (call.graphql_errors > 0) return "GRAPHQL ERROR";
   return String(call.status);
+}
+
+/* How a call is named in one line. Every GraphQL call to a service is the same
+ * method and path, so the operation is the only part that says which one this
+ * was — without it a whole lane reads as one call repeated. */
+function label(call) {
+  const base = call.method + " " + call.path;
+  return call.graphql_op ? base + " · " + call.graphql_op : base;
 }
 
 /* ------------------------------------------------------------- geometry -- */
@@ -237,8 +252,8 @@ function addEvent(call, isNew) {
   // reader has no hatch.
   const served = stub ? ", answered from a recording" : "";
   node.setAttribute("aria-label",
-    `${call.method} ${call.path} on ${call.target}, ${outcome(call)}${served}, ${duration(call.duration_ms)}`);
-  node.title = `${outcome(call)}  ${call.method} ${call.path}\n${duration(call.duration_ms)} · ${clockTime(call.started_at)}`;
+    `${label(call)} on ${call.target}, ${outcome(call)}${served}, ${duration(call.duration_ms)}`);
+  node.title = `${outcome(call)}  ${label(call)}\n${duration(call.duration_ms)} · ${clockTime(call.started_at)}`;
 
   node.addEventListener("click", () => select(call.id));
 
@@ -525,7 +540,7 @@ function renderInspector(call) {
   const out = document.createDocumentFragment();
 
   const head = el("div", "insp-head");
-  head.appendChild(el("div", "insp-head__path", call.method + " " + call.path));
+  head.appendChild(el("div", "insp-head__path", label(call)));
   const meta = el("div", "insp-head__meta");
   meta.append(
     el("span", null, call.target),
@@ -541,6 +556,14 @@ function renderInspector(call) {
       "gRPC " + call.grpc_status + " " + call.grpc_status_text +
       (call.grpc_message ? " — " + call.grpc_message : ""));
     head.appendChild(line);
+  }
+  /* Said in the header and not only in the block below: this call answered
+   * HTTP 200, and a reader who takes the status line at its word closes the
+   * inspector believing it worked. */
+  if (call.graphql_errors > 0) {
+    head.appendChild(el("div", "insp-head__fault",
+      "GraphQL · " + call.graphql_errors +
+      (call.graphql_errors === 1 ? " error" : " errors") + " under HTTP " + call.status));
   }
   if (call.error) {
     head.appendChild(el("div", "insp-head__fault", call.error));
@@ -574,7 +597,13 @@ function renderInspector(call) {
   out.appendChild(renderTracePlaceholder(call));
   out.appendChild(renderDriftPlaceholder(call));
 
-  if (call.socket) {
+  if (call.graphql) {
+    out.appendChild(renderGraphQL(call.graphql));
+    /* The raw body stays reachable: the decode is a reading of it, not a
+     * replacement for it. */
+    out.appendChild(renderSide("REQUEST", call.request).wrap);
+    out.appendChild(renderSide("RESPONSE", call.response).wrap);
+  } else if (call.socket) {
     out.appendChild(renderFrames("SENT", call.socket.sent, call.socket.sent_summary, call.socket.sent_incomplete));
     out.appendChild(renderFrames("RECEIVED", call.socket.received, call.socket.received_summary, call.socket.received_incomplete));
   } else if (call.stream) {
@@ -1035,6 +1064,51 @@ function renderFrames(title, frames, summary, incomplete) {
   if (incomplete) {
     s.body.appendChild(el("p", "note",
       "Bytes remain after the last whole frame — the capture was cut short by the body cap, or the socket was still open."));
+  }
+  return s.wrap;
+}
+
+/* A GraphQL POST is one exchange carrying one or more operations, read out of
+   the stored bodies here the same way events and frames are.
+
+   The raw request body is one long escaped string that looks the same on every
+   call to the endpoint. What is worth the space is the operation, what it asked
+   for, and what came back wrong. */
+
+function renderGraphQL(g) {
+  const ops = g.operations || [];
+  const s = section("GRAPHQL", g.batch ? "batch of " + ops.length : ops[0] && ops[0].type);
+
+  for (const op of ops) {
+    const block = el("div", "msg");
+    const head = el("div", "msg__head");
+    head.append(el("span", "label", op.label));
+    if (op.errors && op.errors.length) {
+      head.appendChild(el("span", "note note--fault",
+        op.errors.length === 1 ? "1 error" : op.errors.length + " errors"));
+    }
+    block.appendChild(head);
+
+    if (op.fields && op.fields.length) {
+      block.appendChild(el("p", "note", "asks for " + op.fields.join(", ")));
+    }
+    if (op.variables !== undefined) {
+      block.appendChild(el("pre", "payload", JSON.stringify(op.variables, null, 2)));
+    }
+
+    /* An error names where in the answer it happened, and that is most of what
+       makes it actionable. */
+    for (const e of op.errors || []) {
+      block.appendChild(el("p", "note note--fault", e.message));
+      const where = [e.path && "at " + e.path, e.code].filter(Boolean).join(" · ");
+      if (where) block.appendChild(el("p", "note", where));
+    }
+    s.body.appendChild(block);
+  }
+
+  if (g.unreadable) {
+    s.body.appendChild(el("p", "note",
+      "The response is not JSON, so whether it carried errors is unknown — the capture was cut short by the body cap, or the server answered something else."));
   }
   return s.wrap;
 }

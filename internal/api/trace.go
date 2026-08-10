@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -90,9 +91,9 @@ func toTraceCall(c store.Summary) trace.Call {
 		Stubbed: c.StubOf != nil,
 	}
 
-	// What to say about a failure, most specific first. For gRPC the HTTP
-	// status is 200 even when the call failed, so the code is the only thing
-	// that carries the outcome.
+	// What to say about a failure, most specific first. For gRPC and GraphQL
+	// alike the HTTP status is 200 even when the call failed, so the status is
+	// the one thing that does not carry the outcome.
 	switch {
 	case c.Error != "":
 		out.Detail = c.Error
@@ -101,6 +102,8 @@ func toTraceCall(c store.Summary) trace.Call {
 		if c.GRPCMessage != "" {
 			out.Detail += ": " + c.GRPCMessage
 		}
+	case c.GraphQLErrors > 0:
+		out.Detail = fmt.Sprintf("%s: %d GraphQL error(s)", c.GraphQLOp, c.GraphQLErrors)
 	}
 	return out
 }
@@ -108,8 +111,19 @@ func toTraceCall(c store.Summary) trace.Call {
 // summaryFailed is the definition the rest of Sonda uses, applied to a
 // summary. Keeping it identical is what stops the tree from calling something
 // healthy that the field already flagged red.
+//
+// It is mirrored by store.faultPredicate in SQL, by isFault in the web client
+// and by Call.Fault in the terminal one. Four copies is three too many, but
+// they are four different languages reading three different shapes of the same
+// record, and the only thing that keeps them honest is that each one is short
+// enough to compare by eye.
 func summaryFailed(c store.Summary) bool {
 	if c.Error != "" {
+		return true
+	}
+	// A GraphQL error arrives under HTTP 200 with no transport complaint. It is
+	// checked before the status for exactly that reason.
+	if c.GraphQLErrors > 0 {
 		return true
 	}
 	if c.GRPCStatus != nil {

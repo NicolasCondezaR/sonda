@@ -29,15 +29,13 @@ func NewHub() *Hub {
 }
 
 // Publish encodes one call and hands it to every current subscriber.
+//
+// The summary comes from Summary rather than being written out by hand here.
+// The hand-written copy this replaced had already fallen behind by four fields,
+// and a live view that reports less than a reload does is the failure mode the
+// live view exists to avoid.
 func (h *Hub) Publish(c *store.Call) {
-	payload, err := json.Marshal(toSummary(store.Summary{
-		ID: c.ID, Target: c.Target, Protocol: c.Protocol, Method: c.Method,
-		Path: c.Path, Status: c.Status, StartedAt: c.StartedAt,
-		Duration: c.Duration, Error: c.Error,
-		RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
-		GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
-		ReplayOf: c.ReplayOf,
-	}))
+	payload, err := json.Marshal(toSummary(c.Summary()))
 	if err != nil {
 		return
 	}

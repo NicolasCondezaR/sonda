@@ -292,3 +292,47 @@ func mustInsert(t *testing.T, s *Store, c *Call) int64 {
 	}
 	return id
 }
+
+// A GraphQL failure arrives under HTTP 200, so the SQL that decides what counts
+// as a fault cannot see it in the status. The operation and the error count are
+// read off the bodies on insert, which is what puts them within reach of a
+// listing that carries no bodies at all.
+func TestAGraphQLErrorIsAFaultInSQL(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	broken := sampleCall("gateway", "POST", "/graphql", 200,
+		[]byte(`{"query":"mutation Pay { pay { ok } }"}`))
+	broken.Response.Body = []byte(`{"data":null,"errors":[{"message":"card declined"}]}`)
+	fine := sampleCall("gateway", "POST", "/graphql", 200, []byte(`{"query":"{ me { name } }"}`))
+
+	for _, c := range []*Call{broken, fine} {
+		if _, err := s.Insert(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if broken.GraphQLOp != "mutation Pay" || broken.GraphQLErrors != 1 {
+		t.Errorf("derived %q / %d errors", broken.GraphQLOp, broken.GraphQLErrors)
+	}
+	// The bytes are the record: the reading taken off them may not touch them.
+	if string(broken.Request.Body) != `{"query":"mutation Pay { pay { ok } }"}` {
+		t.Errorf("the stored request body was altered: %s", broken.Request.Body)
+	}
+
+	failed, err := s.List(ctx, Filter{FailedOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failed) != 1 || failed[0].GraphQLOp != "mutation Pay" {
+		t.Fatalf("the failed filter returned %+v, want only the declined payment", failed)
+	}
+
+	stats, err := s.Stats(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.ByTarget) != 1 || stats.ByTarget[0].Faults != 1 {
+		t.Errorf("the rail counted %+v, so the rail and the field disagree", stats.ByTarget)
+	}
+}

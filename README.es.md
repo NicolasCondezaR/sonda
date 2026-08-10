@@ -606,6 +606,38 @@ corriente— así que se capturan como siempre y se parten en sus eventos para
 mostrarlos, descartando comentarios y keepalives, y marcando como parcial un
 último evento cortado.
 
+## GraphQL
+
+Un cliente de GraphQL manda cada operación como el mismo POST a la misma ruta,
+así que un servicio que habla GraphQL llega al campo como una sola llamada
+repetida cien veces y la línea de tiempo deja de servir para él. Sonda lee la
+operación del cuerpo y etiqueta la llamada con ella:
+`POST /graphql · mutation Pay`.
+
+- **El documento se detecta por su cuerpo, no por su ruta.** Un POST cuyo JSON
+  trae un `query` de tipo texto es una petición GraphQL donde sea que se haya
+  enviado: detrás de un prefijo de gateway, en `/api` o en `/graphql`.
+- **Un lote son todas las operaciones que lleva.** Los clientes mandan arreglos
+  de operaciones en una sola petición; leer solo la primera ocultaría el resto.
+- **El inspector muestra la operación**: su tipo y su nombre, los campos de
+  primer nivel que pidió, las variables que envió y cada error que trajo la
+  respuesta, con su ruta y su `extensions.code`. Los cuerpos en crudo siguen
+  ahí al lado.
+
+**Un error de GraphQL es un fallo.** El servidor responde HTTP 200 con un
+arreglo `errors`, así que una herramienta que solo mire el código de estado
+muestra como éxito justo lo que viniste a buscar. Sonda lo cuenta como fallo en
+todos los lugares donde se hace la pregunta: el filtro de fallos, los contadores
+del riel de canales, las marcas de fallo del campo, la terminal, el árbol de
+trazas y `recent_failures` por MCP. Es el mismo problema que tiene gRPC, y se
+resuelve igual.
+
+Sonda lee del documento lo justo para nombrar la operación y nada más. No es un
+parser: no valida, no resuelve los fragmentos en sus campos y no conoce tu
+esquema. Una respuesta que no es JSON —cortada por el tope de cuerpo, o una
+página de error de algo que está delante del servicio— se reporta como
+ilegible, no como una llamada sin errores.
+
 ## Deriva de contratos
 
 En un monorepo donde nadie versiona un contrato, un campo que se fue callado o
@@ -825,6 +857,7 @@ leerse como operadores de consulta.
 | 13 | WebSocket y eventos server-sent | listo |
 | 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
 | 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
+| 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
 
 ### Limitaciones
 
@@ -833,6 +866,11 @@ leerse como operadores de consulta.
 - Los mensajes gRPC comprimidos no se descomprimen.
 - La cabecera `Host` se reescribe al upstream, como en cualquier reverse proxy.
 - Una captura truncada no se puede reenviar; la negativa es deliberada.
+- Los fragmentos de GraphQL no se resuelven: un `...Fields` de primer nivel no
+  aporta nombres de campo, porque nombrarlos exigiría el fragmento y el esquema.
+- Las capturas tomadas antes del soporte de GraphQL no reportan operación ni
+  errores. Nada se vuelve a leer con efecto retroactivo: una captura vieja que
+  cambia de resultado en silencio es peor que una que está honestamente vacía.
 - La interfaz no tiene cursores ni trigger, dos dispositivos que un instrumento
   real sí tiene, y el siguiente alcance evidente.
 - No se inyecta un id de traza propio. Las peticiones que traen uno se agrupan
