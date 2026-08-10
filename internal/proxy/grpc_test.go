@@ -234,14 +234,25 @@ func TestGRPCServerStreamIsNotBuffered(t *testing.T) {
 	if len(arrivals) != 3 {
 		t.Fatalf("received %d messages, want 3", len(arrivals))
 	}
-	// The first must land well before the last is even sent. Buffering would
-	// bunch all three at the end.
-	if arrivals[0] > gap {
-		t.Errorf("first message took %v, but the server sent it immediately — the proxy buffered", arrivals[0])
-	}
-	if arrivals[2]-arrivals[0] < gap {
-		t.Errorf("all three arrived within %v of each other; they were sent %v apart",
-			arrivals[2]-arrivals[0], gap)
+
+	// What buffering does is bunch the messages together, so the space between
+	// arrivals is the thing to measure — not how long any one of them took.
+	//
+	// Wall-clock latency was the earlier test here and it was wrong: a loaded
+	// machine blows through an absolute threshold on merit, so the test failed
+	// for a reason that had nothing to do with buffering. The space between
+	// arrivals only ever grows under load, which is why a lower bound on it
+	// cannot be tripped by a slow machine — and a buffered stream collapses
+	// that space to microseconds no matter how fast the machine is.
+	//
+	// Half the sending interval leaves room for scheduling jitter while staying
+	// three orders of magnitude above what buffering would produce.
+	const bunched = gap / 2
+	for i := 1; i < len(arrivals); i++ {
+		if space := arrivals[i] - arrivals[i-1]; space < bunched {
+			t.Errorf("messages %d and %d arrived %v apart but were sent %v apart — the proxy buffered",
+				i-1, i, space, gap)
+		}
 	}
 }
 
