@@ -64,6 +64,10 @@ const (
 	ProtocolHTTP = "http"
 	ProtocolGRPC = "grpc"
 
+	// ProtocolWebSocket is what a call becomes once its handshake succeeds:
+	// not requests and responses any more, but two streams of frames.
+	ProtocolWebSocket = "websocket"
+
 	defaultAPIListen    = "127.0.0.1:9000"
 	defaultDatabase     = "sonda.db"
 	defaultMaxBodyBytes = 256 << 10

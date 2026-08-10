@@ -121,6 +121,37 @@ type CallDetail struct {
 	Response         Message             `json:"response"`
 	ResponseTrailers map[string][]string `json:"response_trailers"`
 	GRPC             *GRPCView           `json:"grpc"`
+
+	// A socket and an event stream are the same shape as a gRPC stream: one
+	// exchange that carried many messages, decoded by the API.
+	Socket *SocketView `json:"socket"`
+	Stream *StreamView `json:"stream"`
+}
+
+type SocketView struct {
+	Sent            []FrameView `json:"sent"`
+	Received        []FrameView `json:"received"`
+	SentSummary     string      `json:"sent_summary"`
+	ReceivedSummary string      `json:"received_summary"`
+}
+
+type FrameView struct {
+	Kind        string `json:"kind"`
+	Size        int64  `json:"size"`
+	Text        string `json:"text"`
+	CloseCode   int    `json:"close_code"`
+	CloseReason string `json:"close_reason"`
+}
+
+type StreamView struct {
+	Events     []EventView `json:"events"`
+	Incomplete bool        `json:"incomplete"`
+}
+
+type EventView struct {
+	Name string `json:"name"`
+	ID   string `json:"id"`
+	Data string `json:"data"`
 }
 
 type TargetStat struct {

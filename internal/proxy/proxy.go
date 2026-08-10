@@ -111,6 +111,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A socket stops being requests and responses the moment its handshake
+	// succeeds, so it cannot go through the reverse proxy below.
+	if p.serveWebSocket(w, r, started) {
+		return
+	}
+
 	ex := &exchange{
 		request:  newCapture(p.maxBody),
 		response: newCapture(p.maxBody),
