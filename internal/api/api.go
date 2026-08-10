@@ -152,6 +152,11 @@ type callJSON struct {
 	Response         messageJSON `json:"response"`
 	ResponseTrailers http.Header `json:"response_trailers,omitempty"`
 	GRPC             *grpcView   `json:"grpc,omitempty"`
+
+	// Socket and Stream are the same idea as GRPC: one exchange that carried
+	// many messages, read back out of the stored stream when someone looks.
+	Socket *socketView `json:"socket,omitempty"`
+	Stream *streamView `json:"stream,omitempty"`
 }
 
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
@@ -242,6 +247,12 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Protocol == config.ProtocolGRPC {
 		out.GRPC = s.buildGRPCView(r.Context(), c)
+	}
+	if c.Protocol == config.ProtocolWebSocket {
+		out.Socket = buildSocketView(c)
+	}
+	if isEventStream(c) {
+		out.Stream = buildStreamView(c)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

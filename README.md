@@ -17,7 +17,7 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 12.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 13.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode) and an
 > [MCP server for coding agents](#agents) all work, and the whole thing runs
@@ -39,7 +39,9 @@ Two properties drive the design:
 
 - **Forwarding is byte exact.** A debugger that alters the traffic invalidates
   every conclusion drawn from it. Request and response bodies pass through
-  untouched, regardless of how much of them is stored.
+  untouched, regardless of how much of them is stored — including a WebSocket
+  handshake, whose key and negotiated extensions are relayed verbatim so the two
+  ends agree with each other and not with Sonda.
 - **The stored bytes are the record.** Bodies are saved exactly as they crossed
   the wire and decoded only when displayed. Re-serializing would lose unknown
   fields and reorder keys, which is what makes replay meaningless — and it lets
@@ -560,6 +562,34 @@ The HTTP endpoint refuses requests carrying a foreign `Origin`, which is what
 stops a page in your own browser from reaching it through DNS rebinding and
 reading your captures.
 
+## Sockets and event streams
+
+A WebSocket stops being requests and responses the moment its handshake
+succeeds, so Sonda holds both directions of it itself rather than letting the
+reverse proxy relay bytes nobody sees. What is stored is the raw frame stream
+per direction, and the frames are read back out when you look — the same
+arrangement gRPC streaming already uses.
+
+- The handshake goes through **verbatim**: the key, the subprotocols and the
+  negotiated extensions are what the two ends are agreeing on, and changing any
+  of them would make the recorded conversation a different one.
+- Client frames are **unmasked** for display. The mask is transport scaffolding
+  the receiving end removes before anything reads the payload; the key is kept
+  so the frame can still be reproduced exactly.
+- Text, binary, ping, pong, fragments and close all show as what they are, and a
+  close frame reports its code and reason — usually the answer to why the socket
+  stopped working.
+- An upgrade the service **refuses** is relayed as the ordinary response it is,
+  so you can read why.
+
+**A socket is captured when it closes**, not while it is open: it is one
+exchange, and the exchange is not over. A long-lived socket is bounded by the
+same body cap as any other capture, and says how much it did not keep.
+
+Server-sent events need none of that — the response is ordinary HTTP — so they
+are captured as they always were and split back into their events for display,
+comments and keepalives dropped, a partial last event shown as partial.
+
 ## Stub mode
 
 Sonda already holds the exact bytes of every response a service ever gave. Handing
@@ -702,11 +732,11 @@ operators.
 | 10 | Correlation: the calls of one request, arranged as a tree | done |
 | 11 | Stub mode: answer from a recording instead of forwarding | done |
 | 12 | The tree and the stub, on every surface: web, terminal, MCP | done |
+| 13 | WebSocket and server-sent events | done |
 
 ### Limitations
 
 - Plaintext only. A TLS upstream is forwarded but cannot be inspected.
-- No WebSocket or SSE capture.
 - Compressed gRPC messages are not decompressed.
 - The `Host` header is rewritten to the upstream, like any reverse proxy.
 - A truncated capture cannot be replayed; the refusal is deliberate.

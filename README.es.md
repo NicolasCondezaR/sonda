@@ -18,7 +18,7 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 12.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 13.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
 > [modo stub](#modo-stub) y un [servidor MCP para agentes de código](#agentes)
@@ -574,6 +574,35 @@ El endpoint HTTP rechaza las peticiones que traen un `Origin` ajeno, que es lo
 que impide que una página abierta en tu propio navegador llegue hasta él por DNS
 rebinding y lea tus capturas.
 
+## Sockets y flujos de eventos
+
+Un WebSocket deja de ser peticiones y respuestas en el momento en que su
+handshake tiene éxito, así que Sonda sostiene ella misma las dos direcciones en
+vez de dejar que el proxy inverso relaye bytes que nadie ve. Lo que se guarda es
+el flujo de tramas en crudo por dirección, y las tramas se leen de vuelta al
+mirarlas — el mismo arreglo que ya usa el streaming de gRPC.
+
+- El handshake pasa **tal cual**: la clave, los subprotocolos y las extensiones
+  negociadas son lo que los dos extremos están acordando, y cambiar cualquiera
+  haría que la conversación grabada fuera otra.
+- Las tramas del cliente se muestran **desenmascaradas**. La máscara es andamiaje
+  del transporte que el receptor quita antes de que nada lea el payload; la clave
+  se conserva para que la trama se pueda reproducir exacta.
+- Texto, binario, ping, pong, fragmentos y cierre se muestran como lo que son, y
+  una trama de cierre reporta su código y su motivo — que suele ser la respuesta
+  a por qué el socket dejó de funcionar.
+- Un upgrade que el servicio **rechaza** se relaya como la respuesta ordinaria
+  que es, para que puedas leer por qué.
+
+**Un socket se captura cuando se cierra**, no mientras está abierto: es un solo
+intercambio, y el intercambio no ha terminado. Uno de larga vida está acotado por
+el mismo tope de cuerpo que cualquier captura, y dice cuánto no guardó.
+
+Los eventos server-sent no necesitan nada de eso —la respuesta es HTTP
+corriente— así que se capturan como siempre y se parten en sus eventos para
+mostrarlos, descartando comentarios y keepalives, y marcando como parcial un
+último evento cortado.
+
 ## Modo stub
 
 Sonda ya tiene los bytes exactos de cada respuesta que un servicio dio alguna vez.
@@ -721,12 +750,12 @@ leerse como operadores de consulta.
 | 10 | Correlación: las llamadas de una petición, ordenadas como árbol | listo |
 | 11 | Modo stub: responder desde una grabación en vez de reenviar | listo |
 | 12 | El árbol y el stub, en todas las superficies: web, terminal y MCP | listo |
+| 13 | WebSocket y eventos server-sent | listo |
 
 ### Limitaciones
 
 - Solo tráfico en claro. Un upstream con TLS se reenvía pero no se puede
   inspeccionar.
-- Sin captura de WebSocket ni SSE.
 - Los mensajes gRPC comprimidos no se descomprimen.
 - La cabecera `Host` se reescribe al upstream, como en cualquier reverse proxy.
 - Una captura truncada no se puede reenviar; la negativa es deliberada.

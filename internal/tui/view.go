@@ -252,14 +252,77 @@ func (m Model) renderInspector() string {
 		lines = append(lines, styleFault.Render(" "+truncate(d.Error, m.width-2)))
 	}
 
-	if d.GRPC != nil {
+	switch {
+	case d.Socket != nil:
+		lines = append(lines, m.renderFrames("SENT", d.Socket.Sent, d.Socket.SentSummary)...)
+		lines = append(lines, m.renderFrames("RECEIVED", d.Socket.Received, d.Socket.ReceivedSummary)...)
+	case d.Stream != nil:
+		lines = append(lines, m.renderEvents(d.Stream)...)
+	case d.GRPC != nil:
 		lines = append(lines, m.renderGRPC(d.GRPC)...)
-	} else {
+	default:
 		lines = append(lines, m.renderBody("REQUEST", d.Request)...)
 		lines = append(lines, m.renderBody("RESPONSE", d.Response)...)
 	}
 
 	return strings.Join(clamp(lines, inspectorLines), "\n")
+}
+
+// renderFrames shows one direction of a socket conversation.
+func (m Model) renderFrames(title string, frames []FrameView, summary string) []string {
+	if summary == "" {
+		summary = "no frames"
+	}
+	lines := []string{"", styleLabel.Render(" "+title) + styleFaint.Render("   "+summary)}
+	if len(frames) == 0 {
+		return append(lines, styleFaint.Render("  nothing in this direction"))
+	}
+
+	for _, f := range frames {
+		lines = append(lines, styleFaint.Render(fmt.Sprintf("  %s  %d B", strings.ToUpper(f.Kind), f.Size)))
+		switch {
+		case f.Kind == "close":
+			// Why the socket ended is usually why someone is reading this.
+			why := "closed with no code"
+			if f.CloseCode != 0 {
+				why = fmt.Sprintf("code %d", f.CloseCode)
+				if f.CloseReason != "" {
+					why += " — " + f.CloseReason
+				}
+			}
+			lines = append(lines, styleDim.Render("  "+truncate(why, m.width-3)))
+		case f.Text != "":
+			lines = append(lines, indent(f.Text, "  ", m.width-3)...)
+		case f.Size > 0:
+			lines = append(lines, styleFaint.Render("  not text"))
+		}
+	}
+	return lines
+}
+
+// renderEvents shows a server-sent event stream as the events it carried.
+func (m Model) renderEvents(v *StreamView) []string {
+	lines := []string{"", styleLabel.Render(" EVENTS") +
+		styleFaint.Render(fmt.Sprintf("   %d", len(v.Events)))}
+
+	for _, e := range v.Events {
+		name := e.Name
+		if name == "" {
+			name = "message"
+		}
+		head := "  " + strings.ToUpper(name)
+		if e.ID != "" {
+			head += "   id " + e.ID
+		}
+		lines = append(lines, styleFaint.Render(head))
+		if e.Data != "" {
+			lines = append(lines, indent(e.Data, "  ", m.width-3)...)
+		}
+	}
+	if v.Incomplete {
+		lines = append(lines, styleFaint.Render("  the last event has no terminator: cut by the body cap, or still open"))
+	}
+	return lines
 }
 
 func (m Model) renderGRPC(g *GRPCView) []string {

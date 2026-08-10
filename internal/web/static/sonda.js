@@ -547,7 +547,12 @@ function renderInspector(call) {
   out.appendChild(renderActions(call));
   out.appendChild(renderTracePlaceholder(call));
 
-  if (call.grpc) {
+  if (call.socket) {
+    out.appendChild(renderFrames("SENT", call.socket.sent, call.socket.sent_summary, call.socket.sent_incomplete));
+    out.appendChild(renderFrames("RECEIVED", call.socket.received, call.socket.received_summary, call.socket.received_incomplete));
+  } else if (call.stream) {
+    out.appendChild(renderEvents(call.stream));
+  } else if (call.grpc) {
     out.appendChild(renderGRPC(call.grpc));
   } else {
     out.appendChild(renderSide("REQUEST", call.request).wrap);
@@ -895,6 +900,75 @@ function renderGRPC(g) {
   out.appendChild(renderMessages("REQUEST", g.request, g.request_incomplete));
   out.appendChild(renderMessages("RESPONSE", g.response, g.response_incomplete));
   return out;
+}
+
+/* A socket is one exchange carrying two streams of frames, and an event stream
+   is one response carrying many events. Both are read out of the stored bytes
+   here, the same way gRPC messages are. */
+
+function renderFrames(title, frames, summary, incomplete) {
+  const s = section(title, summary || "no frames");
+
+  if (!frames || !frames.length) {
+    s.body.appendChild(el("p", "note", "Nothing in this direction."));
+    return s.wrap;
+  }
+
+  for (const f of frames) {
+    const block = el("div", "msg");
+    const head = el("div", "msg__head");
+    const kind = el("span", "label", f.kind.toUpperCase());
+    head.append(kind, el("span", "note",
+      bytes(f.size) + (f.final ? "" : " · fragment, continues")));
+    block.appendChild(head);
+
+    if (f.kind === "close") {
+      // Why the socket ended is usually the reason someone is reading this.
+      block.appendChild(el("p", "note",
+        f.close_code ? "code " + f.close_code + (f.close_reason ? " — " + f.close_reason : "")
+                     : "closed with no code"));
+    } else if (f.text !== undefined && f.text !== "") {
+      block.appendChild(el("pre", "payload", pretty(f.text)));
+    } else if (f.base64) {
+      block.appendChild(el("p", "note", "Not text. " + bytes(f.size) + " of bytes."));
+    } else if (f.size === 0) {
+      block.appendChild(el("p", "note", "Empty."));
+    }
+    s.body.appendChild(block);
+  }
+
+  if (incomplete) {
+    s.body.appendChild(el("p", "note",
+      "Bytes remain after the last whole frame — the capture was cut short by the body cap, or the socket was still open."));
+  }
+  return s.wrap;
+}
+
+function renderEvents(stream) {
+  const events = stream.events || [];
+  const s = section("EVENTS", events.length === 1 ? "1 event" : events.length + " events");
+
+  if (!events.length) {
+    s.body.appendChild(el("p", "note", "No events."));
+    return s.wrap;
+  }
+
+  for (const e of events) {
+    const block = el("div", "msg");
+    const head = el("div", "msg__head");
+    head.appendChild(el("span", "label", (e.name || "message").toUpperCase()));
+    if (e.id) head.appendChild(el("span", "note", "id " + e.id));
+    if (e.retry) head.appendChild(el("span", "note", "retry " + e.retry + "ms"));
+    block.appendChild(head);
+    if (e.data) block.appendChild(el("pre", "payload", pretty(e.data)));
+    s.body.appendChild(block);
+  }
+
+  if (stream.incomplete) {
+    s.body.appendChild(el("p", "note",
+      "The last event has no terminator — the capture was cut short by the body cap, or the stream was still open."));
+  }
+  return s.wrap;
 }
 
 function renderMessages(title, messages, incomplete) {
