@@ -98,11 +98,27 @@ answers leave the machine and land in whatever model an agent is driving.
 turn that off. The web interface still shows everything, because there the
 reader is the owner.
 
-**Redaction matches on the name, never on the value.** Sniffing values sounds
-cleverer and fails both ways: it misses an opaque session id and mangles a
-legitimate field that happens to look like base64. So the question it can answer
-is always "is this field called something credential-like", and everything below
-follows from that.
+**Every rule is chosen by position in Sonda's own answer, not by what a field is
+called inside a payload.** An answer has two kinds of field in it. Some are
+Sonda's own — the path, the one-line Postgres summary, a trace node's detail,
+the tree drawn as text, the `sql` and `params` of a decoded statement — and
+Sonda knows what each of those *is*, so each gets a rule written for exactly
+that field and reachable from nowhere else. The rest is captured content:
+request and response bodies, frame payloads, decoded messages. Sonda knows
+nothing about their shape, so there the only tool is name matching, and nothing
+else runs there. A SQL scanner never sees prose, and a body that happens to hold
+a field called `detail`, `sql` or `postgres` is left exactly as it was recorded.
+
+Which endpoint produced an answer is what fixes those positions, and the tools
+call the API by path, so the position is known before the bytes are parsed. An
+endpoint with no schema written for it is treated as captured content from top
+to bottom, which is the direction that cannot leak a rule into the wrong place.
+
+**Inside captured content, redaction matches on the name, never on the value.**
+Sniffing values sounds cleverer and fails both ways: it misses an opaque session
+id and mangles a legitimate field that happens to look like base64. So the
+question it can answer there is always "is this field called something
+credential-like".
 
 **Redaction runs over the whole payload before anything is shortened.** Bodies
 come back cut at two thousand characters unless `detail` is asked for, and for a
@@ -144,19 +160,30 @@ What it reaches:
   the email of a login lookup, which the web interface still shows.
 - **The one-line Postgres summary**, which is the field a listing carries and
   therefore the one that reaches an agent on its first tool call, before it has
-  asked for detail. It is a plain string, so nothing about it says "this is
-  SQL": it is gated separately. A statement summary has its literals blanked; an
-  error summary keeps its SQLSTATE and loses the server's message, because
-  Postgres echoes the offending value there (`invalid input syntax for type
-  uuid: "hunter2"`) in forms with no structure worth mining. The same line
-  reaches an agent in two more places and is gated in both: the `detail` of a
-  trace node, and the tree `trace_call` also returns drawn as text, where every
-  node's detail is repeated. Those two are recognised by where they sit and not
-  by the field name — `detail` is the standard error field of RFC 7807 and of
-  half the HTTP frameworks in use, and gating it by name put every ordinary
-  error body through a SQL scanner.
+  asked for detail. A statement summary has its literals blanked; an error
+  summary keeps its SQLSTATE and loses the server's message, because Postgres
+  echoes the offending value there (`invalid input syntax for type uuid:
+  "hunter2"`) in forms with no structure worth mining. This runs at the two
+  positions the line actually occupies — `postgres_summary` in a listing or in a
+  capture, and the `detail` of a trace node that says it is a Postgres one — and
+  is unreachable anywhere else.
+- **The same line inside the drawn tree.** `trace_call` returns the tree twice,
+  as structure and as a block of text, and every node's detail is repeated in
+  the drawing. The drawing is not scanned for it: each node reports what its own
+  line became and those exact strings are substituted in, so the substitution
+  reaches every node at every depth. Scanning it is what left the previous
+  version leaking — the scanner recognised a summary by counting the words
+  before the first colon, and the branch character `├─` counts as a word, so it
+  fired on the root and on the last child and nowhere in between.
 - **The `message`, `detail` and `hint` of a Postgres error**, for the same
   reason, when the statement or the text itself names a credential.
+- **Both sides of a changed credential in a diff.** `diff_calls` addresses a
+  changed field by a path — `{"path":"user.password","a":…,"b":…}` — so there
+  the field's *name* is a value and the keys around it are `path`, `a` and `b`.
+  Name matching reads keys, so it went straight past this, and `diff_calls` is
+  the tool an agent reaches for when a login worked once and then did not. When
+  any segment of that path names a credential, both sides are blanked; the path
+  itself stays, because knowing *which* field changed is the answer.
 - **The verbatim copy of a decoded capture.** A Postgres session, a WebSocket,
   an event stream and a gRPC call each carry the same bytes twice — decoded
   under their own view, and verbatim as what crossed. In the second copy the
@@ -164,26 +191,38 @@ What it reaches:
   legible and everything above counts for nothing, and none of them can be
   blanked selectively: each is a length followed by a run of bytes at an
   arbitrary offset, with no quoting to scan for. So over MCP the verbatim copy
-  is replaced wherever the decoded view beside it genuinely replaces it — both
-  directions of a Postgres session and of a socket, the response of an event
-  stream, and each side of a gRPC call whose messages all came back decoded.
-  Three cases keep their bytes because nothing else holds them: the *request*
-  of an event stream, which nothing decodes; a gRPC side carrying a compressed
-  frame, since the encoding is negotiated in a header Sonda does not hold; and
-  a body that yielded no gRPC messages at all. The sizes always stay, and the
+  is replaced wherever the decoded view beside it genuinely replaces it, side by
+  side: `sent` stands in for the request, `received` for the response, the
+  events for the response of a stream. **A view that decoded nothing replaces
+  nothing and the bytes stay.** A 502 HTML page served under
+  `text/event-stream` is an event stream by its content type and holds no
+  events; dropping the body there left a reader with no error page and no
+  bytes, which is worse than either. The same holds for the *request* of an
+  event stream, which nothing decodes at all, for a gRPC side carrying a
+  compressed frame — the encoding is negotiated in a header Sonda does not hold
+  — and for any body that yielded no messages. The sizes always stay, and the
   web interface still shows the stream.
-
-Redaction is scoped to where the protocol actually is. The Postgres pass reads
-neighbouring messages, and it only does so inside a capture's `postgres` view
-and only across objects that carry a pgwire message `kind`. A captured body that
-happens to hold `sql`, `columns`, `values` or `params` keys is left exactly as
-it was recorded: for a body, the stored bytes are the record, and that is the
-one surface where the reader cannot check them against the web interface.
 
 What it does **not** reach, and will not:
 
 - **A secret under a name that says nothing.** `{"value": "sk_live_…"}`,
   `{"data": "…"}`, a column called `col3`. There is no name to match.
+- **A service's own error message.** The `error` and `grpc_message` of a
+  summary, and a trace node's detail when it is one of those rather than a
+  Postgres summary, are returned as the service wrote them. They are prose, and
+  the alternatives are both worse: reading prose as SQL truncates it at the
+  first apostrophe, and blanking any line that happens to name a credential
+  loses `Internal: couldn't refresh the session cookie` — the message, in the
+  tool that exists to show failures. If your services put tokens in their error
+  strings, those tokens come out.
+- **Anything at a position no schema was written for.** Bodies are captured
+  content wherever they turn up, so name matching always runs; what does not run
+  at an unrecognised endpoint is a rule that depends on knowing the field. The
+  answers of `list_services`, `schema_status`, `diagnose_silence`,
+  `contract_drift`, `trust_certificate` and `replay_call` carry no captured
+  payload, which is why they need none. A tool added later against a new
+  endpoint gets the name matching and nothing more, and the rule for its own
+  fields has to be written with it.
 - **A Postgres statement that names no credential.** `INSERT INTO t VALUES
   ('sk_live_…')` keeps its literal, and the bind parameters of an ordinary
   statement are returned in the clear — deliberately, because the values are

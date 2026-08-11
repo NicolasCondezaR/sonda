@@ -179,7 +179,10 @@ func (s *Server) get(ctx context.Context, path string, detail bool) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	return cleanJSON(payload, detail)
+	// The path travels into redaction: which fields of an answer are Sonda's own
+	// is a property of the endpoint that produced it, and this is where both are
+	// in the same place.
+	return cleanAnswer(path, payload, detail)
 }
 
 func (s *Server) post(ctx context.Context, path string, body []byte) (any, error) {
@@ -187,7 +190,7 @@ func (s *Server) post(ctx context.Context, path string, body []byte) (any, error
 	if err != nil {
 		return nil, err
 	}
-	return cleanJSON(payload, false)
+	return cleanAnswer(path, payload, false)
 }
 
 // apiError pulls the message out of Sonda's error shape so the model reads

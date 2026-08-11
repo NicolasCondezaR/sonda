@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
+
+	"github.com/NicolasCondezaR/sonda/internal/trace"
 )
 
 // Sonda stores whatever crossed the wire, which in a real system means bearer
@@ -103,6 +106,134 @@ func isSensitiveParam(key string) bool {
 // actually needs the whole thing.
 const maxString = 2000
 
+// Redaction is decided by *position* in Sonda's own answer, never by
+// pattern-matching a key name or a string shape inside arbitrary content.
+//
+// The distinction is the whole design. A field Sonda builds — the path, a
+// Postgres summary line, a trace node's detail, the drawn tree — is something
+// Sonda already knows the meaning of, so it gets a rule written for exactly
+// that field and nothing else reaches it. Anything that came off the wire —
+// a body, a frame payload, a decoded message — is somebody else's data of
+// unknown shape, and there the key-based walk below is the right and only tool.
+//
+// Four rounds of fixes went the other way, inferring meaning from key names and
+// string shapes over captured traffic, and each round broke a payload the
+// previous one had not thought of: a `columns` key in a non-Postgres body, a
+// `detail` field read as SQL, a tree line miscounted because a branch character
+// is a word. Every one of those was the same mistake, so what changed is not
+// the rules but how a rule is chosen.
+
+// at is one position in Sonda's own answer: what to do here, and where the
+// children are. A key with no entry is captured content — the walk falls
+// through to redactCaptured and nothing positional can fire on it, which is
+// what makes a third-party body carrying `postgres` or `detail` untouchable.
+type at struct {
+	// rule replaces everything else at this position.
+	rule func(any) any
+
+	// field and item are the children of a map and of a list.
+	field map[string]*at
+	item  *at
+
+	// after runs once this map is finished, for a rule that needs siblings. It
+	// gets the original alongside the redacted copy, because a rule that has to
+	// find text elsewhere in the answer needs to know what to look for.
+	after func(before, after map[string]any)
+}
+
+// positionFor maps the API endpoint that produced a payload to the root of
+// Sonda's schema for it. This is the only place position comes from: the tools
+// call the API by path, so the path is known before the bytes are.
+//
+// An endpoint with no entry is treated as captured content from top to bottom,
+// which is the safe direction — the key walk still runs, and no positional rule
+// can fire somewhere it was not meant to.
+func positionFor(endpoint string) *at {
+	path, _, _ := strings.Cut(endpoint, "?")
+	switch {
+	case path == "/api/calls":
+		return &at{field: map[string]*at{"calls": {item: summaryPosition()}}}
+	case strings.HasPrefix(path, "/api/calls/") && strings.HasSuffix(path, "/replay"):
+		// The replay report carries none of the capture, only where it was sent
+		// and how it went.
+		return nil
+	case strings.HasPrefix(path, "/api/calls/"):
+		return callPosition()
+	case path == "/api/trace":
+		return &at{rule: cleanTrace}
+	case path == "/api/diff":
+		return diffPosition()
+	default:
+		return nil
+	}
+}
+
+// summaryPosition is one row of a listing. Everything in it is a scalar Sonda
+// wrote except the one-line Postgres summary, which is a statement.
+func summaryPosition() *at {
+	return &at{field: map[string]*at{"postgres_summary": {rule: ruleSummary}}}
+}
+
+// callPosition is one capture in full: a summary, both raw messages, and
+// whichever decoded views the protocol produced.
+func callPosition() *at {
+	p := summaryPosition()
+	p.field["postgres"] = &at{rule: rulePostgresView}
+	p.after = dropRawStreams
+	return p
+}
+
+// diffPosition is a structural comparison of two captures. Its changes are the
+// one place where a field's *name* travels as a value.
+func diffPosition() *at {
+	change := &at{after: blankSensitiveChange}
+	side := &at{field: map[string]*at{
+		"changes": {item: change},
+		// A gRPC diff reports per message rather than once for the body.
+		"messages": {item: &at{field: map[string]*at{"changes": {item: change}}}},
+	}}
+	return &at{field: map[string]*at{
+		"metadata": {item: change},
+		"request":  side,
+		"response": side,
+	}}
+}
+
+// blankSensitiveChange blanks the two sides of a changed field whose name is a
+// credential.
+//
+// calldiff addresses a field by a path — `{"path":"user.password","kind":
+// "changed","a":"hunter2","b":"hunter3"}` — so here the name is a value and the
+// keys are `path`, `a` and `b`. A walk that reads keys goes straight past it,
+// and diff_calls is exactly the tool an agent reaches for when a login worked
+// once and then did not.
+func blankSensitiveChange(_, out map[string]any) {
+	path, ok := out["path"].(string)
+	if !ok || !namesSensitiveField(path) {
+		return
+	}
+	for _, side := range []string{"a", "b"} {
+		if value, has := out[side]; has {
+			out[side] = redactedLike(value)
+		}
+	}
+}
+
+// namesSensitiveField reports whether any segment of a calldiff path is a
+// credential — any, not just the last, because a change under
+// `credentials.value` is one too and over-redacting a field is the cheaper
+// mistake.
+func namesSensitiveField(path string) bool {
+	for _, segment := range strings.FieldsFunc(path, func(r rune) bool {
+		return r == '.' || r == '[' || r == ']'
+	}) {
+		if isSensitive(segment) {
+			return true
+		}
+	}
+	return false
+}
+
 // clean returns a payload with credentials removed and, unless detail was
 // asked for, long strings shortened.
 //
@@ -113,18 +244,59 @@ const maxString = 2000
 // back with its first literal in the clear at detail:false and fully blanked at
 // detail:true. Redaction now sees whatever crossed the wire, whole, whatever is
 // later dropped for display.
-func clean(v any, detail bool) any {
-	out := redact(v)
+func clean(v any, p *at, detail bool) any {
+	out := walk(v, p)
 	if detail {
 		return out
 	}
 	return shorten(out)
 }
 
-// redact walks a decoded payload and removes credentials. It allocates new
-// maps and slices rather than editing in place, which is what lets shorten
-// afterwards edit in place.
-func redact(v any) any {
+// walk descends Sonda's schema and hands everything outside it to the key-based
+// walk. It allocates new maps and slices rather than editing in place, which is
+// what lets shorten afterwards edit in place.
+func walk(v any, p *at) any {
+	if p == nil {
+		return redactCaptured(v)
+	}
+	if p.rule != nil {
+		return p.rule(v)
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			// A credential-shaped name wins over the schema. No position below
+			// carries one, and if one ever does, blanking it is the answer.
+			if isSensitive(k) {
+				out[k] = redactedLike(val)
+				continue
+			}
+			out[k] = walk(val, p.field[k])
+		}
+		if p.after != nil {
+			p.after(t, out)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = walk(val, p.item)
+		}
+		return out
+	default:
+		return redactCaptured(v)
+	}
+}
+
+// redactCaptured walks content Sonda knows nothing about and removes what is
+// named like a credential. Matching on the key is all there is to go on here,
+// and that is deliberate: value-sniffing misses an opaque session id and
+// mangles a legitimate field that happens to look like base64.
+//
+// Nothing in here reads a string as SQL or looks at the shape of a key's
+// neighbours. Those questions have answers only where Sonda built the field.
+func redactCaptured(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(t))
@@ -133,29 +305,14 @@ func redact(v any) any {
 				out[k] = redactedLike(val)
 				continue
 			}
-			// `postgres_summary` is Sonda's own key and means one thing
-			// wherever it appears. Its twin on a trace node is called `detail`,
-			// which is nobody's private name, so that one is gated below by
-			// where it sits rather than by what it is called.
-			if text, ok := val.(string); ok && strings.EqualFold(k, "postgres_summary") {
-				val = redactSummary(text)
-			}
-			out[k] = redact(val)
+			out[k] = redactCaptured(val)
 		}
-		// Everything above matches on keys. A Postgres capture puts the
-		// sensitive name and the sensitive value in different messages, so it
-		// needs the one thing a per-key walk cannot do: look at the neighbours.
-		if view, ok := out["postgres"]; ok {
-			redactPostgres(view)
-		}
-		redactTrace(out)
-		dropRawStreams(out)
 		return out
 
 	case []any:
 		out := make([]any, len(t))
 		for i, val := range t {
-			out[i] = redact(val)
+			out[i] = redactCaptured(val)
 		}
 		return out
 
@@ -169,7 +326,7 @@ func redact(v any) any {
 		// Found by sending a real request through Sonda and reading it back:
 		// the headers were clean and the password in the body was not.
 		if inner, ok := insideJSON(t); ok {
-			if out, err := json.Marshal(redact(inner)); err == nil {
+			if out, err := json.Marshal(redactCaptured(inner)); err == nil {
 				return string(out)
 			}
 		}
@@ -178,6 +335,23 @@ func redact(v any) any {
 	default:
 		return v
 	}
+}
+
+// ruleSummary gates the one-line Postgres reading of a capture. It fires only
+// where pgwire.Summarise wrote it, so it is never handed prose.
+func ruleSummary(v any) any {
+	if line, ok := v.(string); ok {
+		return redactSummary(line)
+	}
+	return redactCaptured(v)
+}
+
+// rulePostgresView runs the ordinary key walk over a decoded Postgres session
+// and then the cross-message correlation that only makes sense here.
+func rulePostgresView(v any) any {
+	out := redactCaptured(v)
+	redactPostgres(out)
+	return out
 }
 
 // shorten cuts long strings down for display. It runs after redaction and only
@@ -350,63 +524,108 @@ func redactPairs(b *strings.Builder, query string) bool {
 	return changed
 }
 
-// redactTrace gates the one-line reading a trace carries, in the two places it
-// appears: the `detail` of each node, and the pre-rendered tree beside them.
+// cleanTrace redacts the answer of /api/trace, which carries the same readings
+// twice: once as structure, and once drawn as a block of text.
 //
-// `detail` used to be gated by its name alone, anywhere in any payload, and
-// that was worse than the leak it closed. `{"detail": …}` is FastAPI's error
-// shape and RFC 7807's, so the most common failure body there is went through a
-// SQL scanner: an apostrophe in ordinary prose opens a literal that never
-// closes, and `the user's password was rejected` came back cut at the
-// apostrophe — in the tool that exists to show failures. So the gate now
-// follows the structure instead of the name.
-//
-// A trace node's detail is a Postgres summary in one of its four cases and
-// prose in the others — a transport error, a gRPC status and message, a
-// GraphQL count. All four go through the same gate, which over-redacts a
-// message that happens to name a credential. Within a field that is Sonda's own
-// one-line reading of a failure that is the direction to err in; the web
-// interface still shows it whole.
-func redactTrace(out map[string]any) {
-	if isTraceCall(out) {
-		if line, ok := out["detail"].(string); ok {
-			out["detail"] = redactSummary(line)
-		}
+// The drawing is not scanned. Scanning it is what left the third node of a tree
+// leaking — a rule that recognised a summary by counting words saw the branch
+// character `├─` as one of them, so it fired on the root and on the last child
+// and nowhere else. Instead each node reports what its own line became, and
+// those exact strings are substituted into the drawing. There is nothing left
+// to recognise, so there is nothing left to recognise wrongly.
+func cleanTrace(v any) any {
+	in, ok := v.(map[string]any)
+	if !ok {
+		return redactCaptured(v)
 	}
-	// The tree also travels drawn, as one block of text, and every node's
-	// detail is repeated in it verbatim. Redacting the nodes and leaving the
-	// drawing is the same mistake as redacting a Postgres capture and leaving
-	// the bytes beside it.
-	if _, ok := out["trace"]; ok {
-		if drawn, ok := out["rendered"].(string); ok {
-			lines := strings.Split(drawn, "\n")
-			for i, line := range lines {
-				lines[i] = redactSummary(line)
-			}
-			out["rendered"] = strings.Join(lines, "\n")
-		}
+
+	var edits []edit
+	root := &at{field: map[string]*at{
+		"trace": tracePosition(&edits),
+		// Left exactly as it arrived by the walk, and rewritten below from the
+		// nodes. Passing it through the ordinary string handling first would
+		// change the text the substitutions have to match.
+		"rendered": {rule: func(v any) any { return v }},
+	}}
+	out, _ := walk(in, root).(map[string]any)
+	if out == nil {
+		return redactCaptured(v)
 	}
+	if drawn, ok := in["rendered"].(string); ok {
+		out["rendered"] = applyEdits(drawn, edits)
+	}
+	return out
 }
 
-// isTraceCall reports whether a map is one call of a trace tree, by the fields
-// trace.Call always emits. Matching the neighbours rather than the `detail`
-// itself is the whole point: the same key on an ordinary payload means nothing
-// and must not be touched.
-func isTraceCall(m map[string]any) bool {
-	for _, key := range []string{"id", "target", "status", "started_at", "duration_ms", "failed"} {
-		if _, ok := m[key]; !ok {
-			return false
-		}
+// tracePosition is the tree itself. Every node is the same position, at every
+// depth, which is the property the old line scanner did not have.
+func tracePosition(edits *[]edit) *at {
+	node := &at{}
+	node.field = map[string]*at{
+		"call": {after: func(before, after map[string]any) {
+			*edits = append(*edits, redactNode(before, after)...)
+		}},
+		"children": {item: node},
 	}
-	return true
+	return &at{field: map[string]*at{"root": node}}
 }
 
-// redactSummary gates that one-line reading. It is the field that reaches an
-// agent from recent_failures and search_calls before it has asked for
-// anything, and it is a plain string — the walk over keys sees a value under
-// "postgres_summary" and nothing that says the value is SQL. So
-// `INSERT INTO users (email, password) VALUES ('a@b.c','hunter2')` arrived
-// complete, on the first tool call, with no detail flag.
+// redactNode gates the one line a trace node carries, and reports what changed
+// so the drawing can be kept in step.
+//
+// `detail` is a Postgres summary in one of the four cases toTraceCall produces
+// and prose in the other three, and the node says which. Gating it by its name
+// instead is what sent every `{"detail": …}` — FastAPI's error shape, and RFC
+// 7807's — through a SQL scanner, where an apostrophe opens a literal that
+// never closes and `the user's password was rejected` came back cut in half.
+// Prose is now left alone, including a gRPC message that happens to say the
+// word "cookie".
+func redactNode(before, after map[string]any) []edit {
+	var out []edit
+	// The path is a captured request URI and the walk has already blanked its
+	// sensitive parameters; the drawing holds the same URI and would keep them.
+	out = append(out, changed(before, after, "path")...)
+
+	if before["detail_kind"] == trace.DetailPostgres {
+		if line, ok := after["detail"].(string); ok {
+			after["detail"] = redactSummary(line)
+		}
+	}
+	return append(out, changed(before, after, "detail")...)
+}
+
+// edit is one exact substitution to make in the drawn tree.
+type edit struct{ from, to string }
+
+func changed(before, after map[string]any, key string) []edit {
+	was, ok := before[key].(string)
+	now, alsoOK := after[key].(string)
+	if !ok || !alsoOK || was == "" || was == now {
+		return nil
+	}
+	return []edit{{from: was, to: now}}
+}
+
+// applyEdits substitutes the redacted lines back into the drawing, longest
+// first so that a short line cannot corrupt a longer one that contains it.
+func applyEdits(drawn string, edits []edit) string {
+	sort.Slice(edits, func(i, j int) bool { return len(edits[i].from) > len(edits[j].from) })
+	for _, e := range edits {
+		drawn = strings.ReplaceAll(drawn, e.from, e.to)
+	}
+	return drawn
+}
+
+// redactSummary gates the one-line reading of a Postgres capture. It is the
+// field that reaches an agent from recent_failures and search_calls before it
+// has asked for anything, so `INSERT INTO users (email, password) VALUES
+// ('a@b.c','hunter2')` arrived complete, on the first tool call, with no detail
+// flag.
+//
+// It is only ever handed a string pgwire.Summarise wrote — the
+// `postgres_summary` of a listing, or the detail of a trace node that said it
+// was a Postgres one. That guarantee is what the shapes below rest on, and it
+// is a property of where this is called from, not of anything it can check.
 //
 // pgwire.Summarise produces one of two shapes and they need opposite
 // treatment. A statement leaks through its literals, and its double-quoted runs
@@ -430,6 +649,11 @@ func redactSummary(s string) string {
 // optionally followed by the SQLSTATE. Reading another package's format is
 // coupling, and it is pinned by a test that builds the summary through
 // pgwire.Summarise itself, so a change there fails loudly rather than leaking.
+//
+// The word count is only sound because the input is a summary and nothing else.
+// It used to be run over the lines of a drawn tree as well, where `├─` counts as
+// a word and every node but the root and the last child failed the test — and
+// the branch that was supposed to blank a message never ran.
 func isErrorHead(head string) bool {
 	fields := strings.Fields(head)
 	return len(fields) > 0 && len(fields) <= 2 && fields[0] == "error"
@@ -445,15 +669,14 @@ func isErrorHead(head string) bool {
 // in a per-key walk ever sees the two together. Same for a Bind: its parameters
 // are positions, and the statement that gives them meaning was a Parse earlier.
 //
-// It takes the `postgres` view rather than any list it is handed. The earlier
-// version ran on every `[]any` and rewrote whatever happened to carry the same
-// key names: a captured body holding `{"params":[{"text":"totally
-// unrelated"}]}` had that text blanked because a different object earlier in
-// the same array carried an `sql` naming a credential. Rewriting a payload
-// nobody can check against the web interface breaks the property the whole tool
-// rests on — the stored bytes are the record — so the correlation now happens
-// only where the protocol actually is, and only across messages that carry a
-// pgwire `kind`.
+// It runs at one position — the `postgres` view of one capture — and is
+// unreachable from anywhere else. An earlier version ran on every `[]any` and
+// rewrote whatever happened to carry the same key names: a captured body
+// holding `{"params":[{"text":"totally unrelated"}]}` had that text blanked
+// because a different object earlier in the same array carried an `sql` naming
+// a credential. Rewriting a payload nobody can check against the web interface
+// breaks the property the whole tool rests on — for a body, the stored bytes
+// are the record.
 func redactPostgres(v any) {
 	view, ok := v.(map[string]any)
 	if !ok {
@@ -545,6 +768,19 @@ func redactPostgres(v any) {
 	}
 }
 
+// decodedViews pairs each decoded view of a capture with the raw copy it
+// stands in for. Read as: the events of `stream` are the response, so the
+// response's verbatim bytes are the second copy of them.
+var decodedViews = []struct{ view, messages, side string }{
+	{"postgres", "sent", "request"},
+	{"postgres", "received", "response"},
+	{"socket", "sent", "request"},
+	{"socket", "received", "response"},
+	{"stream", "events", "response"},
+	{"grpc", "request", "request"},
+	{"grpc", "response", "response"},
+}
+
 // dropRawStreams removes the second copy of a capture.
 //
 // Four protocols are served twice: decoded and redacted under their own view,
@@ -556,81 +792,69 @@ func redactPostgres(v any) {
 // length followed by a run of bytes at an arbitrary offset, with no quoting to
 // scan for.
 //
-// What dropping the copy costs a reader differs per protocol, so it only goes
-// where the decoded view beside it genuinely replaces it. The sizes always
-// stay, and the web interface still shows the stream — because there the reader
-// is the owner.
-func dropRawStreams(out map[string]any) {
-	if _, ok := out["postgres"]; ok {
-		// Both directions: pgwire decodes every message of both.
-		dropRawStream(out, "request", "response")
-	}
-	if _, ok := out["socket"]; ok {
-		// Both directions: the frame view carries each frame's payload, kind,
-		// size, final bit and close code. What goes is the framing header and
-		// the client's mask, which are transport bookkeeping rather than
-		// anything a capture was opened for.
-		dropRawStream(out, "request", "response")
-	}
-	if _, ok := out["stream"]; ok {
-		// An event stream is decoded on the response side only — its request is
-		// an ordinary HTTP body, with no second copy anywhere — so the request
-		// stays or the reader loses it outright.
-		dropRawStream(out, "response")
-	}
-	if view, ok := out["grpc"].(map[string]any); ok {
-		dropRawStream(out, decodedGRPCSides(view)...)
-	}
-}
-
-// dropRawStream replaces the verbatim bytes of the named sides.
-func dropRawStream(out map[string]any, sides ...string) {
-	for _, side := range sides {
-		part, ok := out[side].(map[string]any)
+// So the raw copy goes only where the decoded view beside it genuinely replaces
+// it, side by side, and a view that decoded nothing replaces nothing. A 502
+// HTML page served as `text/event-stream` is still an event stream by its
+// content type, and its decoded view is empty: dropping the body there left a
+// reader with no error page and no bytes, which is worse than either. The same
+// holds for a socket whose bytes never framed and for a gRPC side whose frames
+// were compressed.
+//
+// This runs at one position — a whole capture — and nowhere else, so a body
+// that happens to carry a `stream` or `socket` key is not a capture and is left
+// alone. The sizes always stay, and the web interface still shows the stream,
+// because there the reader is the owner.
+func dropRawStreams(_, out map[string]any) {
+	for _, v := range decodedViews {
+		view, ok := out[v.view].(map[string]any)
 		if !ok {
 			continue
 		}
-		for _, field := range []string{"text", "base64"} {
-			if _, has := part[field]; has {
-				part[field] = redacted
-			}
+		messages, _ := view[v.messages].([]any)
+		if len(messages) == 0 || !allDecoded(v.view, messages) {
+			continue
 		}
+		dropRawStream(out, v.side)
 	}
 }
 
-// decodedGRPCSides names the sides whose messages all came back decoded, as
-// JSON when a schema was resolved and as numbered fields when none was.
+// allDecoded reports whether every message of a side came back readable.
 //
-// It has to be conditional, and per side, because gRPC is the one protocol here
-// whose decoding can come up empty. A compressed frame is not decoded — the
-// encoding is negotiated in a header Sonda does not hold — and a body that is
-// not gRPC framing at all yields no messages. On those sides the verbatim bytes
-// are the only record there is, and dropping them would leave a reader with
-// nothing rather than with less.
-func decodedGRPCSides(view map[string]any) []string {
-	var sides []string
-	for _, side := range []string{"request", "response"} {
-		messages, ok := view[side].([]any)
-		if !ok || len(messages) == 0 {
-			continue
-		}
-		decoded := true
-		for _, m := range messages {
-			message, _ := m.(map[string]any)
-			if message["json"] == nil && message["fields"] == nil {
-				decoded = false
-			}
-		}
-		if decoded {
-			sides = append(sides, side)
+// Only gRPC can fail this. A compressed frame is not decoded — the encoding is
+// negotiated in a header Sonda does not hold — and the verbatim bytes are then
+// the only record there is. Postgres messages, WebSocket frames and events are
+// decoded or they are not in the list at all, so a non-empty list is proof
+// enough for those.
+func allDecoded(view string, messages []any) bool {
+	if view != "grpc" {
+		return true
+	}
+	for _, m := range messages {
+		message, _ := m.(map[string]any)
+		if message["json"] == nil && message["fields"] == nil {
+			return false
 		}
 	}
-	return sides
+	return true
+}
+
+// dropRawStream replaces the verbatim bytes of one side.
+func dropRawStream(out map[string]any, side string) {
+	part, ok := out[side].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, field := range []string{"text", "base64"} {
+		if _, has := part[field]; has {
+			part[field] = redacted
+		}
+	}
 }
 
 // pgMessage accepts an object only if it carries the `kind` every pgwire
-// message has. It is what keeps the correlation above from touching an
-// ordinary payload that happens to hold a `values` or a `params` key.
+// message has. Position already guarantees these are pgwire messages; this
+// keeps the correlation from acting on a truncated or garbled one, where the
+// alignment it depends on would be meaningless.
 func pgMessage(v any) (map[string]any, bool) {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -782,9 +1006,11 @@ func dollarQuoted(sql string, start int) (tag string, end int, ok bool) {
 	return tag, i + 1 + closing + len(tag), true
 }
 
-// cleanJSON is the single door every payload leaves through. Tools call this
-// rather than redacting for themselves, so a tool added later cannot forget.
-func cleanJSON(payload []byte, detail bool) (any, error) {
+// cleanAnswer is the single door every payload leaves through. Tools reach it
+// through get and post rather than redacting for themselves, so a tool added
+// later cannot forget — and because those two know which endpoint they called,
+// the answer's position is known before its bytes are parsed.
+func cleanAnswer(endpoint string, payload []byte, detail bool) (any, error) {
 	if len(payload) == 0 {
 		return map[string]any{}, nil
 	}
@@ -792,5 +1018,16 @@ func cleanJSON(payload []byte, detail bool) (any, error) {
 	if err := json.Unmarshal(payload, &v); err != nil {
 		return nil, fmt.Errorf("Sonda answered something that is not JSON: %w", err)
 	}
-	return clean(v, detail), nil
+	return clean(v, positionFor(endpoint), detail), nil
+}
+
+// cleanJSON redacts a listing of captures.
+//
+// It exists because wait_for_call polls /api/calls itself instead of going
+// through get — it has to read the payload to decide whether to keep waiting —
+// so it is the one caller that holds bytes without an endpoint beside them.
+// Anything else belongs in cleanAnswer, where the endpoint says what the
+// payload is.
+func cleanJSON(payload []byte, detail bool) (any, error) {
+	return cleanAnswer("/api/calls", payload, detail)
 }
