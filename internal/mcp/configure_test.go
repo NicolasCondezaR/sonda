@@ -167,7 +167,8 @@ func TestConnectThenDisconnectNamesTheVariableThatWasReallyThere(t *testing.T) {
 		]}`,
 		"POST /api/projects": `{"id":3,"name":"core-delpagroup"}`,
 		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":true,"services":[
-		  {"id":7,"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc"}
+		  {"id":7,"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052",
+		   "protocol":"grpc","env_key":"MS_AUTH_ADDR"}
 		]}]}`,
 		"POST /api/projects/deactivate": `{"projects":[]}`,
 	}}
@@ -176,6 +177,11 @@ func TestConnectThenDisconnectNamesTheVariableThatWasReallyThere(t *testing.T) {
 	if text, isError := callTool(t, s, "connect_project",
 		`{"name":"core-delpagroup","files":[{"filename":".env","content":"MS_AUTH_ADDR=localhost:50052"}]}`); isError {
 		t.Fatalf("connect_project failed: %s", text)
+	}
+	// The name has to reach the service that is being created: it is the only
+	// moment it is known, and anywhere else it would have to be guessed back.
+	if key, _ := saved(t, api)["env_key"].(string); key != "MS_AUTH_ADDR" {
+		t.Errorf("the service was saved with env_key %q, want the variable discovery read", key)
 	}
 
 	text, isError := callTool(t, s, "disconnect_project", `{}`)

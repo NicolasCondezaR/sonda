@@ -2018,6 +2018,11 @@ async function addFound(project, entries) {
       last = await call("POST", `api/projects/${project.id}/services`, {
         name: f.name, listen: f.listen, upstream: f.upstream,
         protocol: f.protocol, reflection: false,
+        // The variable the address was read from, passed on rather than shown:
+        // it is the evidence that lets the pointing be undone later, and a file
+        // imported here is disconnected by an agent just as often as one
+        // connected by an agent. A compose file has none, and sends none.
+        env_key: f.key || "",
       });
     }
     admin.found = null;

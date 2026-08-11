@@ -255,8 +255,13 @@ func connectProject(ctx context.Context, s *Server, a args) (any, error) {
 
 	for _, key := range order {
 		f := found[key]
+		// This is the only moment the real variable name is ever known, so it is
+		// saved with the service. Empty for anything read out of a compose file,
+		// which had no variable to begin with, and stored empty on purpose: the
+		// gap is what disconnect_project reports instead of a derived name.
 		service, err := json.Marshal(map[string]any{
 			"name": f.Name, "listen": f.Listen, "upstream": f.Upstream, "protocol": f.Protocol,
+			"env_key": f.Key,
 		})
 		if err != nil {
 			return nil, err
@@ -278,10 +283,6 @@ func connectProject(ctx context.Context, s *Server, a args) (any, error) {
 		}
 		if f.Key != "" {
 			changes[f.Key] = map[string]string{"from": f.Original, "to": f.Listen}
-			// The only moment the real variable name is ever known. Undoing this
-			// later has nothing else to go on, and a derived name would undo a
-			// variable the project never had.
-			s.rememberPointed(name, f.Name, f.Key)
 		}
 	}
 
@@ -410,7 +411,7 @@ func disconnectProject(ctx context.Context, s *Server, a args) (any, error) {
 		return nil, err
 	}
 
-	changes, byHand := s.reversePatch(before)
+	changes, byHand := reversePatch(before)
 	next := "Put the changes above back into the configuration file and restart, so the callers talk to the real services again. Nothing was deleted: activate_project brings the project back exactly as it was."
 	if len(byHand) > 0 {
 		next += " The services under restore_by_hand are not in the patch because Sonda does not know which variable named them; each one says the address to search for and the address to put back."
@@ -431,14 +432,18 @@ func disconnectProject(ctx context.Context, s *Server, a args) (any, error) {
 // it cannot rebuild.
 //
 // A variable is only named when connect_project read that exact name out of the
-// file. Deriving one from the service and its protocol looks like it works and
-// is wrong for every project that writes MS_AUTH_ADDR, MS_AUTH_HOST or
-// MS_AUTH_HTTP_URL — all of which discovery accepts: the patch would set a
-// variable nothing reads and leave the real one aimed at a port that just
-// closed. That is the exact failure this tool exists to prevent, so a service
-// whose variable is unknown is reported as the agent's to restore, with
-// everything Sonda does know about it.
-func (s *Server) reversePatch(projects any) (map[string]any, []map[string]string) {
+// file and saved it with the service. Deriving one from the service and its
+// protocol looks like it works and is wrong for every project that writes
+// MS_AUTH_ADDR, MS_AUTH_HOST or MS_AUTH_HTTP_URL — all of which discovery
+// accepts: the patch would set a variable nothing reads and leave the real one
+// aimed at a port that just closed. That is the exact failure this tool exists
+// to prevent, so a service whose variable is unknown is reported as the agent's
+// to restore, with everything Sonda does know about it.
+//
+// The name comes back from the API with the service rather than from anything
+// held here, so connecting in the morning and disconnecting in the evening is
+// one workflow whether or not Sonda was restarted in between.
+func reversePatch(projects any) (map[string]any, []map[string]string) {
 	changes := map[string]any{}
 	byHand := []map[string]string{}
 	list, _ := projects.(map[string]any)["projects"].([]any)
@@ -448,7 +453,6 @@ func (s *Server) reversePatch(projects any) (map[string]any, []map[string]string
 		if active, _ := project["active"].(bool); !active {
 			continue
 		}
-		projectName, _ := project["name"].(string)
 		services, _ := project["services"].([]any)
 		for _, item := range services {
 			service, _ := item.(map[string]any)
@@ -463,13 +467,13 @@ func (s *Server) reversePatch(projects any) (map[string]any, []map[string]string
 			// would be wrong to paste into a DSN.
 			real := hostPortOf(upstream)
 
-			variable := s.pointedAt(projectName, name)
+			variable, _ := service["env_key"].(string)
 			if variable == "" {
 				byHand = append(byHand, map[string]string{
 					"service":          name,
 					"was_listening_on": listen,
 					"point_back_at":    real,
-					"problem": "Sonda does not know which variable pointed at it: this service was added by hand, came from a compose file, or Sonda has restarted since the project was connected. " +
+					"problem": "Sonda does not know which variable pointed at it: this service was added by hand, or came from a compose file, which has no variable to put back. " +
 						"Find whatever in the configuration reads " + listen + " and set it back to " + real + ". Guessing the name here would write a variable nothing reads and leave the real one aimed at a closed port.",
 				})
 				continue

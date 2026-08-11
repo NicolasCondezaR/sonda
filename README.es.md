@@ -674,10 +674,12 @@ El inverso solo nombra una variable que Sonda vio de verdad. `MS_AUTH_ADDR`,
 `MS_AUTH_HOST` y `MS_AUTH_HTTP_URL` se aceptan igual que `_URL` al entrar, así
 que reconstruir el nombre a partir del servicio y su protocolo devolvería
 `MS_AUTH_URL`: una variable que nadie lee, mientras la real sigue apuntando a un
-puerto que acaba de cerrarse. Cuando el nombre no se conoce — un servicio
-agregado a mano, uno leído de un compose, o cualquiera si Sonda se reinició en el
-medio — vuelve en `restore_by_hand`, con la dirección que hay que buscar y la
-dirección que hay que reponer:
+puerto que acaba de cerrarse. El nombre que sí vio queda guardado junto al
+servicio, así que conectar por la mañana y desconectar por la tarde funciona
+aunque Sonda o la máquina se hayan reiniciado en el medio. Cuando el nombre no se
+conoce — un servicio agregado a mano, o uno leído de un compose, que nunca tuvo
+una variable — vuelve en `restore_by_hand`, con la dirección que hay que buscar y
+la dirección que hay que reponer:
 
 ```json
 {

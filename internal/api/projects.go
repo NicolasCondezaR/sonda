@@ -46,6 +46,12 @@ type serviceJSON struct {
 	TLS                bool `json:"tls"`
 	InsecureSkipVerify bool `json:"insecure_skip_verify"`
 
+	// EnvKey is the variable the address was really read from, when a caller
+	// that knew it said so. It is left out rather than sent empty: absent means
+	// Sonda has no evidence of a name, and a client saving a service without it
+	// keeps whatever was recorded instead of erasing it.
+	EnvKey string `json:"env_key,omitempty"`
+
 	// Running is what is actually happening on the port, which is not always
 	// what was configured — a port held by something else is the common case.
 	Running bool   `json:"running"`
@@ -96,6 +102,7 @@ func toProjectJSON(p store.Project, status map[string]supervisor.Status) project
 			ID: svc.ID, Name: svc.Name, Listen: svc.Listen,
 			Upstream: svc.Upstream, Protocol: svc.Protocol, Reflection: svc.Reflection,
 			TLS: svc.TLS, InsecureSkipVerify: svc.InsecureSkipVerify,
+			EnvKey:  svc.EnvKey,
 			Running: st.Running, Error: st.Error,
 			PointAt: pointAt(svc),
 		})
@@ -252,6 +259,7 @@ func (s *Server) saveService(w http.ResponseWriter, r *http.Request) {
 
 		TLS:                body.TLS,
 		InsecureSkipVerify: body.InsecureSkipVerify,
+		EnvKey:             strings.TrimSpace(body.EnvKey),
 	}
 
 	if svc.ID == 0 {

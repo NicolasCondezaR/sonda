@@ -18,8 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"sync"
 )
 
 // protocolVersion is the revision of MCP this server speaks, and what a client
@@ -87,50 +85,22 @@ func failure(id json.RawMessage, code int, format string, args ...any) *response
 }
 
 // Server answers MCP requests about one Sonda.
+//
+// It holds no state of its own about a project. Which variable pointed at a
+// service is kept with the service, in the store, and read back through the
+// API: two places remembering it is how one of them ends up wrong, and the one
+// in memory was always the one that forgot — a Sonda restarted between
+// connecting and disconnecting could no longer undo its own edit.
 type Server struct {
 	api     apiCaller
 	version string
 	tools   []Tool
-
-	mu sync.Mutex
-	// pointed remembers which variable really carried a service's address, as
-	// discovery read it out of the file. Nothing else knows: the store keeps the
-	// service, not the line it came from, and deriving the name back from the
-	// service instead is how MS_AUTH_ADDR gets undone as MS_AUTH_URL — a
-	// variable nothing reads, while the real one still aims at a closed port.
-	//
-	// In memory on purpose, because the alternative is a stored guess. A Sonda
-	// that restarted says it does not know, which is the answer that leaves the
-	// agent able to go and look.
-	pointed map[pointedKey]string
 }
-
-type pointedKey struct{ project, service string }
 
 func New(api apiCaller, version string) *Server {
-	s := &Server{api: api, version: version, pointed: map[pointedKey]string{}}
+	s := &Server{api: api, version: version}
 	s.tools = allTools()
 	return s
-}
-
-// Names are compared the way the tools accept them, which is case-insensitively:
-// a project connected as "Core" and disconnected as "core" is one project.
-func keyFor(project, service string) pointedKey {
-	return pointedKey{strings.ToLower(project), strings.ToLower(service)}
-}
-
-func (s *Server) rememberPointed(project, service, variable string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pointed[keyFor(project, service)] = variable
-}
-
-// pointedAt returns the variable this service was really read from, or an empty
-// string when Sonda has no evidence of one.
-func (s *Server) pointedAt(project, service string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pointed[keyFor(project, service)]
 }
 
 // Handle dispatches one message. It returns nil when the message was a

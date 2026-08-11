@@ -52,6 +52,18 @@ type Service struct {
 	// per service, never once for the process: trusting one self-signed
 	// container is not the same statement as trusting anything.
 	InsecureSkipVerify bool
+
+	// EnvKey is the variable that really carried this address in the project's
+	// own configuration, exactly as discovery read it. It is stored rather than
+	// derived because MS_AUTH_ADDR, MS_AUTH_HOST and MS_AUTH_GRPC_URL are all
+	// accepted and only the file knows which one was there — undoing the wrong
+	// one writes a variable nothing reads while the real one still aims at a
+	// closed port. It lives on the row and not in memory so that a Sonda
+	// restarted between connecting and disconnecting still knows.
+	//
+	// Empty means Sonda never saw one: a service read out of a compose file or
+	// typed in by hand. That gap is reported, never filled with a guess.
+	EnvKey string
 }
 
 var (
@@ -80,17 +92,26 @@ CREATE TABLE IF NOT EXISTS services (
 	position   INTEGER NOT NULL DEFAULT 0,
 	tls        INTEGER NOT NULL DEFAULT 0,
 	insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
+	env_key    TEXT    NOT NULL DEFAULT '',
 	UNIQUE(project_id, name)
 );
 CREATE INDEX IF NOT EXISTS services_project_idx ON services(project_id, position);
 `
 
 // addedServiceColumns brings a services table created by an earlier version up
-// to date. Both default to off, which is the only safe reading of a row written
-// before the columns existed: a service nobody flagged was never unverified.
+// to date. The two flags default to off, which is the only safe reading of a row
+// written before the columns existed: a service nobody flagged was never
+// unverified.
+//
+// env_key defaults to empty for the same reason and it is not a placeholder: a
+// row written before the column existed genuinely has no evidence of which
+// variable named it, so it reads as "Sonda does not know" and is handed back to
+// be restored by hand. Backfilling a plausible name here would be the exact
+// guess the column exists to avoid.
 var addedServiceColumns = map[string]string{
 	"tls":                  `ALTER TABLE services ADD COLUMN tls INTEGER NOT NULL DEFAULT 0`,
 	"insecure_skip_verify": `ALTER TABLE services ADD COLUMN insecure_skip_verify INTEGER NOT NULL DEFAULT 0`,
+	"env_key":              `ALTER TABLE services ADD COLUMN env_key TEXT NOT NULL DEFAULT ''`,
 }
 
 func (s *Store) Projects(ctx context.Context) ([]Project, error) {
@@ -139,7 +160,7 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 func (s *Store) services(ctx context.Context, projectID int64) ([]Service, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, listen, upstream, protocol, reflection, position,
-		       tls, insecure_skip_verify
+		       tls, insecure_skip_verify, env_key
 		FROM services WHERE project_id = ? ORDER BY position, id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list services: %w", err)
@@ -153,7 +174,8 @@ func (s *Store) services(ctx context.Context, projectID int64) ([]Service, error
 			reflection, terminate, skip int
 		)
 		if err := rows.Scan(&svc.ID, &svc.ProjectID, &svc.Name, &svc.Listen,
-			&svc.Upstream, &svc.Protocol, &reflection, &svc.Position, &terminate, &skip); err != nil {
+			&svc.Upstream, &svc.Protocol, &reflection, &svc.Position, &terminate, &skip,
+			&svc.EnvKey); err != nil {
 			return nil, err
 		}
 		svc.Reflection = reflection != 0
@@ -306,11 +328,11 @@ func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
 	if svc.ID == 0 {
 		res, err := s.db.ExecContext(ctx, `
 			INSERT INTO services (project_id, name, listen, upstream, protocol, reflection, position,
-			                      tls, insecure_skip_verify)
-			VALUES (?,?,?,?,?,?,?,?,?)`,
+			                      tls, insecure_skip_verify, env_key)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`,
 			svc.ProjectID, svc.Name, svc.Listen, svc.Upstream, svc.Protocol,
 			boolToInt(svc.Reflection), svc.Position,
-			boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify))
+			boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.EnvKey)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return 0, fmt.Errorf("this project already has a service called %q", svc.Name)
@@ -320,13 +342,20 @@ func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
 		return res.LastInsertId()
 	}
 
+	// A name that arrives overwrites the stored one, so reconnecting a project
+	// whose file changed records the variable that is there today. An update that
+	// carries none keeps it: moving a busy port with configure_service, or saving
+	// the same service from the web form, is not evidence that the variable
+	// disappeared, and erasing it there would turn every later disconnect into
+	// restore-by-hand.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE services SET name = ?, listen = ?, upstream = ?, protocol = ?,
-		       reflection = ?, position = ?, tls = ?, insecure_skip_verify = ?
+		       reflection = ?, position = ?, tls = ?, insecure_skip_verify = ?,
+		       env_key = COALESCE(NULLIF(?, ''), env_key)
 		WHERE id = ?`,
 		svc.Name, svc.Listen, svc.Upstream, svc.Protocol,
 		boolToInt(svc.Reflection), svc.Position,
-		boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.ID)
+		boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.EnvKey, svc.ID)
 	if err != nil {
 		return 0, err
 	}

@@ -662,10 +662,12 @@ The inverse only ever names a variable Sonda actually saw. `MS_AUTH_ADDR`,
 `MS_AUTH_HOST` and `MS_AUTH_HTTP_URL` are all accepted on the way in, so
 rebuilding the name out of the service and its protocol would hand back
 `MS_AUTH_URL` — a variable nothing reads, while the real one still points at a
-port that just closed. Where the name is not known — a service added by hand,
-one read out of a compose file, or any service at all if Sonda was restarted in
-between — it comes back under `restore_by_hand`, with the address to search for
-and the address to put back:
+port that just closed. The name it did see is kept with the service, so
+connecting in the morning and disconnecting in the evening works across a
+restart of Sonda or of the machine. Where the name is not known — a service
+added by hand, or one read out of a compose file, which never had a variable to
+begin with — it comes back under `restore_by_hand`, with the address to search
+for and the address to put back:
 
 ```json
 {
