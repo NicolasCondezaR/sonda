@@ -168,9 +168,15 @@ type Filter struct {
 	// GRPCStatus filters on the gRPC outcome. Nil means no filter; a pointer to
 	// zero means "only calls that succeeded", which is a question worth asking.
 	GRPCStatus *int32
-	// FailedOnly selects transport errors, HTTP 4xx/5xx and non-zero gRPC
-	// statuses in one go — the usual reason for opening this tool at all.
-	FailedOnly bool
+	// Failed selects on faultPredicate. Nil is no filter, true is only the
+	// calls that failed — the usual reason for opening this tool at all — and
+	// false is only the ones that did not.
+	//
+	// A pointer, and not a bool, because "show me what still works" is a real
+	// question and the natural contrast to the failures listing. As a plain
+	// bool it was indistinguishable from absent, so it silently returned
+	// everything and answered the opposite of what was asked.
+	Failed *bool
 }
 
 const (
@@ -416,8 +422,17 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	if f.GRPCStatus != nil {
 		add("grpc_status = ?", *f.GRPCStatus)
 	}
-	if f.FailedOnly {
-		where = append(where, faultPredicate)
+	if f.Failed != nil {
+		if *f.Failed {
+			where = append(where, faultPredicate)
+		} else {
+			// Negated rather than spelled out a second time: two hand-written
+			// halves of one definition drift, and the half nobody looks at is
+			// the one that goes wrong. Every column it reads is NOT NULL except
+			// grpc_status, which is guarded by its own IS NOT NULL, so the
+			// predicate is never NULL and NOT is a true complement here.
+			where = append(where, "NOT "+faultPredicate)
+		}
 	}
 	if !f.Since.IsZero() {
 		add("started_at >= ?", f.Since.UnixMicro())
@@ -562,7 +577,8 @@ type TargetStats struct {
 }
 
 // faultPredicate is one definition of failure, shared by the stats rollup and
-// the FailedOnly filter so the rail and the field can never disagree.
+// the Failed filter — in both directions — so the rail and the field can never
+// disagree.
 //
 // The last three clauses are the same problem three times: gRPC, GraphQL and
 // Postgres all report failure somewhere other than the HTTP status — and a

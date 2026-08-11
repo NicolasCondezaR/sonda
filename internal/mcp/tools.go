@@ -122,7 +122,7 @@ func readTools() []Tool {
 				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "websocket", "postgres"}, "description": "Restrict to one protocol. A websocket capture is one whole conversation; a postgres capture is one statement. GraphQL is http."},
 				"text":     prop("string", "Free text to look for inside the request and response bodies — a GraphQL operation name finds its calls this way."),
 				"status":   prop("integer", "Exact HTTP status."),
-				"failed":   prop("boolean", "Only calls that failed, including GraphQL responses carrying errors under HTTP 200."),
+				"failed":   prop("boolean", "true returns only the calls that failed, including GraphQL responses carrying errors under HTTP 200; false returns only the calls that did not fail; leave it out and both come back."),
 				"since_minutes": prop("integer",
 					"Only calls from the last N minutes. Useful right after triggering something."),
 				"limit": prop("integer", "How many to return. Defaults to 20, capped at 200."),
@@ -138,9 +138,7 @@ func readTools() []Tool {
 				if a.has("status") {
 					setIf(q, "status", strconv.Itoa(a.num("status", 0)))
 				}
-				if a.boolean("failed") {
-					q.Set("failed", "true")
-				}
+				setFlag(q, "failed", a, "failed")
 				if m := a.num("since_minutes", 0); m > 0 {
 					q.Set("since", time.Now().Add(-time.Duration(m)*time.Minute).UTC().Format(time.RFC3339))
 				}
@@ -290,9 +288,10 @@ func readTools() []Tool {
 		{
 			Name:  "trust_certificate",
 			Title: "How to trust Sonda's certificate authority",
-			Description: "Where Sonda's local certificate authority lives, what it identifies as, and the exact commands to trust it and to remove it again, per platform. " +
+			Description: "Sonda's local certificate authority: the certificate itself in `certificate_pem`, where Sonda keeps it, what it identifies as, and the exact commands to trust it and to remove it again, per platform. " +
+				"The commands name the path Sonda sees, which is not a path you can open when Sonda runs in a container — so write `certificate_pem` to a file of your own and use that path instead. When Sonda can tell it is containerised it also returns the `docker cp` that copies the file out. " +
 				"Sonda never installs it: modifying a machine's trust store is the user's decision, so hand these commands to them rather than running one. " +
-				"Ask for this after setting a service to terminate TLS, or when a client refuses Sonda's certificate. The private key is not available here or anywhere else in this API.",
+				"Ask for this after setting a service to terminate TLS, or when a client refuses Sonda's certificate. Only the public certificate is here; the private key is not available through this tool or anywhere else in this API.",
 			Schema:      obj(map[string]any{}),
 			Annotations: readOnly,
 			Run: func(ctx context.Context, s *Server, a args) (any, error) {
@@ -309,7 +308,7 @@ func readTools() []Tool {
 				"service":         prop("string", "Only calls to this service."),
 				"path":            prop("string", "Only calls whose path contains this."),
 				"method":          prop("string", "Only calls with this method."),
-				"failed":          prop("boolean", "Only wait for a failure, GraphQL errors under HTTP 200 included."),
+				"failed":          prop("boolean", "true waits only for a failure, GraphQL errors under HTTP 200 included; false waits only for a call that did not fail — the way to confirm a fix landed; leave it out and any matching call ends the wait."),
 				"timeout_seconds": prop("integer", "How long to wait. Defaults to 30, capped at 120."),
 			}),
 			Annotations: readOnly,
@@ -426,9 +425,7 @@ func waitForCall(ctx context.Context, s *Server, a args) (any, error) {
 	setIf(q, "target", a.str("service"))
 	setIf(q, "path", a.str("path"))
 	setIf(q, "method", a.str("method"))
-	if a.boolean("failed") {
-		q.Set("failed", "true")
-	}
+	setFlag(q, "failed", a, "failed")
 	q.Set("limit", "20")
 	// Only calls captured from now on. Without this the first poll would
 	// return whatever happened to be there already and the wait would be a
@@ -493,5 +490,17 @@ func clampLimit(n int) int {
 func setIf(q url.Values, key, value string) {
 	if value != "" {
 		q.Set(key, value)
+	}
+}
+
+// setFlag forwards a three-state flag: absent stays absent, and false travels
+// as false rather than being dropped. Dropping it is how failed:false used to
+// mean "no filter" and hand back the failures the caller had just excluded.
+//
+// has() is safe as the test because checkTypes has already refused anything
+// that is not a bool for a property the schema declares boolean.
+func setFlag(q url.Values, key string, a args, arg string) {
+	if a.has(arg) {
+		q.Set(key, strconv.FormatBool(a.boolean(arg)))
 	}
 }

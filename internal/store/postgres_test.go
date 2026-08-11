@@ -93,7 +93,7 @@ func TestAServerErrorMakesASessionAFault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	failed, err := s.List(ctx, Filter{FailedOnly: true})
+	failed, err := s.List(ctx, Filter{Failed: &yes})
 	if err != nil {
 		t.Fatal(err)
 	}

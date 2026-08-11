@@ -39,3 +39,30 @@ func TestWaitForCallCannotMatchTrafficFromBeforeItStarted(t *testing.T) {
 			since.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano))
 	}
 }
+
+// The same three states search_calls has. Waiting for a call that did not fail
+// is how an agent confirms a fix landed, and while false was dropped the wait
+// ended on the very failure it was waiting to stop seeing.
+func TestWaitForCallForwardsTheFailedFlagInBothDirections(t *testing.T) {
+	for _, tc := range []struct {
+		arguments, want string
+	}{
+		{`{"service":"ms-auth","timeout_seconds":1}`, ""},
+		{`{"service":"ms-auth","failed":true,"timeout_seconds":1}`, "true"},
+		{`{"service":"ms-auth","failed":false,"timeout_seconds":1}`, "false"},
+	} {
+		api := &fakeAPI{body: `{"calls":[{"id":9,"target":"ms-auth"}]}`}
+		s := New(api, "test")
+		if text, isError := callTool(t, s, "wait_for_call", tc.arguments); isError {
+			t.Fatalf("wait_for_call failed: %s", text)
+		}
+		_, query, _ := strings.Cut(api.last(), "?")
+		values, err := url.ParseQuery(query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := values.Get("failed"); got != tc.want {
+			t.Errorf("%s asked for failed=%q, want %q", tc.arguments, got, tc.want)
+		}
+	}
+}

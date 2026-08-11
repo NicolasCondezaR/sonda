@@ -211,13 +211,24 @@ type callJSON struct {
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := store.Filter{
-		Target:     q.Get("target"),
-		Method:     q.Get("method"),
-		Path:       q.Get("path"),
-		Protocol:   q.Get("protocol"),
-		Search:     q.Get("q"),
-		Project:    s.projectFilter(),
-		FailedOnly: q.Get("failed") == "true",
+		Target:   q.Get("target"),
+		Method:   q.Get("method"),
+		Path:     q.Get("path"),
+		Protocol: q.Get("protocol"),
+		Search:   q.Get("q"),
+		Project:  s.projectFilter(),
+	}
+
+	// Three states, so absence is tested before the value. Comparing against
+	// "true" collapsed failed=false onto absent and returned the failures
+	// beside the successes, which reads as "these all worked".
+	if raw := q.Get("failed"); raw != "" {
+		want, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed must be true or false; leave it out for both")
+			return
+		}
+		f.Failed = &want
 	}
 
 	if raw := q.Get("grpc_status"); raw != "" {

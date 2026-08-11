@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
@@ -69,6 +71,51 @@ func get(t *testing.T, h http.Handler, path string) (int, map[string]any) {
 		t.Fatalf("response for %s is not JSON: %v (%s)", path, err, rec.Body.String())
 	}
 	return rec.Code, body
+}
+
+// ?failed= has three states over the wire too, and the false one is the whole
+// reason: comparing the parameter against "true" made failed=false identical to
+// leaving it out, so a caller asking what still works got the failures back and
+// read them as successes.
+//
+// The GraphQL capture is HTTP 200 and still a failure, so a filter that trusted
+// the status column would pass the true case and fail this one.
+func TestTheFailedParameterHasThreeStates(t *testing.T) {
+	h, s := newServer(t)
+	insert(t, s, []byte(`{"sku":"ABC-9"}`)) // 201, worked
+	insertGraphQL(t, s,
+		`{"query":"mutation Pay { pay { ok } }"}`,
+		`{"data":null,"errors":[{"message":"card declined"}]}`)
+
+	paths := func(query string) []string {
+		t.Helper()
+		code, body := get(t, h, "/api/calls"+query)
+		if code != http.StatusOK {
+			t.Fatalf("GET /api/calls%s answered %d", query, code)
+		}
+		var out []string
+		for _, c := range body["calls"].([]any) {
+			out = append(out, c.(map[string]any)["path"].(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	for query, want := range map[string][]string{
+		"":              {"/graphql", "/v1/orders"},
+		"?failed=true":  {"/graphql"},
+		"?failed=false": {"/v1/orders"},
+	} {
+		if got := paths(query); !slices.Equal(got, want) {
+			t.Errorf("/api/calls%s returned %v, want %v", query, got, want)
+		}
+	}
+
+	// A value that is neither is a mistake worth naming, not a third meaning
+	// quietly invented for it.
+	if code, _ := get(t, h, "/api/calls?failed=maybe"); code != http.StatusBadRequest {
+		t.Errorf("failed=maybe answered %d, want 400", code)
+	}
 }
 
 // A listing that carries payloads is unusable once there are a few hundred

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,38 +40,70 @@ func TestNoAuthorityIsCreatedJustByAsking(t *testing.T) {
 	}
 }
 
+// The answer has to be actionable from wherever the reader is. Every path in it
+// is a path Sonda can see, which inside a container is a path nobody else can —
+// so the certificate travels as bytes, and when Sonda can tell it is
+// containerised it also says how to copy the file out.
+//
+// The key travels in neither case, and the assertions below are the guard: the
+// whole encoded answer is searched for private key material, so a field added
+// later that carried it would fail here rather than ship.
+func TestTheCertificateIsReachableFromOutsideTheContainer(t *testing.T) {
+	h := serverWithCA(t)
+
+	// Not containerised: contents, no copy-out instruction to mislead with.
+	code, body := get(t, h, "/api/tls")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	pem, _ := body["certificate_pem"].(string)
+	if !strings.Contains(pem, "BEGIN CERTIFICATE") {
+		t.Fatalf("the answer carries no certificate to act on: %q", pem)
+	}
+	if strings.Contains(pem, "PRIVATE KEY") {
+		t.Fatal("the certificate field carries key material")
+	}
+	if _, present := body["container"]; present {
+		t.Error("a container hint was offered by a Sonda that is not in one")
+	}
+
+	// Containerised: the same bytes, plus the command that extracts the file.
+	marker := filepath.Join(t.TempDir(), ".dockerenv")
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := dockerEnvPath
+	dockerEnvPath = marker
+	t.Cleanup(func() { dockerEnvPath = previous })
+
+	code, body = get(t, h, "/api/tls")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	hint, ok := body["container"].(map[string]any)
+	if !ok {
+		t.Fatalf("a containerised Sonda said nothing about it: %+v", body)
+	}
+	copyOut, _ := hint["copy_out"].(string)
+	certPath := body["instructions"].(map[string]any)["path"].(string)
+	if !strings.HasPrefix(copyOut, "docker cp ") || !strings.Contains(copyOut, certPath) {
+		t.Errorf("the copy-out command does not extract the certificate: %q", copyOut)
+	}
+
+	// Whatever else was added, the key is in none of it.
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "PRIVATE KEY") {
+		t.Fatal("the API returned private key material")
+	}
+}
+
 // Once one does exist, the API hands over the commands to trust it and to take
 // it back out — and hands over the certificate, never the key.
 func TestTheAuthorityIsPublishedWithoutItsKey(t *testing.T) {
-	dir := t.TempDir()
-	db, err := store.Open(filepath.Join(dir, "api.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	ctx := context.Background()
-	p, err := db.CreateProject(ctx, "secure")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.SaveService(ctx, store.Service{
-		ProjectID: p.ID, Name: "api", Listen: "127.0.0.1:0",
-		Upstream: "https://127.0.0.1:65000", Protocol: "http",
-		TLS: true, InsecureSkipVerify: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.ActivateProject(ctx, p.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	rt := runtime.New(db, noRecorder{}, 1<<20).WithCADir(dir)
-	if err := rt.Reconcile(ctx); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(rt.Stop)
-	h := New(db, noDrops{}, rt).Handler()
+	h := serverWithCA(t)
 
 	code, body := get(t, h, "/api/tls")
 	if code != http.StatusOK {
@@ -119,6 +152,41 @@ func TestTheAuthorityIsPublishedWithoutItsKey(t *testing.T) {
 	if at, _ := service["point_at"].(string); !strings.Contains(at, "https://") {
 		t.Errorf("the line handed to the caller does not carry the scheme: %q", at)
 	}
+}
+
+// serverWithCA is a Sonda with one TLS service, which is the only thing that
+// makes an authority exist.
+func serverWithCA(t *testing.T) http.Handler {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+	p, err := db.CreateProject(ctx, "secure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SaveService(ctx, store.Service{
+		ProjectID: p.ID, Name: "api", Listen: "127.0.0.1:0",
+		Upstream: "https://127.0.0.1:65000", Protocol: "http",
+		TLS: true, InsecureSkipVerify: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ActivateProject(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := runtime.New(db, noRecorder{}, 1<<20).WithCADir(dir)
+	if err := rt.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rt.Stop)
+	return New(db, noDrops{}, rt).Handler()
 }
 
 // A capture over TLS has to say so on the wire the interfaces read, or the

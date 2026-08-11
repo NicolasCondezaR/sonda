@@ -307,6 +307,9 @@ func TestToolsQueryTheExpectedEndpoints(t *testing.T) {
 	}{
 		{"recent_failures", `{"limit":5}`, []string{"GET /api/calls?", "failed=true", "limit=5"}},
 		{"search_calls", `{"service":"ms-auth","failed":true}`, []string{"target=ms-auth", "failed=true"}},
+		// false has to travel. Dropping it made "show me what still works" the
+		// same request as no filter at all, so the failures came back with it.
+		{"search_calls", `{"service":"ms-auth","failed":false}`, []string{"target=ms-auth", "failed=false"}},
 		{"search_calls", `{"text":"ORD-9","limit":999}`, []string{"q=ORD-9", "limit=200"}},
 		{"get_call", `{"id":42}`, []string{"GET /api/calls/42"}},
 		{"diff_calls", `{"a":1,"b":2}`, []string{"GET /api/diff?a=1&b=2"}},

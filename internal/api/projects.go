@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -368,11 +369,49 @@ func (s *Server) tlsAuthority(w http.ResponseWriter, _ *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	instructions := ca.Instructions()
+	out := map[string]any{
 		"exists":       true,
-		"instructions": ca.Instructions(),
+		"instructions": instructions,
 		"download":     "/api/tls/ca.pem",
-	})
+		// The bytes, not only the path to them. Every path in the instructions
+		// is a path Sonda can see, which inside a container is a path the
+		// person reading this cannot — and an MCP client cannot fetch the
+		// download URL either, so the answer was unusable for the one reader
+		// who most needed it. This is the public half of the authority; the
+		// key has no accessor here or anywhere else.
+		"certificate_pem": string(ca.CertificatePEM()),
+	}
+	if hint := containerHint(instructions.Path); hint != nil {
+		out["container"] = hint
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// dockerEnvPath is the marker Docker writes into an image's root filesystem. A
+// variable so the container branch can be exercised without a container.
+var dockerEnvPath = "/.dockerenv"
+
+// containerHint explains the gap between the path Sonda reports and the
+// filesystem the reader is on, and gives the one command that closes it.
+//
+// The hostname is the container id, which is what docker cp takes.
+//
+// ponytail: Docker only. Podman and a bare containerd get no hint — the same
+// answer as before this existed — and certificate_pem beside it works anywhere.
+func containerHint(certPath string) map[string]any {
+	if _, err := os.Stat(dockerEnvPath); err != nil {
+		return nil
+	}
+	name, err := os.Hostname()
+	if err != nil || name == "" {
+		name = "<container>"
+	}
+	return map[string]any{
+		"note": "Sonda is running in a container, so " + certPath + " is a path inside it and not one you can open. " +
+			"Copy the file out, or write certificate_pem to a file yourself, and use that path in the commands above.",
+		"copy_out": `docker cp ` + name + `:` + certPath + ` ./sonda-ca.pem`,
+	}
 }
 
 // tlsCertificate hands over the public certificate.
