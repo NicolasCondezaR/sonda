@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,7 +87,7 @@ func TestAServiceWithNoVariableNeverAcquiresOne(t *testing.T) {
 }
 
 // Reconnecting reads the file again, so a variable that was renamed there wins.
-// A save that carries none — the web form, or configure_service moving a port —
+// A save that carries none — configure_service moving a port, say —
 // is not evidence that the variable vanished, and erasing it would put the
 // service back into restore-by-hand.
 func TestSavingRefreshesTheVariableAndAnEmptyOneKeepsIt(t *testing.T) {
@@ -124,6 +125,71 @@ func TestSavingRefreshesTheVariableAndAnEmptyOneKeepsIt(t *testing.T) {
 	}
 	if got := onlyService(t, s, project.ID).EnvKey; got != "MS_AUTH_GRPC_URL" {
 		t.Errorf("env key = %q after a save that did not carry one, want it kept", got)
+	}
+}
+
+// UNIQUE(project_id, name) was the only constraint the table carried, so two
+// services of one project could be given the same port. Nothing refused it, one
+// of the two listeners then failed to bind, and what came back was "address
+// already in use" — indistinguishable from an external process holding the port
+// and pointing nowhere near the configuration that caused it.
+func TestTwoServicesOfOneProjectCannotShareAPort(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	project, err := s.CreateProject(ctx, "core-delpagroup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.SaveService(ctx, Service{
+		ProjectID: project.ID, Name: "ms-auth", Listen: "127.0.0.1:9152",
+		Upstream: "http://localhost:50052", Protocol: "grpc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.SaveService(ctx, Service{
+		ProjectID: project.ID, Name: "ms-admin", Listen: "127.0.0.1:9152",
+		Upstream: "http://localhost:50053", Protocol: "grpc",
+	})
+	if err == nil {
+		t.Fatal("two services were given the same listen address")
+	}
+	// Saying the port is taken without saying by what leaves the agent hunting
+	// for a process that does not exist.
+	if !strings.Contains(err.Error(), "ms-auth") {
+		t.Errorf("the error does not name the service already holding the port: %v", err)
+	}
+
+	// Its own address is not a clash with itself: moving a port is the repair
+	// connect_project tells the agent to make, and saving anything else about a
+	// service must keep working.
+	if _, err := s.SaveService(ctx, Service{
+		ID: first, Name: "ms-auth", Listen: "127.0.0.1:9152",
+		Upstream: "http://localhost:50099", Protocol: "grpc",
+	}); err != nil {
+		t.Errorf("a service could not be saved on the port it already holds: %v", err)
+	}
+}
+
+// Two projects claiming one port is not a clash: only the active project
+// listens, and switching between them is the reason projects exist.
+func TestTwoProjectsMayClaimTheSamePort(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	for _, name := range []string{"core-delpagroup", "relay"} {
+		project, err := s.CreateProject(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.SaveService(ctx, Service{
+			ProjectID: project.ID, Name: "ms-auth", Listen: "127.0.0.1:9152",
+			Upstream: "http://localhost:50052", Protocol: "grpc",
+		}); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 	}
 }
 

@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -688,5 +690,86 @@ func TestAPostgresServiceGetsARawListener(t *testing.T) {
 	}
 	if call.Target != "orders-db" {
 		t.Errorf("target = %q", call.Target)
+	}
+}
+
+// Reconcile reads the configuration and then applies it. While those were two
+// steps, a second mutation could slip between them: both goroutines read, both
+// apply, and the one holding the older view applies last — so a listener the
+// other had just started is stopped again, with nothing scheduled to notice and
+// every interface still reporting the port as open.
+//
+// Nothing exotic: several agents sharing one Sonda is a case the MCP tools
+// advertise, and two of them calling configure_service at once is this exact
+// sequence.
+func TestConcurrentReconcilesLeaveEveryStoredServiceListening(t *testing.T) {
+	ctx := context.Background()
+	db := openStore(t)
+	back := upstream(t, "ok")
+
+	id := project(t, db, "core-delpagroup")
+	if err := db.ActivateProject(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	// The authority goes in a temp directory like every other test's: opening
+	// it is the disk work that sits between the read and the apply.
+	rt := New(db, newRecorder(), 1<<20).WithCADir(t.TempDir())
+	t.Cleanup(rt.Stop)
+
+	// Each goroutine adds services and reconciles after each one, the way each
+	// agent calling configure_service would. Nothing reconciles afterwards on
+	// purpose: the whole question is whether the last apply carried the state
+	// that was current when it read.
+	const (
+		agents = 12
+		each   = 4
+	)
+	ports := make([]string, agents*each)
+	for i := range ports {
+		ports[i] = freePort(t)
+	}
+
+	var wg sync.WaitGroup
+	failures := make(chan error, agents)
+	for a := 0; a < agents; a++ {
+		wg.Add(1)
+		go func(a int) {
+			defer wg.Done()
+			for n := 0; n < each; n++ {
+				i := a*each + n
+				if _, err := db.SaveService(ctx, store.Service{
+					ProjectID: id, Name: fmt.Sprintf("svc-%d", i), Listen: ports[i],
+					Upstream: back, Protocol: config.ProtocolHTTP, Position: i,
+					// TLS on purpose: the certificate authority is opened off
+					// disk between the read and the apply, which is exactly the
+					// kind of work an unguarded reconcile leaves the window open
+					// across.
+					TLS: true,
+				}); err != nil {
+					failures <- err
+					return
+				}
+				if err := rt.Reconcile(ctx); err != nil {
+					failures <- err
+					return
+				}
+			}
+		}(a)
+	}
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		t.Fatal(err)
+	}
+
+	running := map[string]bool{}
+	for _, st := range rt.Status() {
+		running[st.Listen] = st.Running
+	}
+	for i, port := range ports {
+		if !running[port] {
+			t.Fatalf("svc-%d is stored but nothing is listening on %s; a reconcile applied a view older than the one before it", i, port)
+		}
 	}
 }

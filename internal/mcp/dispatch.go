@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 func (s *Server) listTools() map[string]any {
@@ -50,6 +52,12 @@ func (s *Server) callTool(ctx context.Context, req request) *response {
 			return failure(req.ID, codeInvalidParams, "arguments must be an object: %v", err)
 		}
 	}
+	if err := checkTypes(tool.Schema, a); err != nil {
+		// Reported as a tool error rather than a protocol one, for the same
+		// reason every other bad call is: the model reads it and corrects the
+		// argument instead of the client deciding the session is broken.
+		return result(req.ID, toolResult(err.Error(), true))
+	}
 
 	out, err := tool.Run(ctx, s, a)
 	if err != nil {
@@ -65,6 +73,85 @@ func (s *Server) callTool(ctx context.Context, req request) *response {
 		return failure(req.ID, codeInternal, "could not encode the answer: %v", err)
 	}
 	return result(req.ID, toolResult(string(text), false))
+}
+
+// checkTypes holds the arguments to the types their schema declares.
+//
+// Coercing instead is how set_stub {"enabled":"1"} used to disable stubbing and
+// report success: the argument was present, so the tool acted on it, and the
+// value resolved to false somewhere on the way through. Every flag in this
+// server has that shape — tls, detail, cut, clear, probe_upstreams — so the
+// check belongs here, once, rather than in each of them.
+//
+// A property the schema does not describe is left alone: the schema is the
+// contract, and this enforces the part of it that was written down.
+func checkTypes(schema map[string]any, a args) error {
+	properties, _ := schema["properties"].(map[string]any)
+	for key, value := range a {
+		declared, _ := properties[key].(map[string]any)
+		kind, _ := declared["type"].(string)
+
+		ok := true
+		switch kind {
+		case "boolean":
+			_, ok = value.(bool)
+		case "integer", "number":
+			ok = isNumber(value)
+		case "string":
+			_, ok = value.(string)
+		case "array":
+			_, ok = value.([]any)
+		}
+		if !ok {
+			return fmt.Errorf("%s must be %s, and %s arrived instead — Sonda will not guess what was meant, because guessing wrong here reports success for the opposite of what was asked",
+				key, wanted(kind), describe(value))
+		}
+	}
+	return nil
+}
+
+// isNumber accepts a number written as a string, which is the one coercion
+// worth keeping: clients that assemble arguments out of text send "20", and it
+// cannot mean anything other than 20.
+func isNumber(v any) bool {
+	switch n := v.(type) {
+	case float64:
+		return true
+	case string:
+		_, err := strconv.Atoi(strings.TrimSpace(n))
+		return err == nil
+	}
+	return false
+}
+
+func wanted(kind string) string {
+	switch kind {
+	case "boolean":
+		return "true or false"
+	case "integer", "number":
+		return "a number"
+	case "array":
+		return "a list"
+	default:
+		return "a " + kind
+	}
+}
+
+func describe(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "true or false"
+	case float64:
+		return "a number"
+	case string:
+		return "a string"
+	case []any:
+		return "a list"
+	default:
+		return "an object"
+	}
 }
 
 func toolResult(text string, isError bool) map[string]any {

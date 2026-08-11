@@ -45,6 +45,18 @@ type Runtime struct {
 	// live together and are backed up, copied or deleted together.
 	caDir string
 
+	// applying serialises a whole reconcile: reading the configuration and
+	// applying it are one decision, and mu cannot hold across both because the
+	// readers of active and status must never wait on a listener opening.
+	//
+	// Without it two mutations interleave. Both read, both apply, and the one
+	// holding the older view applies last — so a listener the other just
+	// started is stopped again, and nothing schedules another reconcile to
+	// notice. The port stays closed while every interface reports it open.
+	// Several agents sharing one Sonda is a case the tools advertise, so this
+	// is an ordinary sequence rather than a rare one.
+	applying sync.Mutex
+
 	mu        sync.RWMutex
 	active    *store.Project
 	resolvers map[string]*protoschema.Resolver
@@ -107,6 +119,13 @@ func NewWithoutListeners(db *store.Store, recorder proxy.Recorder, maxBody int64
 
 // Reload refreshes the view of the active project without touching listeners.
 func (r *Runtime) Reload(ctx context.Context) error {
+	r.applying.Lock()
+	defer r.applying.Unlock()
+	return r.reload(ctx)
+}
+
+// reload is Reload with the reconcile lock already held.
+func (r *Runtime) reload(ctx context.Context) error {
 	project, err := r.store.ActiveProject(ctx)
 	if err != nil {
 		return err
@@ -129,8 +148,12 @@ func (r *Runtime) Reload(ctx context.Context) error {
 // hand-written diff here would be a second source of truth about what is
 // running.
 func (r *Runtime) Reconcile(ctx context.Context) error {
+	// Held across the read and the apply both: see applying.
+	r.applying.Lock()
+	defer r.applying.Unlock()
+
 	if r.listenersDisabled {
-		return r.Reload(ctx)
+		return r.reload(ctx)
 	}
 	project, err := r.store.ActiveProject(ctx)
 	if err != nil {

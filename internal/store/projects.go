@@ -322,7 +322,11 @@ func (s *Store) DescriptorSet(ctx context.Context, id int64) ([]byte, error) {
 }
 
 func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
-	if err := ValidateService(svc); err != nil {
+	siblings, err := s.siblings(ctx, svc)
+	if err != nil {
+		return 0, err
+	}
+	if err := ValidateService(svc, siblings); err != nil {
 		return 0, err
 	}
 	if svc.ID == 0 {
@@ -344,10 +348,9 @@ func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
 
 	// A name that arrives overwrites the stored one, so reconnecting a project
 	// whose file changed records the variable that is there today. An update that
-	// carries none keeps it: moving a busy port with configure_service, or saving
-	// the same service from the web form, is not evidence that the variable
-	// disappeared, and erasing it there would turn every later disconnect into
-	// restore-by-hand.
+	// carries none keeps it: moving a busy port with configure_service is not
+	// evidence that the variable disappeared, and erasing it there would turn
+	// every later disconnect into restore-by-hand.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE services SET name = ?, listen = ?, upstream = ?, protocol = ?,
 		       reflection = ?, position = ?, tls = ?, insecure_skip_verify = ?,
@@ -370,9 +373,36 @@ func (s *Store) DeleteService(ctx context.Context, id int64) error {
 	return affected(res, errors.New("no service with that id"))
 }
 
+// siblings are the other services of the same project, which is what makes
+// "is this port already spoken for" answerable.
+//
+// An update arrives with an id and no project: the caller changing a service
+// knows which row it is and has no reason to have looked the project up, so the
+// row itself is asked.
+func (s *Store) siblings(ctx context.Context, svc Service) ([]Service, error) {
+	projectID := svc.ProjectID
+	if projectID == 0 && svc.ID != 0 {
+		err := s.db.QueryRowContext(ctx,
+			`SELECT project_id FROM services WHERE id = ?`, svc.ID).Scan(&projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if projectID == 0 {
+		return nil, nil
+	}
+	return s.services(ctx, projectID)
+}
+
 // ValidateService rejects what would fail at listen time, so a bad entry is a
 // message in the form rather than a port that silently never opened.
-func ValidateService(svc Service) error {
+//
+// siblings are the project's other services, or nil when there is nothing to
+// compare against.
+func ValidateService(svc Service, siblings []Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("the service needs a name")
 	}
@@ -396,6 +426,21 @@ func ValidateService(svc Service) error {
 	}
 	if svc.Listen == u.Host {
 		return errors.New("the listen address and the upstream are the same, which would make the service call itself")
+	}
+	// UNIQUE(project_id, name) is the only constraint the table carries, so two
+	// services of one project could be given the same port. Nothing refuses it,
+	// one of the two listeners then fails to bind, and what the user is told is
+	// "address already in use" — which reads as an external process squatting
+	// the port rather than as the other half of their own configuration.
+	//
+	// Checked here rather than as a unique index because the answer worth
+	// giving names the service already holding it, and because an index added
+	// now would refuse to build on a database that already has a pair like this.
+	for _, other := range siblings {
+		if other.ID != svc.ID && other.Listen == svc.Listen {
+			return fmt.Errorf("%s is already the listen address of %q in this project; give this one a different port or move %q first",
+				svc.Listen, other.Name, other.Name)
+		}
 	}
 	// The same rule the configuration file applies, from the same function, so
 	// the form and the YAML cannot disagree about what is allowed.

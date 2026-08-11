@@ -613,8 +613,8 @@ that is already running, so it is still the same data:
 | `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing |
 | `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
-| `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it |
-| `configure_service` | Add one service, or change one that is already there — the name is the identity, so calling it again moves the port |
+| `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it. Safe to run again |
+| `configure_service` | Add one service, or change one that is already there — the name is the identity, so calling it again moves the port. An update keeps every setting it was not asked about |
 | `remove_service` | Delete one service, and say what address to point the caller back at. Asks first |
 | `upload_schemas` | Give a project a compiled descriptor set, so gRPC decodes where no service serves reflection |
 | `activate_project` | Open the ports. Asks first |
@@ -687,11 +687,28 @@ Creating configuration disturbs nobody, so those tools run freely. Opening and
 closing ports can pull the floor out from under you mid-debug, so those ask
 first.
 
+### Asking twice
+
+Editing the file and asking again is the ordinary next step, not a mistake, so
+`connect_project` takes the same name a second time: the project that is already
+there is added to, a service it already has is updated in place with whatever
+the file says today, and anything the file cannot express — TLS, whether the
+upstream's certificate is checked — is kept. A run where nothing could be saved
+deletes the project it created on the way in, so a failed attempt leaves nothing
+to clean up.
+
+`configure_service` works the same way round: an update starts from the stored
+service and changes only what you passed, so moving a port is the project, the
+name and the new address. It answers with the address to point the caller at,
+and with the variable to write it into when Sonda knows which one that is.
+
 ### What is not on MCP, on purpose
 
-- **Deleting a project.** `remove_service` covers a service that has to go;
-  throwing away a whole project — its services, its schemas — is a decision with
-  a person's hand on it, and the web interface has the button.
+- **Deleting a project.** `remove_service` covers a service that has to go, and
+  connecting the same project again is how a configuration that changed gets
+  applied, so nothing is stuck behind the gap. Throwing away a whole project —
+  its services, its schemas, whatever else is in it — is a decision with a
+  person's hand on it, and the web interface has the button.
 - **The live stream.** `wait_for_call` answers the same question with a bound on
   it, and a server-sent stream held open across a tool call buys nothing an
   agent can use.
@@ -710,8 +727,24 @@ body. **There is no setting to turn this off**, deliberately: a flag for it
 would be switched on against a toy project and then forgotten against a real
 one. The web interface still shows everything, because there the reader is you.
 
+Two more passes reach where matching a field name cannot:
+
+- **Query strings**, wherever a URL turns up — the captured path, a `Location`
+  redirect, a link inside a body. `?access_token=`, `?code=` and
+  `?X-Amz-Signature=` are blanked and the rest of the URL is kept, because the
+  path is how you recognise the call.
+- **Postgres**, which is column oriented, so the sensitive name and the
+  sensitive value arrive in different messages. A `RowDescription` is aligned
+  against the `DataRow`s after it, and a statement that names a credential comes
+  back with its structure intact and its literals blanked — including in the
+  one-line summary a listing shows before you have asked for anything.
+
 Bodies are also shortened by default; `get_call` takes `detail` for the whole
-thing. `detail` does not reveal credentials — that is covered by a test.
+thing. `detail` does not reveal credentials — redaction runs over the whole
+payload first and shortening second, so the default answer is never the leakier
+one. Both are covered by tests, one of which goes through a real tool call.
+
+`SECURITY.md` lists what redaction reaches and, more usefully, what it does not.
 
 The HTTP endpoint refuses requests carrying a foreign `Origin`, which is what
 stops a page in your own browser from reaching it through DNS rebinding and
@@ -808,8 +841,10 @@ password — and a password in the configuration would be a password written int
 This is the one place Sonda rewrites what it keeps, and the reason is that the
 alternative cannot be fixed later. A startup exchange carries the password. If
 the raw bytes were stored as they arrived, the secret would sit in `sonda.db` in
-plaintext and could reach an agent through MCP — whose redaction walks headers
-and JSON keys, which a TCP stream is neither.
+plaintext and could reach an agent through MCP — whose redaction reads field
+names, query strings and the shape of a Postgres exchange, and a startup
+handshake is none of those: the password is a length-prefixed run of bytes in a
+TCP stream, under no name at all.
 
 So the credential bytes are blanked in the tap, as they go past, before anything
 is stored: the PasswordMessage and SASL response bodies, the server's

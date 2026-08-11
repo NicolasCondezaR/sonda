@@ -625,8 +625,8 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
-| `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella |
-| `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto |
+| `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella. Se puede volver a ejecutar |
+| `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto. Una modificación conserva todo lo que no se le pasó |
 | `remove_service` | Borra un servicio y dice a qué dirección volver a apuntar a quien llamaba. Pregunta antes |
 | `upload_schemas` | Le da al proyecto un descriptor set compilado, para decodificar gRPC donde ningún servicio sirve reflection |
 | `activate_project` | Abre los puertos. Pregunta antes |
@@ -699,10 +699,27 @@ Crear configuración no molesta a nadie, así que esas herramientas corren
 libremente. Abrir y cerrar puertos te puede cambiar la sesión debajo de los pies,
 así que esas preguntan antes.
 
+### Preguntar dos veces
+
+Editar el archivo y volver a preguntar es el paso siguiente normal, no un error,
+así que `connect_project` acepta el mismo nombre una segunda vez: al proyecto que
+ya existe se le agrega, un servicio que ya tiene se actualiza en su lugar con lo
+que diga el archivo hoy, y todo lo que el archivo no puede expresar — TLS, si se
+verifica el certificado del upstream — se conserva. Una ejecución donde no se
+pudo guardar nada borra el proyecto que creó al entrar, así que un intento
+fallido no deja nada que limpiar.
+
+`configure_service` funciona igual: una modificación parte del servicio guardado
+y cambia solo lo que le pasaste, así que mover un puerto es el proyecto, el
+nombre y la dirección nueva. Responde con la dirección a la que hay que apuntar
+al llamador, y con la variable donde escribirla cuando Sonda sabe cuál es.
+
 ### Qué no está en MCP, a propósito
 
-- **Borrar un proyecto.** `remove_service` cubre el servicio que hay que sacar;
-  tirar un proyecto entero — sus servicios, sus esquemas — es una decisión con
+- **Borrar un proyecto.** `remove_service` cubre el servicio que hay que sacar, y
+  volver a conectar el mismo proyecto es como se aplica una configuración que
+  cambió, así que nada queda trabado detrás de esa falta. Tirar un proyecto
+  entero — sus servicios, sus esquemas, lo que haya adentro — es una decisión con
   una mano humana encima, y el botón está en la interfaz web.
 - **El flujo en vivo.** `wait_for_call` responde lo mismo con un límite de
   tiempo, y mantener un stream abierto durante una llamada de herramienta no le
@@ -722,8 +739,27 @@ un cuerpo. **No hay opción para desactivarlo**, a propósito: una bandera para 
 se enciende probando contra un proyecto de juguete y se olvida encendida contra
 uno real. La interfaz web sigue mostrando todo, porque ahí el que lee eres tú.
 
+Hay dos pasadas más, que llegan donde comparar un nombre de campo no alcanza:
+
+- **Cadenas de consulta**, en cualquier lugar donde aparezca una URL: la ruta
+  capturada, un redirect `Location`, un enlace dentro de un cuerpo.
+  `?access_token=`, `?code=` y `?X-Amz-Signature=` se borran y el resto de la
+  URL se conserva, porque la ruta es como reconoces la llamada.
+- **Postgres**, que es un protocolo orientado a columnas: el nombre sensible y
+  el valor sensible llegan en mensajes distintos. Un `RowDescription` se alinea
+  contra los `DataRow` que vienen después, y una sentencia que nombra una
+  credencial vuelve con su estructura intacta y sus literales borrados —
+  incluido el resumen de una línea que el listado muestra antes de que hayas
+  pedido nada.
+
 Los cuerpos además vienen acortados por defecto; `get_call` acepta `detail` para
-traerlos enteros. `detail` **no** revela credenciales, y eso lo cubre un test.
+traerlos enteros. `detail` **no** revela credenciales: el filtrado recorre la
+respuesta completa primero y el acortado va después, así que la respuesta por
+defecto nunca es la más filtrada. Ambas cosas están cubiertas por tests, uno de
+ellos a través de una llamada real de herramienta.
+
+`SECURITY.md` enumera hasta dónde llega el filtrado y, más útil todavía, hasta
+dónde no.
 
 El endpoint HTTP rechaza las peticiones que traen un `Origin` ajeno, que es lo
 que impide que una página abierta en tu propio navegador llegue hasta él por DNS
@@ -824,8 +860,10 @@ sería una contraseña escrita dentro de `sonda.db`.
 Este es el único lugar donde Sonda reescribe lo que guarda, y la razón es que la
 alternativa ya no se puede corregir después. El intercambio de inicio lleva la
 contraseña. Si los bytes se guardaran tal como llegaron, el secreto quedaría en
-`sonda.db` en texto plano y podría llegar a un agente por MCP, cuya redacción
-recorre cabeceras y claves JSON, y un flujo TCP no es ninguna de las dos cosas.
+`sonda.db` en texto plano y podría llegar a un agente por MCP, cuya redacción lee
+nombres de campo, cadenas de consulta y la forma de un intercambio Postgres, y un
+handshake de inicio no es nada de eso: la contraseña es una corrida de bytes con
+prefijo de longitud dentro de un flujo TCP, sin nombre alguno.
 
 Por eso los bytes de la credencial se borran en la derivación, al pasar, antes
 de que se guarde nada: el cuerpo del PasswordMessage y de las respuestas SASL,

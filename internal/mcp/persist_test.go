@@ -99,3 +99,149 @@ func TestTheUndoPatchSurvivesARestart(t *testing.T) {
 		t.Errorf("the gap does not say what to put back: %v", gap)
 	}
 }
+
+// listed reads the project listing back through the tools, which is the only
+// view an agent has of what a call actually did.
+func listed(t *testing.T, s *Server) map[string]any {
+	t.Helper()
+	text, isError := callTool(t, s, "list_services", `{}`)
+	if isError {
+		t.Fatalf("list_services failed: %s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// project returns one project and its services out of that listing.
+func project(t *testing.T, s *Server, name string) map[string]any {
+	t.Helper()
+	for _, entry := range listed(t, s)["projects"].([]any) {
+		p, _ := entry.(map[string]any)
+		if p["name"] == name {
+			return p
+		}
+	}
+	return nil
+}
+
+func service(t *testing.T, p map[string]any, name string) map[string]any {
+	t.Helper()
+	services, _ := p["services"].([]any)
+	for _, entry := range services {
+		svc, _ := entry.(map[string]any)
+		if svc["name"] == name {
+			return svc
+		}
+	}
+	return nil
+}
+
+// Re-running is what connect_project's own answer tells the agent to do: apply
+// the patch, and when something is wrong, edit the file and ask again. It used
+// to answer a bare 409 with no way forward — there is no delete_project and no
+// rename_project — so the agent was stuck with a project it could neither
+// extend nor remove.
+//
+// Against the real store, because this is about identity: the fake enforces no
+// unique constraint and accepts any id, so a run that would collide in SQLite
+// passes there.
+func TestConnectingTheSameProjectAgainAddsToItInsteadOfRefusing(t *testing.T) {
+	s := sonda(t, filepath.Join(t.TempDir(), "sonda.db"))
+
+	if text, isError := callTool(t, s, "connect_project",
+		`{"name":"core-delpagroup","files":[{"filename":".env","content":"MS_AUTH_ADDR=localhost:50052\n"}]}`); isError {
+		t.Fatalf("connect_project failed: %s", text)
+	}
+	// A setting no configuration file can express, made after connecting. It is
+	// the one an update has no excuse to lose.
+	if text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","tls":true}`); isError {
+		t.Fatalf("configure_service failed: %s", text)
+	}
+
+	// The second run: the same .env with one service added to it.
+	text, isError := callTool(t, s, "connect_project",
+		`{"name":"core-delpagroup","files":[{"filename":".env","content":"MS_AUTH_ADDR=localhost:50052\nMS_ADMIN_ADDR=localhost:50053\n"}]}`)
+	if isError {
+		t.Fatalf("connecting the same project again was refused: %s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["reused_existing_project"] == nil {
+		t.Errorf("the answer does not say it added to a project that was already there: %v", out)
+	}
+	if added, _ := out["added"].(float64); added != 1 {
+		t.Errorf("added = %v, want the one service the file gained", out["added"])
+	}
+	if updated, _ := out["updated"].(float64); updated != 1 {
+		t.Errorf("updated = %v, want the one that was already there", out["updated"])
+	}
+
+	// One project, not two, and nothing about the first service undone.
+	if count := len(listed(t, s)["projects"].([]any)); count != 1 {
+		t.Errorf("%d projects, want the one that was asked for", count)
+	}
+	p := project(t, s, "core-delpagroup")
+	auth := service(t, p, "ms-auth")
+	if auth == nil {
+		t.Fatalf("ms-auth disappeared: %v", p)
+	}
+	if tls, _ := auth["tls"].(bool); !tls {
+		t.Errorf("connecting again turned TLS off: %v", auth)
+	}
+	if auth["upstream"] != "http://localhost:50052" {
+		t.Errorf("upstream = %v, want the real service", auth["upstream"])
+	}
+	if service(t, p, "ms-admin") == nil {
+		t.Errorf("the service the file gained was not added: %v", p)
+	}
+}
+
+// A run where nothing could be saved used to leave the project row behind,
+// created before the first service was tried and never rolled back — an empty
+// project the agent has no tool to remove.
+func TestAConnectThatSavesNothingLeavesNoProjectBehind(t *testing.T) {
+	s := sonda(t, filepath.Join(t.TempDir(), "sonda.db"))
+
+	// The suggestion for port 9152 is 127.0.0.1:9152, so this one entry asks
+	// Sonda to forward a port to itself, which the store refuses.
+	text, isError := callTool(t, s, "connect_project",
+		`{"name":"sin-suerte","files":[{"filename":".env","content":"MS_X_URL=127.0.0.1:9152\n"}]}`)
+	if !isError {
+		t.Fatalf("a service that cannot exist was accepted: %s", text)
+	}
+	if project(t, s, "sin-suerte") != nil {
+		t.Error("the failed run left an empty project behind")
+	}
+}
+
+// Only the last two digits of the real port reach the suggestion, and each file
+// is read on its own — so two services in two files were handed one address,
+// both were created, and which of them got the port was map iteration order.
+func TestTwoFilesAreNotGivenOneListenAddress(t *testing.T) {
+	s := sonda(t, filepath.Join(t.TempDir(), "sonda.db"))
+
+	text, isError := callTool(t, s, "connect_project", `{"name":"dos-archivos","files":[
+	  {"filename":".env","content":"MS_A_URL=localhost:3001\n"},
+	  {"filename":"otro.env","content":"MS_B_URL=localhost:50001\n"}
+	]}`)
+	if isError {
+		t.Fatalf("connect_project failed: %s", text)
+	}
+
+	p := project(t, s, "dos-archivos")
+	services, _ := p["services"].([]any)
+	if len(services) != 2 {
+		t.Fatalf("%d services saved, want both: %v", len(services), p)
+	}
+	first, _ := services[0].(map[string]any)
+	second, _ := services[1].(map[string]any)
+	if first["listen"] == second["listen"] {
+		t.Errorf("both services were given %v", first["listen"])
+	}
+}

@@ -104,6 +104,13 @@ legitimate field that happens to look like base64. So the question it can answer
 is always "is this field called something credential-like", and everything below
 follows from that.
 
+**Redaction runs over the whole payload before anything is shortened.** Bodies
+come back cut at two thousand characters unless `detail` is asked for, and for a
+while the cut happened first — so a statement longer than that reached the
+credential gate already truncated, and the *default* answer was the leaky one.
+The order is now fixed and pinned by a test: whatever is dropped for display was
+already redacted.
+
 What it reaches:
 
 - **Header and JSON field names**, in any spelling — `api_key`, `apiKey`,
@@ -111,17 +118,54 @@ What it reaches:
 - **Inside a captured body**, when the body is itself JSON. A body is stored as
   one opaque string, so this is a second pass through the same walk.
 - **Query-string parameters**, wherever a URL appears — the captured path, a
-  `Location` redirect, a `Referer`, a link inside a body. Only the value of a
-  sensitive parameter is blanked; the path, the other parameters and any
-  fragment stay, because the path is how a person recognises the call.
+  `Location` redirect, a `Referer`, a link inside a body. Every `?` in the
+  string is examined, not the first, and pairs are split on `;` as well as `&`.
+  Only the value of a sensitive parameter is blanked; the path, the other
+  parameters and any fragment stay, because the path is how a person recognises
+  the call. Three names are treated as credentials here and nowhere else —
+  `code` (the OAuth authorization code), `key` (a Google API key rides in
+  `?key=`) and `sig`. As a field name `code` is the SQLSTATE of every Postgres
+  error and an HTTP status besides, so putting it in the general list would
+  blank the most useful field a failed capture has.
 - **Postgres column values**, by aligning a `RowDescription` with the `DataRow`s
   after it: `SELECT api_key FROM tokens` puts the sensitive name in one message
-  and the secret in the next, which no per-field rule can see on its own.
+  and the secret in the next, which no per-field rule can see on its own. A row
+  carrying more values than the description had columns has the unaligned tail
+  blanked as well.
 - **String literals in a Postgres statement that names a credential**, plus the
   bind parameters of that statement. `INSERT INTO users (email, password)
   VALUES ('a', 'hunter2')` comes back with its structure intact and its literals
   blanked. A bind parameter is a position with no name, so when the statement it
   belongs to touches a credential, all of its parameters go.
+- **A result row whose column was aliased.** `SELECT api_key AS k FROM tokens`
+  describes a column called `k`, so alignment finds nothing. When the statement
+  names a credential and none of the described columns does, the whole row is
+  blanked — the same blunt rule the bind parameters follow. It costs the id and
+  the email of a login lookup, which the web interface still shows.
+- **The one-line Postgres summary**, which is the field a listing carries and
+  therefore the one that reaches an agent on its first tool call, before it has
+  asked for detail. It is a plain string, so nothing about it says "this is
+  SQL": it is gated separately. A statement summary has its literals blanked; an
+  error summary keeps its SQLSTATE and loses the server's message, because
+  Postgres echoes the offending value there (`invalid input syntax for type
+  uuid: "hunter2"`) in forms with no structure worth mining.
+- **The `message`, `detail` and `hint` of a Postgres error**, for the same
+  reason, when the statement or the text itself names a credential.
+- **The raw stream of a Postgres capture.** A call carries the same
+  conversation twice — decoded under `postgres`, and verbatim as the bytes that
+  crossed. In the second copy the statement, its bind parameters and every row
+  value are legible and everything above counts for nothing, and it cannot be
+  blanked selectively: a Postgres value is a length followed by a run of bytes
+  at an arbitrary offset, with no quoting to scan for. So over MCP the verbatim
+  copy is replaced whole and the decoded one is what an agent reads. The sizes
+  stay, and the web interface still shows the stream.
+
+Redaction is scoped to where the protocol actually is. The Postgres pass reads
+neighbouring messages, and it only does so inside a capture's `postgres` view
+and only across objects that carry a pgwire message `kind`. A captured body that
+happens to hold `sql`, `columns`, `values` or `params` keys is left exactly as
+it was recorded: for a body, the stored bytes are the record, and that is the
+one surface where the reader cannot check them against the web interface.
 
 What it does **not** reach, and will not:
 
@@ -130,12 +174,24 @@ What it does **not** reach, and will not:
 - **A Postgres statement that names no credential.** `INSERT INTO t VALUES
   ('sk_live_…')` keeps its literal, and the bind parameters of an ordinary
   statement are returned in the clear — deliberately, because the values are
-  usually the reason the capture was opened.
+  usually the reason the capture was opened. The same holds for an aliased
+  column when the statement gives nothing away: `SELECT api_key AS k FROM t`
+  reaches the alias rule above, `SELECT c1 AS k FROM t` does not.
 - **A `DataRow` with no `RowDescription` before it** in the same capture, and a
   `Bind` whose `Parse` is not in the same capture. The alignment has nothing to
-  align against.
-- **Binary values and non-JSON bodies.** Bytes are reported by size only, so
-  there is nothing to redact — and nothing decoded either.
+  align against, and a row with no description at all is returned whole rather
+  than blanked.
+- **A credential-shaped query parameter under a name nobody listed.**
+  `?code_verifier=` and `?assertion=` are secrets and are returned in the clear.
+  The list is a list.
+- **A body that is not JSON.** It is returned exactly as it was recorded — as
+  text, or as base64 when the bytes are not valid UTF-8 — because there are no
+  field names in it to match. A form post, a CSV, a protobuf: whatever is in
+  them comes out.
+- **The raw copy of a WebSocket, event-stream or gRPC capture.** Every one of
+  those is served the way Postgres is, decoded *and* verbatim, and only the
+  Postgres verbatim copy is replaced. The decoded frames and messages are
+  redacted; the bytes beside them are not. This is a known gap, not a claim.
 - **Personal data.** An email address, a name, an address and a card number are
   not credentials and are returned whole.
 

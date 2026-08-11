@@ -51,14 +51,16 @@ func (a args) num(key string, fallback int) int {
 
 func (a args) has(key string) bool { _, ok := a[key]; return ok }
 
+// boolean reads a flag that has already been checked against the schema, so
+// anything that is not a bool is absent rather than false.
+//
+// It used to coerce, and only the literal "true" counted: set_stub with
+// enabled:"1" passed the has() check, resolved to false, turned stubbing off
+// and reported that it had worked. A wrong type is refused in callTool now,
+// where it can be said out loud.
 func (a args) boolean(key string) bool {
-	switch v := a[key].(type) {
-	case bool:
-		return v
-	case string:
-		return v == "true"
-	}
-	return false
+	v, _ := a[key].(bool)
+	return v
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -259,9 +261,7 @@ func readTools() []Tool {
 				"Ask it when messages come back without field names. It separates the three causes that look identical from the outside — reflection is off or unsupported, the descriptor set does not cover this service, or the service was down when Sonda asked — and only the last one fixes itself.",
 			Schema:      obj(map[string]any{}),
 			Annotations: readOnly,
-			Run: func(ctx context.Context, s *Server, a args) (any, error) {
-				return s.get(ctx, "/api/schemas", false)
-			},
+			Run:         schemaStatus,
 		},
 
 		{
@@ -342,6 +342,31 @@ func readTools() []Tool {
 			},
 		},
 	}
+}
+
+// schemaStatus reports where each gRPC service's field names came from, and
+// says why when there is nothing to report.
+//
+// This reads the project whose ports are open, so before activate_project the
+// honest answer is an empty list — and an empty list on its own reads as "no
+// schemas resolved", which sends an agent looking for a descriptor set problem
+// that does not exist. set_stub and break_service say the same thing through
+// sequencing(); this one has no error to attach it to.
+func schemaStatus(ctx context.Context, s *Server, _ args) (any, error) {
+	out, err := s.get(ctx, "/api/schemas", false)
+	if err != nil {
+		return nil, err
+	}
+	body, ok := out.(map[string]any)
+	if !ok {
+		return out, nil
+	}
+	if list, _ := body["schemas"].([]any); len(list) == 0 {
+		body["note"] = "Nothing to report, which is not the same as nothing working. " +
+			"This reads only the project whose ports are open: if activate_project has not been called yet, that is the cause; otherwise the active project has no grpc service in it. " +
+			"list_services says which project is active and what is in it."
+	}
+	return body, nil
 }
 
 // listServices answers with the configuration and the two runtime switches at

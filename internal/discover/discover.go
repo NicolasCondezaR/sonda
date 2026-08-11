@@ -57,6 +57,7 @@ var hostPort = regexp.MustCompile(`^(?:([a-z][a-z0-9+.-]*)://)?([A-Za-z0-9._-]+)
 func FromEnv(r io.Reader) ([]Found, error) {
 	var out []Found
 	seen := map[string]bool{}
+	taken := map[string]bool{}
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
@@ -102,7 +103,7 @@ func FromEnv(r io.Reader) ([]Found, error) {
 			Name:     name,
 			Upstream: scheme + "://" + host + ":" + port,
 			Protocol: protocolFor(key),
-			Listen:   suggestListen(port),
+			Listen:   FreeListen(suggestListen(port), taken),
 			Source:   fmt.Sprintf("línea %d: %s", line, key),
 			Key:      key,
 			Original: value,
@@ -165,6 +166,43 @@ func suggestListen(port string) string {
 	return fmt.Sprintf("127.0.0.1:%d", 9100+n%100)
 }
 
+// FreeListen resolves the collision the suggestion cannot avoid on its own.
+//
+// Only the last two digits survive, so 3001 and 50001 are both suggested
+// 127.0.0.1:9101 — and two services told to listen on one address is not a
+// clash anyone can see coming: neither port is bound when the suggestion is
+// made, so probing says both are free, and after activation one listener binds,
+// the other reports "address already in use", and which one wins is whichever
+// was reconciled first. It reads exactly like an external process squatting the
+// port.
+//
+// taken is what this pass has already handed out. It is the caller's, because
+// one project is usually several files and a suggestion is only unique if the
+// whole run agrees on it.
+func FreeListen(addr string, taken map[string]bool) string {
+	host, port, err := splitPort(addr)
+	if err != nil {
+		return addr
+	}
+	for ; port <= 65535; port++ {
+		candidate := fmt.Sprintf("%s:%d", host, port)
+		if !taken[candidate] {
+			taken[candidate] = true
+			return candidate
+		}
+	}
+	return addr
+}
+
+func splitPort(addr string) (host string, port int, err error) {
+	i := strings.LastIndex(addr, ":")
+	if i <= 0 {
+		return "", 0, fmt.Errorf("%q is not host:port", addr)
+	}
+	port, err = strconv.Atoi(addr[i+1:])
+	return addr[:i], port, err
+}
+
 // FromCompose reads published ports out of a compose file.
 //
 // Deliberately line-based rather than a YAML parse: the only thing needed is
@@ -177,6 +215,7 @@ func FromCompose(r io.Reader) ([]Found, error) {
 		service string
 		indent  int
 	)
+	taken := map[string]bool{}
 
 	nameLine := regexp.MustCompile(`^(\s+)([a-zA-Z0-9._-]+):\s*$`)
 	portLine := regexp.MustCompile(`["']?(?:[\d.]+:)?(\d{2,5}):(\d{2,5})["']?`)
@@ -223,7 +262,7 @@ func FromCompose(r io.Reader) ([]Found, error) {
 				Name:     service,
 				Upstream: "http://127.0.0.1:" + published,
 				Protocol: "http",
-				Listen:   suggestListen(published),
+				Listen:   FreeListen(suggestListen(published), taken),
 				Source:   fmt.Sprintf("línea %d: %s", line, service),
 			})
 			inPorts = false

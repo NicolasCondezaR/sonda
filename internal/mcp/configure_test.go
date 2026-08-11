@@ -46,7 +46,7 @@ func (r *routedAPI) called(prefix string) bool {
 
 // A .env the way a real one looks: the service entries mixed in with the noise
 // discovery is supposed to drop.
-const discovered = `{"found":[
+const discoveredEnv = `{"found":[
   {"name":"ms-auth","upstream":"http://localhost:50052","protocol":"grpc",
    "listen":"127.0.0.1:9152","key":"MS_AUTH_GRPC_URL","original":"localhost:50052"},
   {"name":"ms-admin","upstream":"http://localhost:50053","protocol":"grpc",
@@ -56,7 +56,7 @@ const discovered = `{"found":[
 
 func connectFake() *routedAPI {
 	return &routedAPI{routes: map[string]string{
-		"POST /api/discover": discovered,
+		"POST /api/discover": discoveredEnv,
 		"POST /api/projects": `{"id":3,"name":"core-delpagroup"}`,
 		"GET /api/projects":  `{"projects":[{"id":3,"name":"core-delpagroup","active":false,"services":[]}]}`,
 	}}
@@ -256,11 +256,14 @@ func TestDisconnectWillNotInventAVariableItNeverSaw(t *testing.T) {
 }
 
 // oneService is a project with something already in it, which is the state
-// every "fix that port" call is made against.
+// every "fix that port" call is made against. The service terminates TLS and
+// carries the variable it was pointed by, because both are settings the caller
+// moving its port has no reason to mention.
 func oneService() *routedAPI {
 	return &routedAPI{routes: map[string]string{
 		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":false,"services":[
-		  {"id":7,"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc","reflection":true}
+		  {"id":7,"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc","reflection":true,
+		   "tls":true,"env_key":"MS_AUTH_GRPC_URL"}
 		]}]}`,
 		"POST /api/projects/3/services":   `{"projects":[]}`,
 		"DELETE /api/services/7":          `{"projects":[]}`,
@@ -334,6 +337,157 @@ func TestConfigureServiceAddsANameTheProjectDoesNotHave(t *testing.T) {
 	// reflection gets it by asking for it.
 	if reflection, _ := body["reflection"].(bool); reflection {
 		t.Errorf("reflection = %v, want false unless asked for", body["reflection"])
+	}
+}
+
+// The scenario the tool advertises itself for: Sonda could not take the port,
+// so move it. Nothing else was mentioned, so nothing else may change — and TLS
+// is the one that hurts, because the listener comes back in plaintext while
+// every caller still says https:// and the tool reports success.
+func TestMovingAPortKeepsEverythingItWasNotAskedAbout(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","listen":"127.0.0.1:9252"}`)
+	if isError {
+		t.Fatalf("configure_service failed: %s", text)
+	}
+
+	body := saved(t, api)
+	if tls, _ := body["tls"].(bool); !tls {
+		t.Errorf("tls = %v, want the service to still terminate TLS", body["tls"])
+	}
+	if reflection, _ := body["reflection"].(bool); !reflection {
+		t.Errorf("reflection = %v, want the setting the service already had", body["reflection"])
+	}
+	if body["upstream"] != "http://localhost:50052" {
+		t.Errorf("upstream = %v, want the stored one — only the port was being moved", body["upstream"])
+	}
+	if body["protocol"] != "grpc" {
+		t.Errorf("protocol = %v, want the stored one", body["protocol"])
+	}
+	if body["listen"] != "127.0.0.1:9252" {
+		t.Errorf("listen = %v, want the new port", body["listen"])
+	}
+}
+
+// An update that has to be told the upstream again is an update whose caller
+// has to go and read it first, and the value it copies back is the one thing
+// that must not be guessed.
+func TestAnUpdateDoesNotHaveToRepeatTheUpstream(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	if text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","listen":"127.0.0.1:9252"}`); isError {
+		t.Fatalf("an update without an upstream was refused: %s", text)
+	}
+
+	// An addition genuinely cannot be completed without one, and saying so
+	// beats saving a service that names nothing.
+	text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-nuevo","listen":"127.0.0.1:9253"}`)
+	if !isError {
+		t.Fatal("a new service was added with no upstream at all")
+	}
+	if !strings.Contains(text, "upstream") {
+		t.Errorf("the error does not say what is missing: %s", text)
+	}
+}
+
+// Sonda cannot repoint a caller, so the tool whose whole job is fixing a port
+// owes the agent the address to point at. The raw project listing buries it
+// among every project there is.
+func TestConfigureServiceHandsBackTheAddressToPointAt(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","listen":"127.0.0.1:9252"}`)
+	if isError {
+		t.Fatalf("configure_service failed: %s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	// The service terminates TLS, so an address without the scheme is one that
+	// answers nothing.
+	if out["listening_on"] != "https://127.0.0.1:9252" {
+		t.Errorf("listening_on = %v, want the new address with the scheme it answers on", out["listening_on"])
+	}
+	if out["moved_from"] != "127.0.0.1:9152" {
+		t.Errorf("moved_from = %v, want the port it left", out["moved_from"])
+	}
+	changes, _ := out["changes"].(map[string]any)
+	entry, ok := changes["MS_AUTH_GRPC_URL"].(map[string]any)
+	if !ok {
+		t.Fatalf("the variable this service was pointed by is not in the patch: %v", out)
+	}
+	if entry["from"] != "127.0.0.1:9152" || entry["to"] != "https://127.0.0.1:9252" {
+		t.Errorf("the patch is %v, want the old address swapped for the new one", entry)
+	}
+	if out["next_steps"] == nil {
+		t.Error("the answer does not say that the edit is the agent's to make")
+	}
+}
+
+// Names match case-insensitively, because an agent that read MS-Auth in a
+// listing and typed ms-auth means the same service. Writing the new spelling
+// through renamed the row, and every capture already taken stayed under the old
+// name where search_calls service=ms-auth would never find it again.
+func TestADifferentSpellingDoesNotRenameTheService(t *testing.T) {
+	api := &routedAPI{routes: map[string]string{
+		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":false,"services":[
+		  {"id":7,"name":"MS-Auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc"}
+		]}]}`,
+		"POST /api/projects/3/services": `{"projects":[]}`,
+	}}
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","listen":"127.0.0.1:9252"}`)
+	if isError {
+		t.Fatalf("configure_service failed: %s", text)
+	}
+	if name := saved(t, api)["name"]; name != "MS-Auth" {
+		t.Errorf("the service was saved as %v, want the stored spelling kept", name)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+	// Keeping it silently is its own trap: the agent goes on using the spelling
+	// it typed and finds nothing.
+	if note, _ := out["note"].(string); !strings.Contains(note, "MS-Auth") {
+		t.Errorf("the answer does not say which name the captures are under: %v", out)
+	}
+}
+
+// Only the literal "true" counted, so enabled:"1" passed the has() check,
+// resolved to false, turned stubbing off and reported that it had worked. The
+// same shape reaches tls, detail, cut, clear and probe_upstreams.
+func TestAFlagOfTheWrongTypeIsRefusedRatherThanReadAsFalse(t *testing.T) {
+	api := &routedAPI{routes: map[string]string{"POST /api/stub": `{"stubbed":[]}`}}
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "set_stub", `{"service":"ms-auth","enabled":"1"}`)
+	if !isError {
+		t.Fatalf("enabled:\"1\" was accepted: %s", text)
+	}
+	if !strings.Contains(text, "enabled") {
+		t.Errorf("the error does not name the argument: %s", text)
+	}
+	if api.called("POST /api/stub") {
+		t.Errorf("stubbing was changed anyway: %v", api.calls)
+	}
+
+	// The right type still goes through, or the fix is just a broken tool.
+	if text, isError := callTool(t, s, "set_stub", `{"service":"ms-auth","enabled":true}`); isError {
+		t.Fatalf("a real boolean was refused: %s", text)
 	}
 }
 
