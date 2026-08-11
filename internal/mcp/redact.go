@@ -133,7 +133,11 @@ func redact(v any) any {
 				out[k] = redactedLike(val)
 				continue
 			}
-			if text, ok := val.(string); ok && isSummaryKey(k) {
+			// `postgres_summary` is Sonda's own key and means one thing
+			// wherever it appears. Its twin on a trace node is called `detail`,
+			// which is nobody's private name, so that one is gated below by
+			// where it sits rather than by what it is called.
+			if text, ok := val.(string); ok && strings.EqualFold(k, "postgres_summary") {
 				val = redactSummary(text)
 			}
 			out[k] = redact(val)
@@ -143,8 +147,9 @@ func redact(v any) any {
 		// needs the one thing a per-key walk cannot do: look at the neighbours.
 		if view, ok := out["postgres"]; ok {
 			redactPostgres(view)
-			dropRawStream(out)
 		}
+		redactTrace(out)
+		dropRawStreams(out)
 		return out
 
 	case []any:
@@ -345,15 +350,55 @@ func redactPairs(b *strings.Builder, query string) bool {
 	return changed
 }
 
-// isSummaryKey names the fields that carry a Postgres one-line reading. Both
-// are Sonda's own: `postgres_summary` on every listed call, and `detail` on a
-// node of a trace, which is the same string under another name.
-func isSummaryKey(key string) bool {
-	switch strings.ToLower(key) {
-	case "postgres_summary", "detail":
-		return true
+// redactTrace gates the one-line reading a trace carries, in the two places it
+// appears: the `detail` of each node, and the pre-rendered tree beside them.
+//
+// `detail` used to be gated by its name alone, anywhere in any payload, and
+// that was worse than the leak it closed. `{"detail": …}` is FastAPI's error
+// shape and RFC 7807's, so the most common failure body there is went through a
+// SQL scanner: an apostrophe in ordinary prose opens a literal that never
+// closes, and `the user's password was rejected` came back cut at the
+// apostrophe — in the tool that exists to show failures. So the gate now
+// follows the structure instead of the name.
+//
+// A trace node's detail is a Postgres summary in one of its four cases and
+// prose in the others — a transport error, a gRPC status and message, a
+// GraphQL count. All four go through the same gate, which over-redacts a
+// message that happens to name a credential. Within a field that is Sonda's own
+// one-line reading of a failure that is the direction to err in; the web
+// interface still shows it whole.
+func redactTrace(out map[string]any) {
+	if isTraceCall(out) {
+		if line, ok := out["detail"].(string); ok {
+			out["detail"] = redactSummary(line)
+		}
 	}
-	return false
+	// The tree also travels drawn, as one block of text, and every node's
+	// detail is repeated in it verbatim. Redacting the nodes and leaving the
+	// drawing is the same mistake as redacting a Postgres capture and leaving
+	// the bytes beside it.
+	if _, ok := out["trace"]; ok {
+		if drawn, ok := out["rendered"].(string); ok {
+			lines := strings.Split(drawn, "\n")
+			for i, line := range lines {
+				lines[i] = redactSummary(line)
+			}
+			out["rendered"] = strings.Join(lines, "\n")
+		}
+	}
+}
+
+// isTraceCall reports whether a map is one call of a trace tree, by the fields
+// trace.Call always emits. Matching the neighbours rather than the `detail`
+// itself is the whole point: the same key on an ordinary payload means nothing
+// and must not be touched.
+func isTraceCall(m map[string]any) bool {
+	for _, key := range []string{"id", "target", "status", "started_at", "duration_ms", "failed"} {
+		if _, ok := m[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // redactSummary gates that one-line reading. It is the field that reaches an
@@ -500,20 +545,47 @@ func redactPostgres(v any) {
 	}
 }
 
-// dropRawStream removes the second copy of a Postgres conversation.
+// dropRawStreams removes the second copy of a capture.
 //
-// The same bytes are served twice: decoded and redacted under `postgres`, and
-// verbatim under request.text — or request.base64, when a binary value made the
-// stream invalid UTF-8. There the statement, its bind parameters and every row
-// value are perfectly legible and everything above counts for nothing. They
-// cannot be blanked selectively either: a Postgres value is a length followed
-// by a run of bytes at an arbitrary offset, with no quoting to scan for.
+// Four protocols are served twice: decoded and redacted under their own view,
+// and verbatim under request.text — or request.base64, when the bytes are not
+// valid UTF-8. In the second copy the statement, the frame payload, the event
+// and the protobuf field are all perfectly legible, and everything the walk
+// above did counts for nothing. None of them can be blanked selectively
+// either: a Postgres value, a WebSocket frame and a gRPC message are each a
+// length followed by a run of bytes at an arbitrary offset, with no quoting to
+// scan for.
 //
-// Nothing readable is lost that the decoded view does not already carry, the
-// sizes stay, and the web interface still shows the stream — because there the
-// reader is the owner.
-func dropRawStream(out map[string]any) {
-	for _, side := range []string{"request", "response"} {
+// What dropping the copy costs a reader differs per protocol, so it only goes
+// where the decoded view beside it genuinely replaces it. The sizes always
+// stay, and the web interface still shows the stream — because there the reader
+// is the owner.
+func dropRawStreams(out map[string]any) {
+	if _, ok := out["postgres"]; ok {
+		// Both directions: pgwire decodes every message of both.
+		dropRawStream(out, "request", "response")
+	}
+	if _, ok := out["socket"]; ok {
+		// Both directions: the frame view carries each frame's payload, kind,
+		// size, final bit and close code. What goes is the framing header and
+		// the client's mask, which are transport bookkeeping rather than
+		// anything a capture was opened for.
+		dropRawStream(out, "request", "response")
+	}
+	if _, ok := out["stream"]; ok {
+		// An event stream is decoded on the response side only — its request is
+		// an ordinary HTTP body, with no second copy anywhere — so the request
+		// stays or the reader loses it outright.
+		dropRawStream(out, "response")
+	}
+	if view, ok := out["grpc"].(map[string]any); ok {
+		dropRawStream(out, decodedGRPCSides(view)...)
+	}
+}
+
+// dropRawStream replaces the verbatim bytes of the named sides.
+func dropRawStream(out map[string]any, sides ...string) {
+	for _, side := range sides {
 		part, ok := out[side].(map[string]any)
 		if !ok {
 			continue
@@ -524,6 +596,36 @@ func dropRawStream(out map[string]any) {
 			}
 		}
 	}
+}
+
+// decodedGRPCSides names the sides whose messages all came back decoded, as
+// JSON when a schema was resolved and as numbered fields when none was.
+//
+// It has to be conditional, and per side, because gRPC is the one protocol here
+// whose decoding can come up empty. A compressed frame is not decoded — the
+// encoding is negotiated in a header Sonda does not hold — and a body that is
+// not gRPC framing at all yields no messages. On those sides the verbatim bytes
+// are the only record there is, and dropping them would leave a reader with
+// nothing rather than with less.
+func decodedGRPCSides(view map[string]any) []string {
+	var sides []string
+	for _, side := range []string{"request", "response"} {
+		messages, ok := view[side].([]any)
+		if !ok || len(messages) == 0 {
+			continue
+		}
+		decoded := true
+		for _, m := range messages {
+			message, _ := m.(map[string]any)
+			if message["json"] == nil && message["fields"] == nil {
+				decoded = false
+			}
+		}
+		if decoded {
+			sides = append(sides, side)
+		}
+	}
+	return sides
 }
 
 // pgMessage accepts an object only if it carries the `kind` every pgwire

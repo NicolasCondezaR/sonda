@@ -148,17 +148,30 @@ What it reaches:
   SQL": it is gated separately. A statement summary has its literals blanked; an
   error summary keeps its SQLSTATE and loses the server's message, because
   Postgres echoes the offending value there (`invalid input syntax for type
-  uuid: "hunter2"`) in forms with no structure worth mining.
+  uuid: "hunter2"`) in forms with no structure worth mining. The same line
+  reaches an agent in two more places and is gated in both: the `detail` of a
+  trace node, and the tree `trace_call` also returns drawn as text, where every
+  node's detail is repeated. Those two are recognised by where they sit and not
+  by the field name — `detail` is the standard error field of RFC 7807 and of
+  half the HTTP frameworks in use, and gating it by name put every ordinary
+  error body through a SQL scanner.
 - **The `message`, `detail` and `hint` of a Postgres error**, for the same
   reason, when the statement or the text itself names a credential.
-- **The raw stream of a Postgres capture.** A call carries the same
-  conversation twice — decoded under `postgres`, and verbatim as the bytes that
-  crossed. In the second copy the statement, its bind parameters and every row
-  value are legible and everything above counts for nothing, and it cannot be
-  blanked selectively: a Postgres value is a length followed by a run of bytes
-  at an arbitrary offset, with no quoting to scan for. So over MCP the verbatim
-  copy is replaced whole and the decoded one is what an agent reads. The sizes
-  stay, and the web interface still shows the stream.
+- **The verbatim copy of a decoded capture.** A Postgres session, a WebSocket,
+  an event stream and a gRPC call each carry the same bytes twice — decoded
+  under their own view, and verbatim as what crossed. In the second copy the
+  statement, the frame payload, the event and the protobuf field are all
+  legible and everything above counts for nothing, and none of them can be
+  blanked selectively: each is a length followed by a run of bytes at an
+  arbitrary offset, with no quoting to scan for. So over MCP the verbatim copy
+  is replaced wherever the decoded view beside it genuinely replaces it — both
+  directions of a Postgres session and of a socket, the response of an event
+  stream, and each side of a gRPC call whose messages all came back decoded.
+  Three cases keep their bytes because nothing else holds them: the *request*
+  of an event stream, which nothing decodes; a gRPC side carrying a compressed
+  frame, since the encoding is negotiated in a header Sonda does not hold; and
+  a body that yielded no gRPC messages at all. The sizes always stay, and the
+  web interface still shows the stream.
 
 Redaction is scoped to where the protocol actually is. The Postgres pass reads
 neighbouring messages, and it only does so inside a capture's `postgres` view
@@ -188,10 +201,15 @@ What it does **not** reach, and will not:
   text, or as base64 when the bytes are not valid UTF-8 — because there are no
   field names in it to match. A form post, a CSV, a protobuf: whatever is in
   them comes out.
-- **The raw copy of a WebSocket, event-stream or gRPC capture.** Every one of
-  those is served the way Postgres is, decoded *and* verbatim, and only the
-  Postgres verbatim copy is replaced. The decoded frames and messages are
-  redacted; the bytes beside them are not. This is a known gap, not a claim.
+- **A protobuf field decoded without a schema.** With a descriptor set or with
+  the service's own reflection, a gRPC message comes back with real field
+  names, and ordinary name matching redacts it like any other payload — that
+  case is closed, in the decoded view and in the verbatim copy alike. With
+  neither, the wire format carries numbers and not names: `{"number": 1,
+  "value": "sk_live_…"}`. There is nothing to match on, and the value is
+  returned in the clear. Blanking every unnamed field would empty the one view
+  that exists precisely for when no schema could be found, so it is not done.
+  `schema_status` says which of the two you are getting, per service, and why.
 - **Personal data.** An email address, a name, an address and a card number are
   not credentials and are returned whole.
 

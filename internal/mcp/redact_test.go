@@ -2,14 +2,19 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	descpb "google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/pgwire"
@@ -753,4 +758,317 @@ func TestNoSecretLeavesThroughARealToolCall(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A trace repeats each node's one-line reading twice: as the node's `detail`,
+// and inside the tree it also renders as text. Both are gated, and the SQLSTATE
+// — the part worth having — survives in both.
+func TestTheTraceSummaryIsGatedInBothCopies(t *testing.T) {
+	s := sondaHolding(t, pgCall(
+		pgMsg('Q', pgStr("SELECT id FROM users WHERE password_hash = 'p4ssw0rd'")),
+		pgError("28P01", `password authentication failed for user "hunter3"`),
+	))
+
+	tree, isError := callTool(t, s, "trace_call", `{"id":1}`)
+	if isError {
+		t.Fatalf("trace_call failed: %s", tree)
+	}
+
+	for _, secret := range []string{"hunter3", "p4ssw0rd"} {
+		if strings.Contains(tree, secret) {
+			t.Errorf("%q reached an agent through trace_call:\n%s", secret, tree)
+		}
+	}
+	// Twice, because the drawn tree used to carry what the node no longer did.
+	if got := strings.Count(tree, "28P01"); got != 2 {
+		t.Errorf("the SQLSTATE survives in %d of the two copies:\n%s", got, tree)
+	}
+}
+
+// `detail` is FastAPI's error shape and RFC 7807's, so it is the most common
+// failure body there is. It used to be sent through the Postgres summary gate
+// wherever it appeared, and an apostrophe in ordinary prose opens a SQL literal
+// that never closes — so the body came back cut off at the apostrophe, in the
+// tool that exists to show failures.
+func TestAnOrdinaryDetailFieldIsNotReadAsSQL(t *testing.T) {
+	body := `{"detail":"the user's password was rejected by the identity provider","status":401}`
+	s := sondaHolding(t, &store.Call{
+		Target: "api", Protocol: config.ProtocolHTTP, Method: "POST", Path: "/v1/login",
+		Status: 401, StartedAt: time.Now().UTC(),
+		Response: store.Message{
+			Headers: http.Header{"Content-Type": []string{"application/json"}},
+			Body:    []byte(body), Size: int64(len(body)),
+		},
+	})
+
+	got, isError := callTool(t, s, "get_call", `{"id":1,"detail":true}`)
+	if isError {
+		t.Fatalf("get_call failed: %s", got)
+	}
+	if !strings.Contains(got, `rejected by the identity provider`) {
+		t.Errorf("an ordinary error body was corrupted by the summary gate:\n%s", got)
+	}
+}
+
+// --- the second copy of a decoded stream ---
+
+// wsFrame builds one whole WebSocket frame the way an endpoint would. A frame
+// from a client is masked, which is what makes a captured request stream
+// invalid UTF-8 and sends it out as base64.
+func wsFrame(opcode int, payload []byte, mask *[4]byte) []byte {
+	out := []byte{byte(opcode) | 0x80}
+	second := byte(0)
+	if mask != nil {
+		second |= 0x80
+	}
+	out = append(out, second|byte(len(payload)))
+	if mask == nil {
+		return append(out, payload...)
+	}
+	out = append(out, mask[:]...)
+	for i, b := range payload {
+		out = append(out, b^mask[i%4])
+	}
+	return out
+}
+
+// grpcFrame is the length-prefixed message framing: one compression byte, four
+// bytes of length, then the protobuf.
+func grpcFrame(message []byte) []byte {
+	out := binary.BigEndian.AppendUint32([]byte{0}, uint32(len(message)))
+	return append(out, message...)
+}
+
+// protoString encodes one length-delimited protobuf field.
+func protoString(number int, value string) []byte {
+	out := []byte{byte(number<<3 | 2), byte(len(value))}
+	return append(out, value...)
+}
+
+// Every one of these protocols is served twice — decoded under its own view and
+// verbatim beside it — and the second copy used to walk straight out. Read back
+// through a real tool call, because that is the only place the two copies exist
+// together.
+func TestTheVerbatimCopyOfADecodedStreamDoesNotLeave(t *testing.T) {
+	// The server's frames are never masked, which is what makes the second copy
+	// of this direction plainly legible. The client's are, and that direction is
+	// checked further down.
+	mask := [4]byte{0x37, 0xfa, 0x21, 0x3d}
+	socket := &store.Call{
+		Target: "chat", Protocol: config.ProtocolWebSocket, Method: "GET", Path: "/ws",
+		StartedAt: time.Now().UTC(),
+		Request: store.Message{
+			Body: wsFrame(1, []byte(`{"access_token":"WS-SENT-SECRET"}`), &mask),
+		},
+		Response: store.Message{Body: wsFrame(1, []byte(`{"refresh_token":"WS-SECRET","room":"ops"}`), nil)},
+	}
+
+	events := "data: {\"access_token\":\"SSE-SECRET\"}\n\n"
+	stream := &store.Call{
+		Target: "events", Protocol: config.ProtocolHTTP, Method: "GET", Path: "/v1/stream",
+		Status: 200, StartedAt: time.Now().UTC(),
+		Request: store.Message{Body: []byte(`{"channel":"orders"}`)},
+		Response: store.Message{
+			Headers: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:    []byte(events), Size: int64(len(events)),
+		},
+	}
+
+	grpc := &store.Call{
+		Target: "auth", Protocol: config.ProtocolGRPC, Method: "Login", Path: "/auth.v1.Auth/Login",
+		Status: 200, StartedAt: time.Now().UTC(),
+		Request:  store.Message{Body: grpcFrame(protoString(1, "GRPC-SECRET"))},
+		Response: store.Message{Body: grpcFrame(protoString(1, "session-4711"))},
+	}
+
+	s := sondaHolding(t, socket, stream, grpc)
+
+	for _, tc := range []struct {
+		id     int
+		secret string
+
+		// closed says the decoded view is redacted as well, so nothing anywhere
+		// in the answer carries the secret. It is false for a gRPC capture with
+		// no schema: a protobuf field decoded without a descriptor has a number
+		// and no name, so key matching has nothing to match on and the value is
+		// returned in the clear. Dropping the verbatim copy still removes a
+		// second, differently shaped leak; the decoded half stays open and
+		// SECURITY.md says which half is which.
+		closed bool
+	}{
+		{id: 1, secret: "WS-SECRET", closed: true},
+		{id: 2, secret: "SSE-SECRET", closed: true},
+		{id: 3, secret: "GRPC-SECRET"},
+	} {
+		got, isError := callTool(t, s, "get_call", `{"id":`+strconv.Itoa(tc.id)+`,"detail":true}`)
+		if isError {
+			t.Fatalf("get_call %d failed: %s", tc.id, got)
+		}
+		if strings.Contains(verbatimCopy(t, got), tc.secret) {
+			t.Errorf("the verbatim copy carried %q out:\n%s", tc.secret, got)
+		}
+		if tc.closed && strings.Contains(got, tc.secret) {
+			t.Errorf("%q left through the decoded view:\n%s", tc.secret, got)
+		}
+	}
+
+	socketCall, _ := callTool(t, s, "get_call", `{"id":1,"detail":true}`)
+
+	// A frame a client sends is masked, so its secret is not literally in the
+	// captured bytes: it is one XOR away, with the key sitting in the frame
+	// beside it. Searching that copy for the plaintext would call the direction
+	// clean while it leaks, so it is pinned on the copy being gone instead.
+	var sent struct {
+		Request rawMessage `json:"request"`
+	}
+	if err := json.Unmarshal([]byte(socketCall), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent.Request.Base64 != redacted {
+		t.Errorf("the client's half of the socket kept its bytes: %q", sent.Request.Base64)
+	}
+
+	// And the decoded view still answers what the raw copy used to. A socket
+	// keeps every frame, an event stream keeps its events, and the request of
+	// an event stream — which nothing decodes — is left alone rather than
+	// blanked for symmetry.
+	if !strings.Contains(socketCall, "ops") {
+		t.Errorf("the decoded frames went with the raw stream:\n%s", socketCall)
+	}
+	streamCall, _ := callTool(t, s, "get_call", `{"id":2,"detail":true}`)
+	if !strings.Contains(streamCall, "orders") {
+		t.Errorf("the request body of an event stream was dropped, and nothing decodes it:\n%s", streamCall)
+	}
+}
+
+// verbatimCopy returns just the two raw copies of a capture, base64 decoded so
+// that the encoding cannot hide a secret from a search. Asserting on these
+// rather than on the whole answer is what keeps this test about the second
+// copy and not about what the decoded view does or does not reach.
+func verbatimCopy(t *testing.T, answer string) string {
+	t.Helper()
+	var call struct {
+		Request  rawMessage `json:"request"`
+		Response rawMessage `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(answer), &call); err != nil {
+		t.Fatal(err)
+	}
+	return call.Request.plain(t) + call.Response.plain(t)
+}
+
+type rawMessage struct {
+	Text   string `json:"text"`
+	Base64 string `json:"base64"`
+}
+
+func (m rawMessage) plain(t *testing.T) string {
+	t.Helper()
+	if m.Base64 == "" {
+		return m.Text
+	}
+	// A blanked field is the marker, not base64, and failing to decode it is
+	// not a finding.
+	raw, err := base64.StdEncoding.DecodeString(m.Base64)
+	if err != nil {
+		return m.Text + m.Base64
+	}
+	return m.Text + string(raw)
+}
+
+// The other half of the same capture. With a descriptor set the field has its
+// real name back, which is all ordinary key matching ever needed — this pins
+// that it really is enough, and that the raw copy goes with it.
+func TestAGRPCMessageWithASchemaIsRedactedByItsFieldNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sonda.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := db.CreateProject(context.Background(), "auth-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetDescriptorSet(context.Background(), project.ID, "auth.binpb", authDescriptorSet(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SaveService(context.Background(), store.Service{
+		ProjectID: project.ID, Name: "auth", Listen: "127.0.0.1:59051",
+		Upstream: "http://127.0.0.1:50051", Protocol: config.ProtocolGRPC,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ActivateProject(context.Background(), project.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	body := append(protoString(1, "SCHEMA-SECRET"), protoString(2, "nicolas")...)
+	if _, err := db.Insert(context.Background(), &store.Call{
+		Target: "auth", Protocol: config.ProtocolGRPC, Method: "Login",
+		Path: "/auth.v1.Auth/Login", Status: 200, Project: "auth-system",
+		StartedAt: time.Now().UTC(),
+		Request:   store.Message{Body: grpcFrame(body), Size: int64(len(body) + 5)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	got, isError := callTool(t, sonda(t, path), "get_call", `{"id":1,"detail":true}`)
+	if isError {
+		t.Fatalf("get_call failed: %s", got)
+	}
+	if strings.Contains(verbatimCopy(t, got), "SCHEMA-SECRET") {
+		t.Errorf("the verbatim copy carried the token out:\n%s", got)
+	}
+	if strings.Contains(got, "SCHEMA-SECRET") {
+		t.Errorf("a named protobuf field was not redacted:\n%s", got)
+	}
+	// The field beside it is ordinary data, and the schema is what made the
+	// difference — both have to be visible or the answer proves nothing.
+	for _, want := range []string{"nicolas", "descriptor_set"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q is missing, so this is not the schema-backed path:\n%s", want, got)
+		}
+	}
+}
+
+// authDescriptorSet compiles a one-message schema in memory. The demo proto
+// this repository ships has no credential-shaped field in it, and adding one
+// would mean regenerating a committed descriptor set to prove something about
+// field names.
+func authDescriptorSet(t *testing.T) []byte {
+	t.Helper()
+	str := descpb.FieldDescriptorProto_TYPE_STRING
+	optional := descpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, number int32) *descpb.FieldDescriptorProto {
+		return &descpb.FieldDescriptorProto{
+			Name: proto.String(name), Number: proto.Int32(number),
+			Type: &str, Label: &optional, JsonName: proto.String(name),
+		}
+	}
+	set := &descpb.FileDescriptorSet{File: []*descpb.FileDescriptorProto{{
+		Name:    proto.String("auth/v1/auth.proto"),
+		Package: proto.String("auth.v1"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descpb.DescriptorProto{
+			{
+				Name:  proto.String("LoginRequest"),
+				Field: []*descpb.FieldDescriptorProto{field("access_token", 1), field("user", 2)},
+			},
+			{Name: proto.String("LoginReply"), Field: []*descpb.FieldDescriptorProto{field("session", 1)}},
+		},
+		Service: []*descpb.ServiceDescriptorProto{{
+			Name: proto.String("Auth"),
+			Method: []*descpb.MethodDescriptorProto{{
+				Name:       proto.String("Login"),
+				InputType:  proto.String(".auth.v1.LoginRequest"),
+				OutputType: proto.String(".auth.v1.LoginReply"),
+			}},
+		}},
+	}}}
+	out, err := proto.Marshal(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

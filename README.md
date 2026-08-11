@@ -720,14 +720,15 @@ and with the variable to write it into when Sonda knows which one that is.
 
 ### Credentials do not leave
 
-Everything above is filtered before it goes out. `Authorization`, `Cookie`,
+Everything above is filtered before it goes out, with one gap named at the end
+of this section. `Authorization`, `Cookie`,
 `X-Api-Key`, `password`, `client_secret` and their various spellings come back
 as `[redacted by Sonda]` — in headers, in bodies, and inside JSON nested in a
 body. **There is no setting to turn this off**, deliberately: a flag for it
 would be switched on against a toy project and then forgotten against a real
 one. The web interface still shows everything, because there the reader is you.
 
-Two more passes reach where matching a field name cannot:
+Three more passes reach where matching a field name cannot:
 
 - **Query strings**, wherever a URL turns up — the captured path, a `Location`
   redirect, a link inside a body. `?access_token=`, `?code=` and
@@ -737,7 +738,21 @@ Two more passes reach where matching a field name cannot:
   sensitive value arrive in different messages. A `RowDescription` is aligned
   against the `DataRow`s after it, and a statement that names a credential comes
   back with its structure intact and its literals blanked — including in the
-  one-line summary a listing shows before you have asked for anything.
+  one-line summary a listing shows before you have asked for anything, and in
+  the two places a trace repeats that line.
+- **The second copy of a decoded capture.** A Postgres session, a WebSocket, an
+  event stream and a gRPC call are each served twice — decoded, and byte for
+  byte as they crossed — and redacting the first copy is worth nothing while
+  the second is sitting beside it. The verbatim copy is dropped wherever the
+  decoded view replaces it. Where nothing decodes it — an event stream's
+  request, a compressed gRPC frame — it stays, because dropping it would leave
+  you with nothing rather than with less.
+
+The gap: a protobuf field decoded **without** a schema has a number and no
+name, so there is nothing for name matching to match and the value comes back
+in the clear. Give the project a descriptor set, or the service reflection, and
+the field has its name back and is redacted like anything else; `schema_status`
+says which of the two you are getting.
 
 Bodies are also shortened by default; `get_call` takes `detail` for the whole
 thing. `detail` does not reveal credentials — redaction runs over the whole

@@ -732,14 +732,15 @@ al llamador, y con la variable donde escribirla cuando Sonda sabe cuál es.
 
 ### Las credenciales no salen
 
-Todo lo anterior se filtra antes de salir. `Authorization`, `Cookie`,
+Todo lo anterior se filtra antes de salir, con un hueco que se nombra al final
+de esta sección. `Authorization`, `Cookie`,
 `X-Api-Key`, `password`, `client_secret` y sus distintas grafías vuelven como
 `[redacted by Sonda]` — en cabeceras, en cuerpos, y dentro de un JSON anidado en
 un cuerpo. **No hay opción para desactivarlo**, a propósito: una bandera para eso
 se enciende probando contra un proyecto de juguete y se olvida encendida contra
 uno real. La interfaz web sigue mostrando todo, porque ahí el que lee eres tú.
 
-Hay dos pasadas más, que llegan donde comparar un nombre de campo no alcanza:
+Hay tres pasadas más, que llegan donde comparar un nombre de campo no alcanza:
 
 - **Cadenas de consulta**, en cualquier lugar donde aparezca una URL: la ruta
   capturada, un redirect `Location`, un enlace dentro de un cuerpo.
@@ -750,7 +751,20 @@ Hay dos pasadas más, que llegan donde comparar un nombre de campo no alcanza:
   contra los `DataRow` que vienen después, y una sentencia que nombra una
   credencial vuelve con su estructura intacta y sus literales borrados —
   incluido el resumen de una línea que el listado muestra antes de que hayas
-  pedido nada.
+  pedido nada, y los dos lugares donde una traza repite esa misma línea.
+- **La segunda copia de una captura decodificada.** Una sesión de Postgres, un
+  WebSocket, un flujo de eventos y una llamada gRPC se sirven dos veces —
+  decodificados, y byte a byte tal como cruzaron — y filtrar la primera copia no
+  vale nada mientras la segunda está al lado. La copia literal se descarta allí
+  donde la vista decodificada la reemplaza. Donde nada la decodifica — la
+  petición de un flujo de eventos, una trama gRPC comprimida — se conserva,
+  porque descartarla te dejaría sin nada en vez de con menos.
+
+El hueco: un campo protobuf decodificado **sin** esquema tiene un número y no un
+nombre, así que no hay nada que comparar y su valor vuelve en claro. Dale al
+proyecto un descriptor set, o reflexión al servicio, y el campo recupera su
+nombre y se filtra como cualquier otro; `schema_status` dice cuál de los dos
+casos estás viendo.
 
 Los cuerpos además vienen acortados por defecto; `get_call` acepta `detail` para
 traerlos enteros. `detail` **no** revela credenciales: el filtrado recorre la
