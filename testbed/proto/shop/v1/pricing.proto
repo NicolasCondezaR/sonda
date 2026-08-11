@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package shop.v1;
+
+option go_package = "github.com/NicolasCondezaR/sonda/testbed/gen/shop/v1";
+
+// Pricing is the bookshop's price service. It is deliberately served without
+// gRPC reflection: that is the common case in a real system, and it is the one
+// that forces Sonda down the descriptor-set path instead of asking the service
+// what its schema is.
+service Pricing {
+  // Unary. Succeeds for a stocked title; answers PERMISSION_DENIED for a
+  // restricted one, which is a gRPC failure carried under HTTP 200.
+  rpc Quote(QuoteRequest) returns (QuoteResponse);
+
+  // Server streaming: the same quote re-sent as the price is recalculated, so
+  // there is a multi-message capture to look at.
+  rpc WatchQuote(QuoteRequest) returns (stream QuoteResponse);
+}
+
+message QuoteRequest {
+  string sku = 1;
+  int32 quantity = 2;
+  string currency = 3;
+}
+
+message QuoteResponse {
+  string sku = 1;
+  // int64 is deliberate: protojson renders it as a string, so a diff has to
+  // know that 1290 and "1290" are the same value.
+  int64 unit_cents = 2;
+  int64 total_cents = 3;
+  string currency = 4;
+  Tier tier = 5;
+}
+
+enum Tier {
+  TIER_UNSPECIFIED = 0;
+  TIER_LIST = 1;
+  TIER_MEMBER = 2;
+}

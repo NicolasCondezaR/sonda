@@ -1,0 +1,169 @@
+# The bookshop, and a Sonda watching it.
+#
+# Ports are in the 9400s and 8100s so this can run at the same time as the
+# repository's own compose.yaml, which owns 9000, 9101 and 9201.
+#
+# Everything is published to 127.0.0.1 and no further, for the same reason the
+# main compose file does it: sonda.db holds whatever credentials crossed the
+# wire, in plaintext and behind no login.
+
+name: sonda-testbed
+
+services:
+  sonda:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["-config", "/etc/bookshop/sonda.yaml", "-api-listen", "0.0.0.0:9400"]
+    ports:
+      - "127.0.0.1:9400:9400" # query API and web interface
+      - "127.0.0.1:9401:9401" # gateway    (http)
+      - "127.0.0.1:9402:9402" # catalog    (http)
+      - "127.0.0.1:9403:9403" # storefront (http, GraphQL + WebSocket + SSE)
+      - "127.0.0.1:9404:9404" # pricing    (grpc, no reflection)
+      - "127.0.0.1:9405:9405" # shipping   (http, not running by default)
+      - "127.0.0.1:9406:9406" # catalog-db (postgres)
+      - "127.0.0.1:9407:9407" # storefront behind TLS
+    volumes:
+      - ./sonda.testbed.yaml:/etc/bookshop/sonda.yaml:ro
+      - ./descriptors.binpb:/etc/bookshop/descriptors.binpb:ro
+      - sonda-data:/data
+    # `shipping` has no container running, so its name does not resolve, and
+    # the default resolver settings spend eight seconds finding that out. The
+    # one branch of the tree that fails would then be eight seconds wide and
+    # everything else a sliver.
+    dns_opt:
+      - timeout:1
+      - attempts:1
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9400/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shelf-of-secrets
+      POSTGRES_DB: bookshop
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Not published. Everything that talks to it goes through Sonda's 9406,
+    # which is the only reason the SQL shows up in the field at all.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d bookshop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: .
+    entrypoint: ["gateway"]
+    command: ["-addr", ":8100"]
+    environment:
+      # Every one of these is a Sonda port, not the service itself. This is the
+      # one step no configuration screen removes: Sonda sees nothing until the
+      # caller is told to call it instead.
+      CATALOG_URL: http://sonda:9402
+      STOREFRONT_URL: http://sonda:9403
+      SHIPPING_URL: http://sonda:9405
+      PRICING_ADDR: sonda:9404
+    depends_on:
+      sonda:
+        condition: service_healthy
+
+  catalog:
+    build: .
+    entrypoint: ["catalog"]
+    command: ["-addr", ":8101"]
+    environment:
+      # The password stays in the client's DSN, where it belongs; Sonda's
+      # upstream carries none.
+      #
+      # sslmode=disable because a Postgres connection that negotiates TLS is
+      # forwarded as opaque records and nothing in it can be read.
+      #
+      # default_query_exec_mode=exec makes pgx send each query as one
+      # Parse/Bind/Describe/Execute/Sync cycle under an unnamed statement. Its
+      # default caches statements under a name and prepares them in an earlier
+      # cycle than the one that runs them, and Sonda can only show the SQL in
+      # the capture the text actually crossed in — so the interesting row would
+      # read "1 bind, 1 execute, 1 sync" with no SQL on it.
+      DATABASE_URL: postgres://shop:shelf-of-secrets@sonda:9406/bookshop?sslmode=disable&default_query_exec_mode=exec
+    ports:
+      # The service's own port, straight past Sonda. Throwing the drift switch
+      # is stage management, and a capture of it would be noise in the exercise
+      # it was setting up.
+      - "127.0.0.1:8101:8101"
+    depends_on:
+      sonda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  storefront:
+    build: .
+    entrypoint: ["storefront"]
+    command: ["-addr", ":8102"]
+    ports:
+      - "127.0.0.1:8102:8102" # control endpoint, as above
+    depends_on:
+      sonda:
+        condition: service_healthy
+
+  pricing:
+    build: .
+    entrypoint: ["pricing"]
+    command: ["-addr", ":8103"]
+
+  # Declared here so Sonda has something to point at, and left out of the
+  # default `up` so that one branch of an express checkout fails with nothing
+  # behind it. `docker compose --profile shipping up -d shipping` starts it.
+  shipping:
+    build: .
+    entrypoint: ["shipping"]
+    command: ["-addr", ":8104"]
+    profiles: ["shipping"]
+
+  # The shop's customers. Eighteen steps, the same eighteen every cycle, about
+  # a third of them failing on purpose.
+  driver:
+    build: .
+    entrypoint: ["driver"]
+    command: ["-period", "20s"]
+    environment:
+      GATEWAY_URL: http://sonda:9401
+      CATALOG_URL: http://sonda:9402
+      STOREFRONT_URL: http://sonda:9403
+      PRICING_ADDR: sonda:9404
+    depends_on:
+      sonda:
+        condition: service_healthy
+      gateway:
+        condition: service_started
+      catalog:
+        condition: service_started
+      storefront:
+        condition: service_started
+      pricing:
+        condition: service_started
+
+  # The terminal client, behind a profile because it is something you run:
+  # `docker compose run --rm tui`.
+  tui:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    profiles: ["tui"]
+    entrypoint: ["sonda-tui"]
+    command: ["-api", "http://sonda:9400"]
+    tty: true
+    stdin_open: true
+    depends_on:
+      sonda:
+        condition: service_healthy
+
+volumes:
+  sonda-data:
