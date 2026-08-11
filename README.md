@@ -76,6 +76,21 @@ binds `0.0.0.0` — the isolation is the container's job — which is what
 `-api-listen` in the image's command does; outside one, the default stays
 loopback.
 
+That Docker line publishes the interface and nothing else, which is enough to
+look around and not enough to capture anything: **a proxy needs its own
+published port per service**, because the port a client connects to is the
+whole mechanism. Adding a service on `9101` and then finding that nothing on
+your machine can reach it is the confusing half hour this paragraph exists to
+prevent.
+
+```bash
+docker run -p 127.0.0.1:9000:9000 -p 127.0.0.1:9101:9101 \
+  -v sonda:/data ghcr.io/nicolascondezar/sonda
+```
+
+`docker compose up` publishes 9101 and 9201 already, which is why the quick
+start below works without saying any of this.
+
 The release archives carry four binaries, not one: `sonda`, the terminal client
 `sonda-tui`, and the two toy services `echo` and `grpcdemo` that the quick start
 below uses — so there is something to capture without wiring up your own. The

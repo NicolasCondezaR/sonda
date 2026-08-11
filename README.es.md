@@ -76,6 +76,21 @@ contenedor Sonda escucha en `0.0.0.0` —ahí el aislamiento lo pone el
 contenedor—, que es lo que hace `-api-listen` en el comando de la imagen; fuera
 de un contenedor el valor por omisión sigue siendo loopback.
 
+Esa línea de Docker publica la interfaz y nada más, lo que alcanza para mirar y
+no alcanza para capturar: **un proxy necesita su propio puerto publicado por
+cada servicio**, porque el puerto al que se conecta un cliente es todo el
+mecanismo. Declarar un servicio en el 9101 y descubrir después que nada en tu
+máquina lo alcanza es la media hora de confusión que este párrafo existe para
+evitar.
+
+```bash
+docker run -p 127.0.0.1:9000:9000 -p 127.0.0.1:9101:9101 \
+  -v sonda:/data ghcr.io/nicolascondezar/sonda
+```
+
+`docker compose up` ya publica el 9101 y el 9201, y por eso el inicio rápido de
+abajo funciona sin decir nada de esto.
+
 Los archivos del release traen cuatro binarios, no uno: `sonda`, el cliente de
 terminal `sonda-tui`, y los dos servicios de juguete `echo` y `grpcdemo` que usa
 el inicio rápido de abajo — para tener algo que capturar sin levantar nada
