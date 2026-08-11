@@ -94,18 +94,25 @@ func toTraceCall(c store.Summary) trace.Call {
 	// What to say about a failure, most specific first. For gRPC and GraphQL
 	// alike the HTTP status is 200 even when the call failed, so the status is
 	// the one thing that does not carry the outcome.
+	//
+	// Each branch also states which of the four it produced. Three are prose and
+	// one is a one-line SQL summary, they are indistinguishable by inspection,
+	// and a consumer that has to tell them apart — MCP redaction does — can only
+	// guess. This is the field that stops it guessing.
 	switch {
 	case c.Error != "":
-		out.Detail = c.Error
+		out.Detail, out.DetailKind = c.Error, trace.DetailError
 	case c.GRPCStatus != nil && *c.GRPCStatus != 0:
 		out.Detail = codes.Code(*c.GRPCStatus).String()
 		if c.GRPCMessage != "" {
 			out.Detail += ": " + c.GRPCMessage
 		}
+		out.DetailKind = trace.DetailGRPC
 	case c.GraphQLErrors > 0:
 		out.Detail = fmt.Sprintf("%s: %d GraphQL error(s)", c.GraphQLOp, c.GraphQLErrors)
+		out.DetailKind = trace.DetailGraphQL
 	case c.PostgresErrors > 0:
-		out.Detail = c.PostgresSummary
+		out.Detail, out.DetailKind = c.PostgresSummary, trace.DetailPostgres
 	}
 	return out
 }

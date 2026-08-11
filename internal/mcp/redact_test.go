@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,7 +29,15 @@ import (
 
 func cleaned(t *testing.T, payload string, detail bool) string {
 	t.Helper()
-	v, err := cleanJSON([]byte(payload), detail)
+	return cleanedFrom(t, "/api/calls", payload, detail)
+}
+
+// cleanedFrom redacts a payload as the answer of one endpoint. Which fields are
+// Sonda's own is a property of the endpoint, so a test that means "one capture
+// in full" has to say so — the same way the tool that asks for it does.
+func cleanedFrom(t *testing.T, endpoint, payload string, detail bool) string {
+	t.Helper()
+	v, err := cleanAnswer(endpoint, []byte(payload), detail)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +46,13 @@ func cleaned(t *testing.T, payload string, detail bool) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+// cleanedCall is one capture read in full, which is where the decoded views
+// live.
+func cleanedCall(t *testing.T, payload string, detail bool) string {
+	t.Helper()
+	return cleanedFrom(t, "/api/calls/88", payload, detail)
 }
 
 func TestCredentialsNeverLeave(t *testing.T) {
@@ -482,7 +498,7 @@ func TestSensitiveColumnsBlankTheirValues(t *testing.T) {
 	received = append(received, pgMsg('D', pgU16(2), pgText("sk_live_9f8e7d6c"), pgText("staging key"))...)
 	received = append(received, pgMsg('C', pgStr("SELECT 1"))...)
 
-	got := cleaned(t, pgCapture(t, sent, received), true)
+	got := cleanedCall(t, pgCapture(t, sent, received), true)
 
 	if strings.Contains(got, "sk_live_9f8e7d6c") {
 		t.Errorf("a secret column value left the machine:\n%s", got)
@@ -501,7 +517,7 @@ func TestSensitiveColumnsBlankTheirValues(t *testing.T) {
 func TestLiteralsInACredentialStatementAreBlanked(t *testing.T) {
 	sent := pgMsg('Q', pgStr("INSERT INTO users (email, password) VALUES ('nico@delpaintl.com', 'hunter2')"))
 
-	got := cleaned(t, pgCapture(t, sent, nil), true)
+	got := cleanedCall(t, pgCapture(t, sent, nil), true)
 
 	if strings.Contains(got, "hunter2") {
 		t.Errorf("a password literal left the machine:\n%s", got)
@@ -519,7 +535,7 @@ func TestLiteralsInACredentialStatementAreBlanked(t *testing.T) {
 func TestDollarQuotedLiteralsAreBlankedToo(t *testing.T) {
 	sent := pgMsg('Q', pgStr("UPDATE accounts SET secret = $tag$ hun'ter2 $tag$ WHERE id = 3"))
 
-	got := cleaned(t, pgCapture(t, sent, nil), true)
+	got := cleanedCall(t, pgCapture(t, sent, nil), true)
 
 	if strings.Contains(got, "hun'ter2") {
 		t.Errorf("a dollar-quoted secret left the machine:\n%s", got)
@@ -535,7 +551,7 @@ func TestBindParametersOfACredentialStatementAreBlanked(t *testing.T) {
 	parse := pgMsg('P', pgStr("s1"), pgStr("UPDATE users SET password_hash = $1 WHERE id = $2"), pgU16(2), pgU32(25), pgU32(23))
 	bind := pgMsg('B', pgStr(""), pgStr("s1"), pgU16(0), pgU16(2), pgText("$2a$10$REALHASH"), pgText("4711"))
 
-	got := cleaned(t, pgCapture(t, append(parse, bind...), nil), true)
+	got := cleanedCall(t, pgCapture(t, append(parse, bind...), nil), true)
 
 	if strings.Contains(got, "REALHASH") {
 		t.Errorf("a bound credential left the machine:\n%s", got)
@@ -554,7 +570,7 @@ func TestOrdinaryStatementsKeepTheirValues(t *testing.T) {
 	received := pgMsg('T', pgU16(2), pgColumn("id"), pgColumn("total"))
 	received = append(received, pgMsg('D', pgU16(2), pgText("9001"), pgText("14990"))...)
 
-	got := cleaned(t, pgCapture(t, append(parse, bind...), received), true)
+	got := cleanedCall(t, pgCapture(t, append(parse, bind...), received), true)
 
 	for _, want := range []string{"'paid'", "Santiago", "9001", "14990"} {
 		if !strings.Contains(got, want) {
@@ -573,7 +589,7 @@ func TestTheCredentialGateSeesTheWholeStatement(t *testing.T) {
 	capture := pgCapture(t, sent, nil)
 
 	for _, detail := range []bool{false, true} {
-		got := cleaned(t, capture, detail)
+		got := cleanedCall(t, capture, detail)
 		for _, secret := range []string{"hunter2", "p4ssw0rd"} {
 			if strings.Contains(got, secret) {
 				t.Errorf("detail=%v leaked %q:\n%s", detail, secret, got)
@@ -608,7 +624,7 @@ func TestValuesBeyondTheDescriptionAreBlanked(t *testing.T) {
 	received := pgMsg('T', pgU16(1), pgColumn("label"))
 	received = append(received, pgMsg('D', pgU16(2), pgText("staging"), pgText("sk_live_EXTRA"))...)
 
-	got := cleaned(t, pgCapture(t, sent, received), true)
+	got := cleanedCall(t, pgCapture(t, sent, received), true)
 
 	if strings.Contains(got, "sk_live_EXTRA") {
 		t.Errorf("an unaligned value left the machine:\n%s", got)
@@ -627,7 +643,7 @@ func TestAnAliasedCredentialColumnBlanksTheRow(t *testing.T) {
 	received := pgMsg('T', pgU16(2), pgColumn("k"), pgColumn("o"))
 	received = append(received, pgMsg('D', pgU16(2), pgText("sk_live_9f8e7d6c"), pgText("12"))...)
 
-	got := cleaned(t, pgCapture(t, sent, received), true)
+	got := cleanedCall(t, pgCapture(t, sent, received), true)
 
 	if strings.Contains(got, "sk_live_9f8e7d6c") {
 		t.Errorf("an aliased secret column left the machine:\n%s", got)
@@ -643,7 +659,7 @@ func TestAServerErrorDoesNotEchoTheValue(t *testing.T) {
 	sent := pgMsg('Q', pgStr("SELECT id FROM users WHERE password_hash = 'x'"))
 	received := pgError("28P01", `password authentication failed for user "hunter3"`)
 
-	got := cleaned(t, pgCapture(t, sent, received), true)
+	got := cleanedCall(t, pgCapture(t, sent, received), true)
 
 	if strings.Contains(got, "hunter3") {
 		t.Errorf("a value echoed by the server left the machine:\n%s", got)
@@ -1071,4 +1087,234 @@ func authDescriptorSet(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// --- position, not pattern ---
+//
+// Every test below goes through a real tool call. Four rounds of fixes were
+// checked by calling the redaction function with a hand-written payload, and
+// three of the leaks they left survived precisely because no hand-written
+// payload has the shape the API actually serves.
+
+// A tree is redacted at every node, at every depth. The rule this replaced
+// recognised a summary by counting the words before the first colon, and a
+// branch character counts as a word — so it fired on the root and on the last
+// child and left everything in between in the clear.
+func TestEveryNodeOfADrawnTreeIsRedacted(t *testing.T) {
+	base := time.Now().UTC().Add(-time.Minute)
+	span := func(offset, duration time.Duration, c *store.Call) *store.Call {
+		c.StartedAt = base.Add(offset)
+		c.Duration = duration
+		c.TraceID = "0af7651916cd43dd8448eb211c80319c"
+		return c
+	}
+	plain := func(path string) *store.Call {
+		return &store.Call{Target: "api", Protocol: config.ProtocolHTTP, Method: "GET", Path: path, Status: 200}
+	}
+	// A failed statement, whose one-line summary is what a node's detail holds.
+	failing := func(user string) *store.Call {
+		return pgCall(
+			pgMsg('Q', pgStr("SELECT id FROM users WHERE password_hash = 'p4ssw0rd'")),
+			pgError("28P01", `password authentication failed for user "`+user+`"`),
+		)
+	}
+
+	// Nested by containment, so the two statements land as a middle child and a
+	// grandchild — the two places the old rule could not reach.
+	s := sondaHolding(t,
+		span(0, 300*time.Millisecond, plain("/v1/checkout")),
+		span(10*time.Millisecond, 200*time.Millisecond, failing("MIDDLE-CHILD")),
+		span(20*time.Millisecond, 50*time.Millisecond, failing("GRANDCHILD")),
+		span(230*time.Millisecond, 30*time.Millisecond, plain("/v1/receipt")),
+	)
+
+	tree, isError := callTool(t, s, "trace_call", `{"id":2}`)
+	if isError {
+		t.Fatalf("trace_call failed: %s", tree)
+	}
+
+	// The shape this test claims, asserted rather than assumed: a flat tree
+	// would pass everything below without proving anything.
+	if !strings.Contains(tree, "├─") {
+		t.Fatalf("no node has a sibling after it, so this is not the shape that leaked:\n%s", tree)
+	}
+	for _, secret := range []string{"MIDDLE-CHILD", "GRANDCHILD", "p4ssw0rd"} {
+		if strings.Contains(tree, secret) {
+			t.Errorf("%q reached an agent through trace_call:\n%s", secret, tree)
+		}
+	}
+	// Two failing nodes, each carrying its SQLSTATE twice: as the node's detail
+	// and in the drawing. Fewer means a copy was blanked whole instead of gated.
+	if got := strings.Count(tree, "28P01"); got != 4 {
+		t.Errorf("the SQLSTATE survives %d times, want 4 (two nodes, two copies each):\n%s", got, tree)
+	}
+}
+
+// A node's detail is a Postgres summary in one of four cases and prose in the
+// other three. Reading prose as SQL is how an apostrophe opened a literal that
+// never closed and the message came back cut in half — in the tool that exists
+// to show failures. This message also names two words from the credential list,
+// so blanking it whole would fail here too.
+func TestAGRPCStatusMessageSurvivesInAllItsCopies(t *testing.T) {
+	code := int32(13)
+	s := sondaHolding(t, &store.Call{
+		Target: "auth", Protocol: config.ProtocolGRPC, Method: "Refresh",
+		Path: "/auth.v1.Auth/Refresh", Status: 200,
+		StartedAt: time.Now().UTC(), Duration: 5 * time.Millisecond,
+		GRPCStatus: &code, GRPCMessage: "couldn't refresh the session cookie",
+	})
+
+	tree, isError := callTool(t, s, "trace_call", `{"id":1}`)
+	if isError {
+		t.Fatalf("trace_call failed: %s", tree)
+	}
+	// The node's detail, and the drawing beside it.
+	if got := strings.Count(tree, "Internal: couldn't refresh the session cookie"); got != 2 {
+		t.Errorf("the status message survives whole in %d of the two copies, want 2:\n%s", got, tree)
+	}
+}
+
+// The verbatim copy of a capture is dropped where the decoded view replaces it,
+// and a view that decoded nothing replaces nothing. A 502 page served under
+// `text/event-stream` is an event stream by its content type and holds no
+// events, and dropping the body left a reader with no page and no bytes.
+func TestACaptureWhoseViewIsEmptyKeepsItsRawCopy(t *testing.T) {
+	page := "<html><head><title>502 Bad Gateway</title></head><body><h1>502 Bad Gateway</h1><hr><p>nginx</p></body></html>"
+	s := sondaHolding(t, &store.Call{
+		Target: "events", Protocol: config.ProtocolHTTP, Method: "GET", Path: "/v1/stream",
+		Status: 502, StartedAt: time.Now().UTC(),
+		Response: store.Message{
+			Headers: http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:    []byte(page), Size: int64(len(page)),
+		},
+	})
+
+	got, isError := callTool(t, s, "get_call", `{"id":1,"detail":true}`)
+	if isError {
+		t.Fatalf("get_call failed: %s", got)
+	}
+	var call struct {
+		Response rawMessage `json:"response"`
+		Stream   *struct {
+			Events []any `json:"events"`
+		} `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(got), &call); err != nil {
+		t.Fatal(err)
+	}
+	// The premise: this really is a capture whose event-stream view decoded
+	// nothing. Without it the assertion below proves nothing.
+	if call.Stream == nil || len(call.Stream.Events) != 0 {
+		t.Fatalf("this capture is not the empty-view case:\n%s", got)
+	}
+	if call.Response.Text != page {
+		t.Errorf("the error page went with the raw copy:\n  got: %q", call.Response.Text)
+	}
+}
+
+// A body of somebody else's making that happens to be shaped like a trace node.
+// Recognising a node by its neighbouring field names sent this through the
+// Postgres summary gate, and `the user's password was rejected` came back cut
+// at the apostrophe.
+func TestABodyShapedLikeATraceNodeIsUntouched(t *testing.T) {
+	assertBodySurvives(t, `{"id":7,"target":"warehouse","status":"queued",`+
+		`"started_at":"2026-08-06T10:00:00Z","duration_ms":42,"failed":false,`+
+		`"detail":"the user's password was rejected by the identity provider"}`)
+}
+
+// The same for a body carrying the names of Sonda's own decoded views. Those
+// names mean something at one position in one answer and nothing anywhere else,
+// and a payload that used them was being rewritten as if it were a capture —
+// which breaks the property the whole tool rests on, because for a body the
+// stored bytes are the record.
+// The `postgres` half is spelled out in full — a statement naming a credential,
+// a description naming the column, and a row under it — because that is the
+// only arrangement the correlation would actually rewrite. A shorter one comes
+// back untouched whether the rule is scoped or not, and would pass over the
+// broken code it exists to catch.
+func TestABodyShapedLikeADecodedViewIsUntouched(t *testing.T) {
+	assertBodySurvives(t, `{"stream":{"events":[{"data":"ok"}]},`+
+		`"socket":{"sent":[{"kind":"text","text":"hello"}]},`+
+		`"grpc":{"request":[{"index":0,"json":{"ok":true}}]},`+
+		`"postgres":{"sent":[{"kind":"query","sql":"SELECT api_key FROM tokens"}],`+
+		`"received":[{"kind":"row_description","columns":[{"name":"api_key"}]},`+
+		`{"kind":"data_row","values":[{"text":"sk_live_KEEPME"}]}]}}`)
+}
+
+// A structural diff addresses a changed field by a path, so the field's name is
+// a value and the walk over keys — which reads `path`, `a` and `b` — goes
+// straight past it. diff_calls is the tool an agent reaches for when a login
+// worked once and then did not, which is the request most likely to differ in
+// exactly one password.
+func TestADiffDoesNotShowBothSidesOfAChangedCredential(t *testing.T) {
+	login := func(password string) *store.Call {
+		body := `{"user":"nicolas","password":"` + password + `","device":"laptop"}`
+		return &store.Call{
+			Target: "auth", Protocol: config.ProtocolHTTP, Method: "POST", Path: "/v1/login",
+			Status: 200, StartedAt: time.Now().UTC(),
+			Request: store.Message{
+				Headers: http.Header{"Content-Type": []string{"application/json"}},
+				Body:    []byte(body), Size: int64(len(body)),
+			},
+		}
+	}
+	s := sondaHolding(t, login("WORKED-BEFORE"), login("FAILS-NOW"))
+
+	got, isError := callTool(t, s, "diff_calls", `{"a":1,"b":2}`)
+	if isError {
+		t.Fatalf("diff_calls failed: %s", got)
+	}
+	// The premise: the diff really did find that field, or nothing below is
+	// being tested.
+	if !strings.Contains(got, `"password"`) {
+		t.Fatalf("the diff did not report the password field at all:\n%s", got)
+	}
+	for _, secret := range []string{"WORKED-BEFORE", "FAILS-NOW"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("%q reached an agent through diff_calls:\n%s", secret, got)
+		}
+	}
+	// And the diff is still worth reading: the field that changed is named, and
+	// the ordinary fields beside it are not reported as changed at all.
+	if strings.Contains(got, "nicolas") || strings.Contains(got, "laptop") {
+		t.Errorf("unchanged fields turned up in the diff:\n%s", got)
+	}
+}
+
+// assertBodySurvives stores a response body, reads the capture back through
+// get_call, and checks that what comes out decodes to what went in. Compared
+// after decoding because a JSON body is re-encoded on the way through, so the
+// key order and the spacing are not the same bytes and never were.
+func assertBodySurvives(t *testing.T, body string) {
+	t.Helper()
+	s := sondaHolding(t, &store.Call{
+		Target: "api", Protocol: config.ProtocolHTTP, Method: "POST", Path: "/v1/jobs",
+		Status: 200, StartedAt: time.Now().UTC(),
+		Response: store.Message{
+			Headers: http.Header{"Content-Type": []string{"application/json"}},
+			Body:    []byte(body), Size: int64(len(body)),
+		},
+	})
+
+	got, isError := callTool(t, s, "get_call", `{"id":1,"detail":true}`)
+	if isError {
+		t.Fatalf("get_call failed: %s", got)
+	}
+	var call struct {
+		Response rawMessage `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(got), &call); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent, back any
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(call.Response.Text), &back); err != nil {
+		t.Fatalf("the body did not come back as JSON at all: %q", call.Response.Text)
+	}
+	if !reflect.DeepEqual(sent, back) {
+		t.Errorf("a third-party body was rewritten\n  sent: %s\n  got:  %s", body, call.Response.Text)
+	}
 }

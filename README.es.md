@@ -742,7 +742,7 @@ al llamador, y con la variable donde escribirla cuando Sonda sabe cuál es.
 
 ### Las credenciales no salen
 
-Todo lo anterior se filtra antes de salir, con un hueco que se nombra al final
+Todo lo anterior se filtra antes de salir, con dos huecos que se nombran al final
 de esta sección. `Authorization`, `Cookie`,
 `X-Api-Key`, `password`, `client_secret` y sus distintas grafías vuelven como
 `[redacted by Sonda]` — en cabeceras, en cuerpos, y dentro de un JSON anidado en
@@ -750,7 +750,12 @@ un cuerpo. **No hay opción para desactivarlo**, a propósito: una bandera para 
 se enciende probando contra un proyecto de juguete y se olvida encendida contra
 uno real. La interfaz web sigue mostrando todo, porque ahí el que lee eres tú.
 
-Hay tres pasadas más, que llegan donde comparar un nombre de campo no alcanza:
+Comparar un nombre de campo solo funciona sobre un campo que tiene nombre, así
+que hay cuatro pasadas más que llegan donde eso no alcanza. Cada una corre en un
+lugar conocido de la respuesta y es inalcanzable desde cualquier otro: el
+endpoint que la herramienta llamó es lo que indica qué campos son de Sonda, de
+modo que un cuerpo capturado que casualmente lleve una clave `sql`, `detail` o
+`postgres` queda exactamente como se registró.
 
 - **Cadenas de consulta**, en cualquier lugar donde aparezca una URL: la ruta
   capturada, un redirect `Location`, un enlace dentro de un cuerpo.
@@ -761,20 +766,34 @@ Hay tres pasadas más, que llegan donde comparar un nombre de campo no alcanza:
   contra los `DataRow` que vienen después, y una sentencia que nombra una
   credencial vuelve con su estructura intacta y sus literales borrados —
   incluido el resumen de una línea que el listado muestra antes de que hayas
-  pedido nada, y los dos lugares donde una traza repite esa misma línea.
+  pedido nada, y los dos lugares donde una traza repite esa misma línea. El
+  árbol dibujado como texto no se escanea buscando esa línea: cada nodo informa
+  en qué se convirtió su propia lectura y se sustituyen las cadenas exactas, así
+  que quedan cubiertos todos los nodos a cualquier profundidad.
+- **Una credencial que cambió, dentro de una comparación.** `diff_calls`
+  direcciona el campo que cambió mediante una ruta, así que el nombre viaja como
+  valor y las claves a su alrededor son `path`, `a` y `b`. Cuando esa ruta nombra
+  una credencial, los dos lados de la comparación se borran.
 - **La segunda copia de una captura decodificada.** Una sesión de Postgres, un
   WebSocket, un flujo de eventos y una llamada gRPC se sirven dos veces —
   decodificados, y byte a byte tal como cruzaron — y filtrar la primera copia no
   vale nada mientras la segunda está al lado. La copia literal se descarta allí
-  donde la vista decodificada la reemplaza. Donde nada la decodifica — la
-  petición de un flujo de eventos, una trama gRPC comprimida — se conserva,
-  porque descartarla te dejaría sin nada en vez de con menos.
+  donde la vista decodificada la reemplaza, lado por lado. Donde nada la
+  decodifica se conserva: la petición de un flujo de eventos, una trama gRPC
+  comprimida y cualquier vista que quedó vacía — una página HTML 502 servida como
+  `text/event-stream` sigue siendo el único registro de lo que pasó, y
+  descartarla te dejaría sin nada en vez de con menos.
 
-El hueco: un campo protobuf decodificado **sin** esquema tiene un número y no un
-nombre, así que no hay nada que comparar y su valor vuelve en claro. Dale al
-proyecto un descriptor set, o reflexión al servicio, y el campo recupera su
-nombre y se filtra como cualquier otro; `schema_status` dice cuál de los dos
-casos estás viendo.
+Quedan dos huecos, ambos deliberados. Un campo protobuf decodificado **sin**
+esquema tiene un número y no un nombre, así que no hay nada que comparar y su
+valor vuelve en claro; dale al proyecto un descriptor set, o reflexión al
+servicio, y el campo recupera su nombre y se filtra como cualquier otro:
+`schema_status` dice cuál de los dos casos estás viendo. Y el mensaje de error de
+un servicio — un error de transporte, un estado gRPC — vuelve
+tal como se escribió: leer prosa como si fuera SQL la corta en el primer
+apóstrofo, y borrar cualquier línea que nombre una credencial hace perder
+`Internal: couldn't refresh the session cookie` justo en la herramienta que
+existe para mostrar fallos.
 
 Los cuerpos además vienen acortados por defecto; `get_call` acepta `detail` para
 traerlos enteros. `detail` **no** revela credenciales: el filtrado recorre la

@@ -47,11 +47,29 @@ type Call struct {
 	// failure in one line.
 	Detail string `json:"detail,omitempty"`
 
+	// DetailKind says which of those four Detail is. Only one of them is SQL,
+	// and nothing downstream can tell that by looking: a Postgres summary and an
+	// ordinary error message are both a sentence with punctuation in it. Saying
+	// it here is cheaper than guessing later, and guessing later is how MCP's
+	// redaction cut `the user's password was rejected` at the apostrophe.
+	DetailKind string `json:"detail_kind,omitempty"`
+
 	// DurationMS is what goes over the wire. A time.Duration marshals as a
 	// nanosecond integer, which every client then has to know to divide — and
 	// the rest of this API already speaks milliseconds.
 	DurationMS float64 `json:"duration_ms"`
 }
+
+// The values DetailKind takes. They are named rather than spelled out at each
+// site because a consumer switches on them — MCP redaction treats
+// DetailPostgres as SQL and everything else as prose — and a typo in a bare
+// string there fails silently, in the direction of a leak.
+const (
+	DetailError    = "error"
+	DetailGRPC     = "grpc"
+	DetailGraphQL  = "graphql"
+	DetailPostgres = "postgres"
+)
 
 func (c Call) end() time.Time { return c.Started.Add(c.Duration) }
 
