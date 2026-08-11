@@ -76,6 +76,21 @@ binds `0.0.0.0` — the isolation is the container's job — which is what
 `-api-listen` in the image's command does; outside one, the default stays
 loopback.
 
+That Docker line publishes the interface and nothing else, which is enough to
+look around and not enough to capture anything: **a proxy needs its own
+published port per service**, because the port a client connects to is the
+whole mechanism. Adding a service on `9101` and then finding that nothing on
+your machine can reach it is the confusing half hour this paragraph exists to
+prevent.
+
+```bash
+docker run -p 127.0.0.1:9000:9000 -p 127.0.0.1:9101:9101 \
+  -v sonda:/data ghcr.io/nicolascondezar/sonda
+```
+
+`docker compose up` publishes 9101 and 9201 already, which is why the quick
+start below works without saying any of this.
+
 The release archives carry four binaries, not one: `sonda`, the terminal client
 `sonda-tui`, and the two toy services `echo` and `grpcdemo` that the quick start
 below uses — so there is something to capture without wiring up your own. The
@@ -432,6 +447,9 @@ grpcurl -plaintext -d '{"order_id":"ORD-777"}' 127.0.0.1:9201 demo.v1.Orders/Get
 
 # only the calls that failed, across HTTP status, gRPC status and transport errors
 curl 'http://127.0.0.1:9000/api/calls?failed=true'
+
+# and the contrast: only the ones that did not. Leave failed out for both
+curl 'http://127.0.0.1:9000/api/calls?failed=false'
 ```
 
 ### Where the schema comes from
@@ -615,13 +633,13 @@ that is already running, so it is still the same data:
 | Tool | What it answers |
 |---|---|
 | `recent_failures` | "What just broke?" — the first question, usually |
-| `search_calls` | By service, method, path, status, or text in the bodies |
+| `search_calls` | By service, method, path, status, or text in the bodies. `failed` takes three states: true for the failures, false for what worked, absent for both |
 | `get_call` | One call in full, decoded |
 | `diff_calls` | "This one worked and this one did not — what changed?" |
 | `trace_call` | Every call that was part of the same request, as a tree |
 | `list_services` | What is being observed, on which ports, whether it is listening — and what is stubbed or being broken right now |
 | `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing |
-| `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
+| `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it. `failed` takes the same three states |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
 | `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it. Safe to run again |
 | `configure_service` | Add one service, or change one that is already there — the name is the identity, so calling it again moves the port. An update keeps every setting it was not asked about |
@@ -632,7 +650,7 @@ that is already running, so it is still the same data:
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
 | `break_service` | Add latency, force a status, or cut the connection. Asks first |
 | `contract_drift` | Has this response changed shape since it used to work |
-| `trust_certificate` | Where Sonda's certificate authority lives, and what to run to trust it or take it back out |
+| `trust_certificate` | The certificate authority's own bytes, where Sonda keeps it, and what to run to trust it or take it back out |
 | `diagnose_silence` | "Why am I seeing nothing?" — per service: whether the port opened, whether anything connected, what was captured, and which causes cannot be told apart |
 
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
@@ -722,9 +740,10 @@ and with the variable to write it into when Sonda knows which one that is.
 - **The live stream.** `wait_for_call` answers the same question with a bound on
   it, and a server-sent stream held open across a tool call buys nothing an
   agent can use.
-- **Downloading the certificate authority's bytes.** `trust_certificate` returns
-  where it lives and what to run; installing it changes a machine's trust store,
-  which is the user's act, not the agent's.
+- **Installing the certificate authority.** `trust_certificate` hands over the
+  certificate and the exact commands — the public certificate is not a secret,
+  and an answer the reader cannot act on is not an answer. Running one of those
+  commands changes a machine's trust store, and that act stays the user's.
 - **Turning redaction off.** There is no such setting anywhere, and MCP is the
   last surface that would get one.
 
@@ -1024,6 +1043,19 @@ SSL_CERT_FILE=./sonda-ca.pem go run ./cmd/whatever
 REQUESTS_CA_BUNDLE=./sonda-ca.pem python app.py
 ```
 
+Every one of those lines names a path, and when Sonda runs in a container the
+path it prints is a path inside the container — there is no `/data` on your
+machine. Get the file onto your own disk first, then use that path instead:
+
+```bash
+docker compose cp sonda:/data/sonda-ca.pem ./sonda-ca.pem
+# or, without Docker in the way
+curl -o sonda-ca.pem http://127.0.0.1:9000/api/tls/ca.pem
+```
+
+An agent has neither: `trust_certificate` returns the certificate itself in
+`certificate_pem`, so it can write the file and hand over the path it wrote.
+
 For the whole machine — which is what a browser needs — run the line for your
 platform yourself:
 
@@ -1259,7 +1291,7 @@ host. See `sonda.docker.yaml`.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/calls` | List captures, newest first. Filters: `target`, `method`, `path`, `status`, `protocol`, `grpc_status`, `failed`, `q`, `since`, `until`, `limit`, `before_id`. |
+| `GET /api/calls` | List captures, newest first. Filters: `target`, `method`, `path`, `status`, `protocol`, `grpc_status`, `failed`, `q`, `since`, `until`, `limit`, `before_id`. `failed=true` is only the failures, `failed=false` only the calls that did not fail, and leaving it out is both. |
 | `GET /api/calls/{id}` | One capture with headers and bodies. |
 | `GET /api/targets` | The configured targets. |
 | `GET /api/schemas` | Per gRPC target: which schema source resolved, or why none did. |
@@ -1281,7 +1313,7 @@ host. See `sonda.docker.yaml`.
 | `GET /api/runtime` | Which project is active and what is really listening, including how many connections each port has accepted. |
 | `GET /api/diagnose` | Why nothing is being captured, per service. Reads only what Sonda already knows and touches no network. |
 | `POST /api/diagnose` | The same report, plus one TCP dial to each upstream. A side effect, which is why it is not on the `GET`. |
-| `GET /api/tls` | The certificate authority, and the exact commands to trust it and to remove it. Never the private key. |
+| `GET /api/tls` | The certificate authority: the certificate itself in `certificate_pem`, the exact commands to trust it and to remove it, and — when Sonda is in a container — the `docker cp` that copies the file out. Never the private key. |
 | `GET /api/tls/ca.pem` | Download the CA certificate. Useful when Sonda runs in a container. |
 | `GET /api/stats` | Capture count, time span, and calls dropped under load. |
 | `GET /api/stream` | Server-sent events: every capture the moment it is stored. What the live field reads. |

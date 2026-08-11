@@ -76,6 +76,21 @@ contenedor Sonda escucha en `0.0.0.0` —ahí el aislamiento lo pone el
 contenedor—, que es lo que hace `-api-listen` en el comando de la imagen; fuera
 de un contenedor el valor por omisión sigue siendo loopback.
 
+Esa línea de Docker publica la interfaz y nada más, lo que alcanza para mirar y
+no alcanza para capturar: **un proxy necesita su propio puerto publicado por
+cada servicio**, porque el puerto al que se conecta un cliente es todo el
+mecanismo. Declarar un servicio en el 9101 y descubrir después que nada en tu
+máquina lo alcanza es la media hora de confusión que este párrafo existe para
+evitar.
+
+```bash
+docker run -p 127.0.0.1:9000:9000 -p 127.0.0.1:9101:9101 \
+  -v sonda:/data ghcr.io/nicolascondezar/sonda
+```
+
+`docker compose up` ya publica el 9101 y el 9201, y por eso el inicio rápido de
+abajo funciona sin decir nada de esto.
+
 Los archivos del release traen cuatro binarios, no uno: `sonda`, el cliente de
 terminal `sonda-tui`, y los dos servicios de juguete `echo` y `grpcdemo` que usa
 el inicio rápido de abajo — para tener algo que capturar sin levantar nada
@@ -435,6 +450,9 @@ grpcurl -plaintext -d '{"order_id":"ORD-777"}' 127.0.0.1:9201 demo.v1.Orders/Get
 
 # only the calls that failed, across HTTP status, gRPC status and transport errors
 curl 'http://127.0.0.1:9000/api/calls?failed=true'
+
+# and the contrast: only the ones that did not. Leave failed out for both
+curl 'http://127.0.0.1:9000/api/calls?failed=false'
 ```
 
 ### De dónde sale el esquema
@@ -627,13 +645,13 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | Herramienta | Qué responde |
 |---|---|
 | `recent_failures` | "¿Qué se rompió recién?" — casi siempre la primera pregunta |
-| `search_calls` | Por servicio, método, ruta, estado o texto en los cuerpos |
+| `search_calls` | Por servicio, método, ruta, estado o texto en los cuerpos. `failed` tiene tres estados: true para las fallidas, false para las que funcionaron, ausente para ambas |
 | `get_call` | Una llamada completa, decodificada |
 | `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
 | `trace_call` | Todas las llamadas que fueron parte de la misma petición, como árbol |
 | `list_services` | Qué se está observando, en qué puertos, si está escuchando — y qué está respondiendo desde grabaciones o roto a propósito en este momento |
 | `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada |
-| `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
+| `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica. `failed` tiene los mismos tres estados |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
 | `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella. Se puede volver a ejecutar |
 | `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto. Una modificación conserva todo lo que no se le pasó |
@@ -644,7 +662,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
 | `break_service` | Agregar latencia, forzar un estado o cortar la conexión. Pregunta antes |
 | `contract_drift` | Si esta respuesta cambió de forma desde que funcionaba |
-| `trust_certificate` | Dónde vive la autoridad certificadora de Sonda y qué ejecutar para confiar en ella o quitarla |
+| `trust_certificate` | Los bytes de la autoridad certificadora de Sonda, dónde la guarda y qué ejecutar para confiar en ella o quitarla |
 | `diagnose_silence` | «¿Por qué no veo nada?»: por servicio, si el puerto se abrió, si algo se conectó, qué se capturó y qué causas no se pueden distinguir |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
@@ -734,9 +752,11 @@ al llamador, y con la variable donde escribirla cuando Sonda sabe cuál es.
 - **El flujo en vivo.** `wait_for_call` responde lo mismo con un límite de
   tiempo, y mantener un stream abierto durante una llamada de herramienta no le
   aporta nada a un agente.
-- **Descargar los bytes de la autoridad certificadora.** `trust_certificate`
-  devuelve dónde vive y qué ejecutar; instalarla modifica el almacén de confianza
-  de la máquina, y ese acto es del usuario, no del agente.
+- **Instalar la autoridad certificadora.** `trust_certificate` entrega el
+  certificado y los comandos exactos: el certificado público no es un secreto, y
+  una respuesta sobre la que quien lee no puede actuar no es una respuesta.
+  Ejecutar uno de esos comandos modifica el almacén de confianza de la máquina, y
+  ese acto sigue siendo del usuario.
 - **Desactivar el filtrado de credenciales.** No existe esa opción en ninguna
   parte, y MCP sería la última superficie en tenerla.
 
@@ -1052,6 +1072,21 @@ SSL_CERT_FILE=./sonda-ca.pem go run ./cmd/whatever
 REQUESTS_CA_BUNDLE=./sonda-ca.pem python app.py
 ```
 
+Cada una de esas líneas nombra una ruta, y cuando Sonda corre en un contenedor
+la ruta que imprime es una ruta dentro del contenedor: en tu máquina no existe
+ningún `/data`. Primero hay que traer el archivo al disco propio y usar esa
+ruta:
+
+```bash
+docker compose cp sonda:/data/sonda-ca.pem ./sonda-ca.pem
+# o, sin Docker de por medio
+curl -o sonda-ca.pem http://127.0.0.1:9000/api/tls/ca.pem
+```
+
+Un agente no tiene ninguna de las dos: `trust_certificate` devuelve el
+certificado mismo en `certificate_pem`, así que puede escribir el archivo y
+entregar la ruta donde lo escribió.
+
 Para toda la máquina —que es lo que necesita un navegador— hay que ejecutar uno
 mismo la línea de su plataforma:
 
@@ -1291,7 +1326,7 @@ en el host. Ver `sonda.docker.yaml`.
 
 | Método y ruta | Para qué |
 |---|---|
-| `GET /api/calls` | Lista las capturas, más recientes primero. Filtros: `target`, `method`, `path`, `status`, `protocol`, `grpc_status`, `failed`, `q`, `since`, `until`, `limit`, `before_id`. |
+| `GET /api/calls` | Lista las capturas, más recientes primero. Filtros: `target`, `method`, `path`, `status`, `protocol`, `grpc_status`, `failed`, `q`, `since`, `until`, `limit`, `before_id`. `failed=true` devuelve solo las fallidas, `failed=false` solo las que no fallaron, y omitirlo devuelve ambas. |
 | `GET /api/calls/{id}` | Una captura con cabeceras y cuerpos. |
 | `GET /api/targets` | Los targets configurados. |
 | `GET /api/schemas` | Por cada target gRPC: qué fuente de esquema resolvió, o por qué ninguna. |
@@ -1313,7 +1348,7 @@ en el host. Ver `sonda.docker.yaml`.
 | `GET /api/runtime` | Qué proyecto está activo y qué está escuchando de verdad, incluyendo cuántas conexiones aceptó cada puerto. |
 | `GET /api/diagnose` | Por qué no se está capturando nada, servicio por servicio. Solo lee lo que Sonda ya sabe y no toca la red. |
 | `POST /api/diagnose` | El mismo informe, más una conexión TCP a cada upstream. Es un efecto secundario, y por eso no está en el `GET`. |
-| `GET /api/tls` | La autoridad certificadora y los comandos exactos para confiar en ella y para quitarla. Nunca la clave privada. |
+| `GET /api/tls` | La autoridad certificadora: el certificado mismo en `certificate_pem`, los comandos exactos para confiar en ella y para quitarla, y —cuando Sonda corre en un contenedor— el `docker cp` que saca el archivo. Nunca la clave privada. |
 | `GET /api/tls/ca.pem` | Descarga el certificado de la CA. Útil cuando Sonda corre en un contenedor. |
 | `GET /api/stats` | Cantidad de capturas, rango de tiempo y llamadas descartadas bajo carga. |
 | `GET /api/stream` | Eventos server-sent: cada captura en el momento en que se guarda. Es lo que lee el campo en vivo. |

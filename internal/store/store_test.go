@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"slices"
+	"sort"
 	"testing"
 	"time"
 )
@@ -38,6 +40,68 @@ func sampleCall(target, method, path string, status int, body []byte) *Call {
 			Body:    []byte(`{"ok":true}`),
 			Size:    11,
 		},
+	}
+}
+
+// The three states of Filter.Failed, named so a test reads as the question it
+// is asking rather than as an address-of.
+var yes, no = true, false
+
+// The filter has three states and each one has to be a different answer.
+// It had two — true and "everything" — so asking for the calls that worked
+// handed back the failures alongside them, which is the opposite of the truth
+// and reads as confirmation that nothing is wrong.
+//
+// The GraphQL capture is the one that matters: it is HTTP 200, so a filter that
+// only knew the status column would call it a success in both directions and
+// pass this test for the wrong reason.
+func TestTheFailedFilterHasThreeStates(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	clean := sampleCall("gateway", "GET", "/v1/orders", 200, []byte(`{}`))
+	server := sampleCall("gateway", "GET", "/v1/pay", 500, []byte(`{}`))
+	graphql := sampleCall("gateway", "POST", "/graphql", 200,
+		[]byte(`{"query":"mutation Pay { pay { ok } }"}`))
+	graphql.Response.Body = []byte(`{"data":null,"errors":[{"message":"card declined"}]}`)
+
+	for _, c := range []*Call{clean, server, graphql} {
+		if _, err := s.Insert(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if graphql.GraphQLErrors != 1 {
+		t.Fatalf("the GraphQL capture was stored with %d errors, so the 200 case is not being exercised", graphql.GraphQLErrors)
+	}
+
+	paths := func(f Filter) []string {
+		t.Helper()
+		got, err := s.List(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, 0, len(got))
+		for _, c := range got {
+			out = append(out, c.Path)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	for _, tc := range []struct {
+		name string
+		f    Filter
+		want []string
+	}{
+		{"absent is no filter", Filter{}, []string{"/graphql", "/v1/orders", "/v1/pay"}},
+		{"true is only the failures", Filter{Failed: &yes}, []string{"/graphql", "/v1/pay"}},
+		{"false is only what worked", Filter{Failed: &no}, []string{"/v1/orders"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := paths(tc.f); !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -320,7 +384,7 @@ func TestAGraphQLErrorIsAFaultInSQL(t *testing.T) {
 		t.Errorf("the stored request body was altered: %s", broken.Request.Body)
 	}
 
-	failed, err := s.List(ctx, Filter{FailedOnly: true})
+	failed, err := s.List(ctx, Filter{Failed: &yes})
 	if err != nil {
 		t.Fatal(err)
 	}

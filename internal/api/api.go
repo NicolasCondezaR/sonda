@@ -60,15 +60,11 @@ func (s *Server) targets() []config.Target {
 	if active == nil {
 		return nil
 	}
-	out := make([]config.Target, 0, len(active.Services))
-	for _, svc := range active.Services {
-		out = append(out, config.Target{
-			Name: svc.Name, Listen: svc.Listen,
-			Upstream: svc.Upstream, Protocol: svc.Protocol,
-			TLS: svc.TLS, InsecureSkipVerify: svc.InsecureSkipVerify,
-		})
-	}
-	return out
+	// The conversion lives on the project because this literal was written by
+	// hand and lost a field every time one was added: without Reflection and
+	// DescriptorSet the schema report told every gRPC service it was using
+	// reflection, which is exactly backwards for a service that serves none.
+	return active.Targets()
 }
 
 func (s *Server) resolvers() Resolvers { return s.rt.Resolvers() }
@@ -215,13 +211,24 @@ type callJSON struct {
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := store.Filter{
-		Target:     q.Get("target"),
-		Method:     q.Get("method"),
-		Path:       q.Get("path"),
-		Protocol:   q.Get("protocol"),
-		Search:     q.Get("q"),
-		Project:    s.projectFilter(),
-		FailedOnly: q.Get("failed") == "true",
+		Target:   q.Get("target"),
+		Method:   q.Get("method"),
+		Path:     q.Get("path"),
+		Protocol: q.Get("protocol"),
+		Search:   q.Get("q"),
+		Project:  s.projectFilter(),
+	}
+
+	// Three states, so absence is tested before the value. Comparing against
+	// "true" collapsed failed=false onto absent and returned the failures
+	// beside the successes, which reads as "these all worked".
+	if raw := q.Get("failed"); raw != "" {
+		want, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "failed must be true or false; leave it out for both")
+			return
+		}
+		f.Failed = &want
 	}
 
 	if raw := q.Get("grpc_status"); raw != "" {
