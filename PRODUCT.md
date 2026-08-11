@@ -101,7 +101,7 @@ text, sometimes badly encoded.
 
 ## Evidence on Hand
 
-- A working implementation with 68 passing tests.
+- A working implementation with 390 passing tests across 22 packages.
 - Two toy upstreams that produce real capturable traffic on first run:
   `examples/echo` (HTTP: success, slow, failure, echo) and
   `examples/grpcdemo` (gRPC: unary, server streaming, client streaming, and a
@@ -109,9 +109,36 @@ text, sometimes badly encoded.
 - Real measured behaviour, not projections: byte-exact forwarding verified with
   `cmp` on 500 KB payloads; retention pruning 22 calls to exactly 5; a
   `PermissionDenied` with a percent-decoded Spanish message.
+- 15 benchmarks measuring what the instrument costs, always as the difference
+  against two baselines — direct, and a stock `httputil.ReverseProxy` with no
+  Sonda in it. On one Windows laptop, a small HTTP call costs ~157 µs direct,
+  ~430 µs through a bare proxy and ~540 µs through Sonda: most of what a user
+  pays is the price of proxying at all, not of capturing. A measurement with
+  its conditions, never a specification.
 
-No users, no testimonials, no benchmarks beyond the above, no deployment. None
-may be invented.
+No users, no testimonials, no deployment. None may be invented.
+
+### A decision worth the record: full duplex
+
+`Proxy.ServeHTTP` calls `EnableFullDuplex`, and the reason is not a preference.
+
+Without it, a stock `httputil.ReverseProxy` on HTTP/1 truncates responses. The
+server drains and closes the request body the moment the response headers go
+out, while the transport is still finishing its trailing read of that same
+body; the transport sees a read on a closed body and tears down the upstream
+connection mid-response. It needs the upstream to answer inside that instant,
+so it hit roughly one large POST in two hundred, and only under load.
+
+It was found as an intermittently failing test that read like a flaky one, and
+it was silently corrupting traffic in the one tool whose whole premise is not
+altering it. The corroboration came later and independently: the benchmark
+baseline — a bare `ReverseProxy` with no Sonda code in the path at all —
+failed with `unexpected EOF` on its first full run, which is why that baseline
+now enables full duplex too.
+
+The general lesson, and the reason this is written down rather than left in a
+commit message: an intermittent test failure is a claim about the product until
+it has been read as one.
 
 ## Product Principles
 
