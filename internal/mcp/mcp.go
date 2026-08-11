@@ -20,10 +20,20 @@ import (
 	"fmt"
 )
 
-// protocolVersion is the revision of MCP this server speaks. A client that
-// asks for a different one still gets this — the specification has the client
-// decide whether it can live with the answer.
+// protocolVersion is the revision of MCP this server speaks, and what a client
+// that asks for something unknown is told — the specification then has the
+// client decide whether it can live with the answer.
 const protocolVersion = "2025-11-25"
+
+// supportedVersions are the revisions this surface actually satisfies, and the
+// specification requires echoing the one the client asked for when it is among
+// them. Nothing here uses anything the older two lack: the whole server is
+// tools, and tools with annotations have been in every one of these.
+var supportedVersions = map[string]bool{
+	"2025-11-25": true,
+	"2025-06-18": true,
+	"2024-11-05": true,
+}
 
 // JSON-RPC error codes from the specification. Only the ones that can actually
 // happen here are named.
@@ -75,6 +85,12 @@ func failure(id json.RawMessage, code int, format string, args ...any) *response
 }
 
 // Server answers MCP requests about one Sonda.
+//
+// It holds no state of its own about a project. Which variable pointed at a
+// service is kept with the service, in the store, and read back through the
+// API: two places remembering it is how one of them ends up wrong, and the one
+// in memory was always the one that forgot — a Sonda restarted between
+// connecting and disconnecting could no longer undo its own edit.
 type Server struct {
 	api     apiCaller
 	version string
@@ -101,7 +117,7 @@ func (s *Server) Handle(ctx context.Context, raw []byte) *response {
 
 	switch req.Method {
 	case "initialize":
-		return result(req.ID, s.initialize())
+		return result(req.ID, s.initialize(req.Params))
 
 	case "tools/list":
 		return result(req.ID, s.listTools())
@@ -123,9 +139,9 @@ func (s *Server) Handle(ctx context.Context, raw []byte) *response {
 	}
 }
 
-func (s *Server) initialize() map[string]any {
+func (s *Server) initialize(params json.RawMessage) map[string]any {
 	return map[string]any{
-		"protocolVersion": protocolVersion,
+		"protocolVersion": negotiate(params),
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},
@@ -139,6 +155,20 @@ func (s *Server) initialize() map[string]any {
 		// moment instead of guessing from seven names.
 		"instructions": instructions,
 	}
+}
+
+// negotiate answers with the version the client asked for whenever this server
+// supports it, which the specification requires: a client told a version it did
+// not ask for has to decide whether to disconnect, and doing that to a client
+// this server is perfectly compatible with is a hang-up for nothing.
+func negotiate(params json.RawMessage) string {
+	var p struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if json.Unmarshal(params, &p) == nil && supportedVersions[p.ProtocolVersion] {
+		return p.ProtocolVersion
+	}
+	return protocolVersion
 }
 
 const instructions = `Sonda is a capturing proxy sitting between local services. It holds the real

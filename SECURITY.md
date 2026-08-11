@@ -89,11 +89,175 @@ Concretely:
   nothing else; the boundary is the port mapping instead. Keep the host side on
   `127.0.0.1` — the `docker run` line in `README.md` and `compose.yaml` both do.
 
+## What MCP redacts, and what it cannot
+
 The MCP server is the one place credentials are held back, because there the
 answers leave the machine and land in whatever model an agent is driving.
 `Authorization`, `Cookie`, `password` and their various spellings come back as
 `[redacted by Sonda]`, in headers and inside bodies, and there is no setting to
-turn that off.
+turn that off. The web interface still shows everything, because there the
+reader is the owner.
+
+**Every rule is chosen by position in Sonda's own answer, not by what a field is
+called inside a payload.** An answer has two kinds of field in it. Some are
+Sonda's own — the path, the one-line Postgres summary, a trace node's detail,
+the tree drawn as text, the `sql` and `params` of a decoded statement — and
+Sonda knows what each of those *is*, so each gets a rule written for exactly
+that field and reachable from nowhere else. The rest is captured content:
+request and response bodies, frame payloads, decoded messages. Sonda knows
+nothing about their shape, so there the only tool is name matching, and nothing
+else runs there. A SQL scanner never sees prose, and a body that happens to hold
+a field called `detail`, `sql` or `postgres` is left exactly as it was recorded.
+
+Which endpoint produced an answer is what fixes those positions, and the tools
+call the API by path, so the position is known before the bytes are parsed. An
+endpoint with no schema written for it is treated as captured content from top
+to bottom, which is the direction that cannot leak a rule into the wrong place.
+
+**Inside captured content, redaction matches on the name, never on the value.**
+Sniffing values sounds cleverer and fails both ways: it misses an opaque session
+id and mangles a legitimate field that happens to look like base64. So the
+question it can answer there is always "is this field called something
+credential-like".
+
+**Redaction runs over the whole payload before anything is shortened.** Bodies
+come back cut at two thousand characters unless `detail` is asked for, and for a
+while the cut happened first — so a statement longer than that reached the
+credential gate already truncated, and the *default* answer was the leaky one.
+The order is now fixed and pinned by a test: whatever is dropped for display was
+already redacted.
+
+What it reaches:
+
+- **Header and JSON field names**, in any spelling — `api_key`, `apiKey`,
+  `X-API-KEY` and `x-company-auth-token` all land on the same answer.
+- **Inside a captured body**, when the body is itself JSON. A body is stored as
+  one opaque string, so this is a second pass through the same walk.
+- **Query-string parameters**, wherever a URL appears — the captured path, a
+  `Location` redirect, a `Referer`, a link inside a body. Every `?` in the
+  string is examined, not the first, and pairs are split on `;` as well as `&`.
+  Only the value of a sensitive parameter is blanked; the path, the other
+  parameters and any fragment stay, because the path is how a person recognises
+  the call. Three names are treated as credentials here and nowhere else —
+  `code` (the OAuth authorization code), `key` (a Google API key rides in
+  `?key=`) and `sig`. As a field name `code` is the SQLSTATE of every Postgres
+  error and an HTTP status besides, so putting it in the general list would
+  blank the most useful field a failed capture has.
+- **Postgres column values**, by aligning a `RowDescription` with the `DataRow`s
+  after it: `SELECT api_key FROM tokens` puts the sensitive name in one message
+  and the secret in the next, which no per-field rule can see on its own. A row
+  carrying more values than the description had columns has the unaligned tail
+  blanked as well.
+- **String literals in a Postgres statement that names a credential**, plus the
+  bind parameters of that statement. `INSERT INTO users (email, password)
+  VALUES ('a', 'hunter2')` comes back with its structure intact and its literals
+  blanked. A bind parameter is a position with no name, so when the statement it
+  belongs to touches a credential, all of its parameters go.
+- **A result row whose column was aliased.** `SELECT api_key AS k FROM tokens`
+  describes a column called `k`, so alignment finds nothing. When the statement
+  names a credential and none of the described columns does, the whole row is
+  blanked — the same blunt rule the bind parameters follow. It costs the id and
+  the email of a login lookup, which the web interface still shows.
+- **The one-line Postgres summary**, which is the field a listing carries and
+  therefore the one that reaches an agent on its first tool call, before it has
+  asked for detail. A statement summary has its literals blanked; an error
+  summary keeps its SQLSTATE and loses the server's message, because Postgres
+  echoes the offending value there (`invalid input syntax for type uuid:
+  "hunter2"`) in forms with no structure worth mining. This runs at the two
+  positions the line actually occupies — `postgres_summary` in a listing or in a
+  capture, and the `detail` of a trace node that says it is a Postgres one — and
+  is unreachable anywhere else.
+- **The same line inside the drawn tree.** `trace_call` returns the tree twice,
+  as structure and as a block of text, and every node's detail is repeated in
+  the drawing. The drawing is not scanned for it: each node reports what its own
+  line became and those exact strings are substituted in, so the substitution
+  reaches every node at every depth. Scanning it is what left the previous
+  version leaking — the scanner recognised a summary by counting the words
+  before the first colon, and the branch character `├─` counts as a word, so it
+  fired on the root and on the last child and nowhere in between.
+- **The `message`, `detail` and `hint` of a Postgres error**, for the same
+  reason, when the statement or the text itself names a credential.
+- **Both sides of a changed credential in a diff.** `diff_calls` addresses a
+  changed field by a path — `{"path":"user.password","a":…,"b":…}` — so there
+  the field's *name* is a value and the keys around it are `path`, `a` and `b`.
+  Name matching reads keys, so it went straight past this, and `diff_calls` is
+  the tool an agent reaches for when a login worked once and then did not. When
+  any segment of that path names a credential, both sides are blanked; the path
+  itself stays, because knowing *which* field changed is the answer.
+- **The verbatim copy of a decoded capture.** A Postgres session, a WebSocket,
+  an event stream and a gRPC call each carry the same bytes twice — decoded
+  under their own view, and verbatim as what crossed. In the second copy the
+  statement, the frame payload, the event and the protobuf field are all
+  legible and everything above counts for nothing, and none of them can be
+  blanked selectively: each is a length followed by a run of bytes at an
+  arbitrary offset, with no quoting to scan for. So over MCP the verbatim copy
+  is replaced wherever the decoded view beside it genuinely replaces it, side by
+  side: `sent` stands in for the request, `received` for the response, the
+  events for the response of a stream. **A view that decoded nothing replaces
+  nothing and the bytes stay.** A 502 HTML page served under
+  `text/event-stream` is an event stream by its content type and holds no
+  events; dropping the body there left a reader with no error page and no
+  bytes, which is worse than either. The same holds for the *request* of an
+  event stream, which nothing decodes at all, for a gRPC side carrying a
+  compressed frame — the encoding is negotiated in a header Sonda does not hold
+  — and for any body that yielded no messages. The sizes always stay, and the
+  web interface still shows the stream.
+
+What it does **not** reach, and will not:
+
+- **A secret under a name that says nothing.** `{"value": "sk_live_…"}`,
+  `{"data": "…"}`, a column called `col3`. There is no name to match.
+- **A service's own error message.** The `error` and `grpc_message` of a
+  summary, and a trace node's detail when it is one of those rather than a
+  Postgres summary, are returned as the service wrote them. They are prose, and
+  the alternatives are both worse: reading prose as SQL truncates it at the
+  first apostrophe, and blanking any line that happens to name a credential
+  loses `Internal: couldn't refresh the session cookie` — the message, in the
+  tool that exists to show failures. If your services put tokens in their error
+  strings, those tokens come out.
+- **Anything at a position no schema was written for.** Bodies are captured
+  content wherever they turn up, so name matching always runs; what does not run
+  at an unrecognised endpoint is a rule that depends on knowing the field. The
+  answers of `list_services`, `schema_status`, `diagnose_silence`,
+  `contract_drift`, `trust_certificate` and `replay_call` carry no captured
+  payload, which is why they need none. A tool added later against a new
+  endpoint gets the name matching and nothing more, and the rule for its own
+  fields has to be written with it.
+- **A Postgres statement that names no credential.** `INSERT INTO t VALUES
+  ('sk_live_…')` keeps its literal, and the bind parameters of an ordinary
+  statement are returned in the clear — deliberately, because the values are
+  usually the reason the capture was opened. The same holds for an aliased
+  column when the statement gives nothing away: `SELECT api_key AS k FROM t`
+  reaches the alias rule above, `SELECT c1 AS k FROM t` does not.
+- **A `DataRow` with no `RowDescription` before it** in the same capture, and a
+  `Bind` whose `Parse` is not in the same capture. The alignment has nothing to
+  align against, and a row with no description at all is returned whole rather
+  than blanked.
+- **A credential-shaped query parameter under a name nobody listed.**
+  `?code_verifier=` and `?assertion=` are secrets and are returned in the clear.
+  The list is a list.
+- **A body that is not JSON.** It is returned exactly as it was recorded — as
+  text, or as base64 when the bytes are not valid UTF-8 — because there are no
+  field names in it to match. A form post, a CSV, a protobuf: whatever is in
+  them comes out.
+- **A protobuf field decoded without a schema.** With a descriptor set or with
+  the service's own reflection, a gRPC message comes back with real field
+  names, and ordinary name matching redacts it like any other payload — that
+  case is closed, in the decoded view and in the verbatim copy alike. With
+  neither, the wire format carries numbers and not names: `{"number": 1,
+  "value": "sk_live_…"}`. There is nothing to match on, and the value is
+  returned in the clear. Blanking every unnamed field would empty the one view
+  that exists precisely for when no schema could be found, so it is not done.
+  `schema_status` says which of the two you are getting, per service, and why.
+- **Personal data.** An email address, a name, an address and a card number are
+  not credentials and are returned whole.
+
+Over-redaction is the direction this errs in. The cost of blanking one field too
+many is that a person reads it in the interface instead; the cost of the other
+mistake is a production token in someone else's model.
+
+**If your captures hold something the rules above cannot see, do not point an
+agent at them.** Redaction is a floor, not a guarantee.
 
 ## Reporting a vulnerability
 

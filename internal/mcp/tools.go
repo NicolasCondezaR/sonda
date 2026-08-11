@@ -51,14 +51,16 @@ func (a args) num(key string, fallback int) int {
 
 func (a args) has(key string) bool { _, ok := a[key]; return ok }
 
+// boolean reads a flag that has already been checked against the schema, so
+// anything that is not a bool is absent rather than false.
+//
+// It used to coerce, and only the literal "true" counted: set_stub with
+// enabled:"1" passed the has() check, resolved to false, turned stubbing off
+// and reported that it had worked. A wrong type is refused in callTool now,
+// where it can be said out loud.
 func (a args) boolean(key string) bool {
-	switch v := a[key].(type) {
-	case bool:
-		return v
-	case string:
-		return v == "true"
-	}
-	return false
+	v, _ := a[key].(bool)
+	return v
 }
 
 func obj(props map[string]any, required ...string) map[string]any {
@@ -89,7 +91,7 @@ func readTools() []Tool {
 			Description: "What has failed recently: transport errors, HTTP 4xx and 5xx, non-zero gRPC statuses, and GraphQL responses carrying errors, newest first. " +
 				"The last two are the ones a status code hides — both report failure under HTTP 200. This is the first thing to ask when something is broken and you do not know where.",
 			Schema: obj(map[string]any{
-				"limit": prop("integer", "How many to return. Defaults to 20."),
+				"limit": prop("integer", "How many to return. Defaults to 20, capped at 200."),
 			}),
 			Annotations: readOnly,
 			Run: func(ctx context.Context, s *Server, a args) (any, error) {
@@ -244,12 +246,22 @@ func readTools() []Tool {
 			Name:  "list_services",
 			Title: "Services being observed",
 			Description: "Which services Sonda is proxying right now, on which ports, and whether each one is actually listening. Also reports which project is active. Ask this first if you are unsure whether the traffic you expect is even being captured. " +
-				"Each service also reports tls — whether Sonda answers that port with a certificate — and insecure_skip_verify, which means the upstream's certificate is not being checked for that one service.",
+				"Each service also reports tls — whether Sonda answers that port with a certificate — and insecure_skip_verify, which means the upstream's certificate is not being checked for that one service. " +
+				"Each project reports has_descriptor and descriptor_name: that is the answer to whether its gRPC messages can be decoded at all, since a service serving no reflection has nothing else to read a schema from. " +
+				"The answer also carries the two runtime switches, so they cannot be left on unnoticed: stubbed lists the services answering from recordings instead of being called, and faults lists the failures being injected.",
 			Schema:      obj(map[string]any{}),
 			Annotations: readOnly,
-			Run: func(ctx context.Context, s *Server, a args) (any, error) {
-				return s.get(ctx, "/api/projects", false)
-			},
+			Run:         listServices,
+		},
+
+		{
+			Name:  "schema_status",
+			Title: "Where gRPC field names are coming from",
+			Description: "Per gRPC service: whether its schema came from the service's own reflection or from the project's descriptor set, which descriptor set that was, and the error when neither worked. " +
+				"Ask it when messages come back without field names. It separates the three causes that look identical from the outside — reflection is off or unsupported, the descriptor set does not cover this service, or the service was down when Sonda asked — and only the last one fixes itself.",
+			Schema:      obj(map[string]any{}),
+			Annotations: readOnly,
+			Run:         schemaStatus,
 		},
 
 		{
@@ -332,6 +344,71 @@ func readTools() []Tool {
 	}
 }
 
+// schemaStatus reports where each gRPC service's field names came from, and
+// says why when there is nothing to report.
+//
+// This reads the project whose ports are open, so before activate_project the
+// honest answer is an empty list — and an empty list on its own reads as "no
+// schemas resolved", which sends an agent looking for a descriptor set problem
+// that does not exist. set_stub and break_service say the same thing through
+// sequencing(); this one has no error to attach it to.
+func schemaStatus(ctx context.Context, s *Server, _ args) (any, error) {
+	out, err := s.get(ctx, "/api/schemas", false)
+	if err != nil {
+		return nil, err
+	}
+	body, ok := out.(map[string]any)
+	if !ok {
+		return out, nil
+	}
+	if list, _ := body["schemas"].([]any); len(list) == 0 {
+		body["note"] = "Nothing to report, which is not the same as nothing working. " +
+			"This reads only the project whose ports are open: if activate_project has not been called yet, that is the cause; otherwise the active project has no grpc service in it. " +
+			"list_services says which project is active and what is in it."
+	}
+	return body, nil
+}
+
+// listServices answers with the configuration and the two runtime switches at
+// once.
+//
+// Stubbing and fault injection are state a person forgets they turned on, and
+// until now the only way for an agent to read either was to call the tool that
+// changes it — which a client interrupts to ask permission for, so the cheapest
+// way to learn "is anything stubbed" was to offer to stub something. They are
+// folded in here rather than given two read-only tools of their own because
+// this is already the call an agent makes to orient itself, and both are
+// properties of exactly the services it lists.
+func listServices(ctx context.Context, s *Server, _ args) (any, error) {
+	out, err := s.get(ctx, "/api/projects", false)
+	if err != nil {
+		return nil, err
+	}
+	projects, ok := out.(map[string]any)
+	if !ok {
+		return out, nil
+	}
+	projects["stubbed"] = switchState(ctx, s, "/api/stub", "stubbed")
+	projects["faults"] = switchState(ctx, s, "/api/faults", "faults")
+	return projects, nil
+}
+
+// switchState reads one runtime switch. A Sonda that cannot answer says so in
+// place of the value: an empty list would read as "nothing is stubbed", which
+// is the one wrong answer this must never give.
+func switchState(ctx context.Context, s *Server, path, field string) any {
+	out, err := s.get(ctx, path, false)
+	if err != nil {
+		return map[string]any{"unknown": err.Error()}
+	}
+	if body, ok := out.(map[string]any); ok {
+		if value, ok := body[field]; ok {
+			return value
+		}
+	}
+	return out
+}
+
 // waitForCall polls rather than subscribing. Sonda has a live stream, but it
 // is server-sent events, and holding one open across an MCP request buys
 // nothing here: the agent is going to wait either way, and a poll cannot leave
@@ -356,8 +433,13 @@ func waitForCall(ctx context.Context, s *Server, a args) (any, error) {
 	// Only calls captured from now on. Without this the first poll would
 	// return whatever happened to be there already and the wait would be a
 	// lie.
+	//
+	// To the nanosecond, and not to the second: the column is microseconds, so a
+	// second-precision bound is really the start of the current second and
+	// matches traffic captured before the wait began. Returning a call that
+	// happened first destroys the only thing this tool is for.
 	started := time.Now().UTC()
-	q.Set("since", started.Format(time.RFC3339))
+	q.Set("since", started.Format(time.RFC3339Nano))
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -372,7 +454,11 @@ func waitForCall(ctx context.Context, s *Server, a args) (any, error) {
 				Calls []json.RawMessage `json:"calls"`
 			}
 			if json.Unmarshal(payload, &body) == nil && len(body.Calls) > 0 {
-				cleaned, err := cleanJSON(payload, false)
+				// The endpoint is passed rather than assumed: redaction is
+				// chosen by position now, and a call site that hardcodes which
+				// position it is at holds that agreement in a comment instead
+				// of in the code that polls.
+				cleaned, err := cleanAnswer("/api/calls?"+q.Encode(), payload, false)
 				if err != nil {
 					return nil, err
 				}

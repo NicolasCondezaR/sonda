@@ -202,6 +202,70 @@ func TestSuggestedPortsDoNotCollideForCommonLayouts(t *testing.T) {
 	}
 }
 
+// Only the last two digits of the real port survive into the suggestion, so
+// 3001 and 50001 both land on 9101. Two services told to listen on one address
+// is not a clash anyone sees coming: neither port is bound when the suggestion
+// is made, so probing calls both free, and after activation one binds while the
+// other reports "address already in use" — which reads as an external process
+// squatting the port rather than as the other half of the same file.
+func TestTwoPortsEndingTheSameAreNotSuggestedOneAddress(t *testing.T) {
+	env := `
+MS_A_URL=localhost:3001
+MS_B_URL=localhost:50001
+MS_C_URL=localhost:9001
+`
+	found, err := FromEnv(strings.NewReader(env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 3 {
+		t.Fatalf("found %v, want three", names(found))
+	}
+	seen := map[string]string{}
+	for _, f := range found {
+		if other, clash := seen[f.Listen]; clash {
+			t.Errorf("%s and %s were both suggested %s", other, f.Name, f.Listen)
+		}
+		seen[f.Listen] = f.Name
+	}
+}
+
+// The same collision reaches a compose file through published ports.
+func TestComposePortsEndingTheSameAreNotSuggestedOneAddress(t *testing.T) {
+	compose := `
+services:
+  api:
+    ports:
+      - "3001:3000"
+  admin:
+    ports:
+      - "50001:3000"
+`
+	found, err := FromCompose(strings.NewReader(compose))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("found %v, want two", names(found))
+	}
+	if found[0].Listen == found[1].Listen {
+		t.Errorf("both services were suggested %s", found[0].Listen)
+	}
+}
+
+// The suggestion is only moved when it has to be: the correspondence between
+// 50052 and 9152 is what makes the mapping readable, and shifting it for no
+// reason would cost that for nothing.
+func TestAnUncontestedSuggestionKeepsTheDigitsOfTheRealPort(t *testing.T) {
+	taken := map[string]bool{}
+	if got := FreeListen(suggestListen("50052"), taken); got != "127.0.0.1:9152" {
+		t.Errorf("suggested %q for 50052, want 127.0.0.1:9152", got)
+	}
+	if got := FreeListen(suggestListen("50052"), taken); got != "127.0.0.1:9153" {
+		t.Errorf("the second claim on 9152 got %q, want the next free address", got)
+	}
+}
+
 // An https:// value has to survive the reading. Rewriting it as http:// used to
 // produce a service that looked configured, appeared in every listing, and
 // answered nothing — and it never carried a credential either way, so keeping

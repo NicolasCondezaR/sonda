@@ -222,6 +222,12 @@ point the caller here:  MS_AUTH_GRPC_URL=127.0.0.1:9152
 Restart the caller with that in its environment and its traffic appears in the
 field. Nothing on disk changes, and dropping the variable puts it back.
 
+The name is the one the address was read from when the project was imported —
+`MS_AUTH_ADDR`, `MS_AUTH_HOST`, whatever the file actually says. It is only
+derived from the service and its protocol when Sonda has no record of a name,
+which is a service added by hand or read from a compose file: a guessed name
+served beside the real one is a line that sets a variable nothing reads.
+
 ### The configuration file
 
 `sonda.yaml` still carries the process-level settings — where the API listens,
@@ -356,6 +362,10 @@ needed a different expression:
   block where an ordinary call is a half one** (`█` against `▄`), with a third
   glyph for a cell holding both. Shape still carries the outcome before colour
   does, which is the rule that matters.
+- A service being **broken on purpose** is a mode and not a call, so the same
+  block is engraved on the channel, before its name, and the bar counts how many
+  are armed — the browser's badge and readout in the two places this client has
+  for them.
 
 | Key | |
 |---|---|
@@ -609,11 +619,14 @@ that is already running, so it is still the same data:
 | `get_call` | One call in full, decoded |
 | `diff_calls` | "This one worked and this one did not — what changed?" |
 | `trace_call` | Every call that was part of the same request, as a tree |
-| `list_services` | What is being observed, on which ports, and whether it is listening |
+| `list_services` | What is being observed, on which ports, whether it is listening — and what is stubbed or being broken right now |
+| `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing |
 | `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
-| `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it |
-| `configure_service` | Add or fix one service |
+| `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it. Safe to run again |
+| `configure_service` | Add one service, or change one that is already there — the name is the identity, so calling it again moves the port. An update keeps every setting it was not asked about |
+| `remove_service` | Delete one service, and say what address to point the caller back at. Asks first |
+| `upload_schemas` | Give a project a compiled descriptor set, so gRPC decodes where no service serves reflection |
 | `activate_project` | Open the ports. Asks first |
 | `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
@@ -655,21 +668,123 @@ the mapping and the agent has the hands.
 `.env` and then stopped would leave the environment aimed at ports nobody is
 listening on.
 
+The inverse only ever names a variable Sonda actually saw. `MS_AUTH_ADDR`,
+`MS_AUTH_HOST` and `MS_AUTH_HTTP_URL` are all accepted on the way in, so
+rebuilding the name out of the service and its protocol would hand back
+`MS_AUTH_URL` — a variable nothing reads, while the real one still points at a
+port that just closed. The name it did see is kept with the service, so
+connecting in the morning and disconnecting in the evening works across a
+restart of Sonda or of the machine. Where the name is not known — a service
+added by hand, or one read out of a compose file, which never had a variable to
+begin with — it comes back under `restore_by_hand`, with the address to search
+for and the address to put back:
+
+```json
+{
+  "changes": { "MS_AUTH_ADDR": { "from": "127.0.0.1:9152", "to": "localhost:50052" } },
+  "restore_by_hand": [
+    {
+      "service": "web",
+      "was_listening_on": "127.0.0.1:9100",
+      "point_back_at": "localhost:3000",
+      "problem": "Sonda does not know which variable pointed at it…"
+    }
+  ]
+}
+```
+
 Creating configuration disturbs nobody, so those tools run freely. Opening and
 closing ports can pull the floor out from under you mid-debug, so those ask
 first.
 
+### Asking twice
+
+Editing the file and asking again is the ordinary next step, not a mistake, so
+`connect_project` takes the same name a second time: the project that is already
+there is added to, a service it already has is updated in place with whatever
+the file says today, and anything the file cannot express — TLS, whether the
+upstream's certificate is checked — is kept. A run where nothing could be saved
+deletes the project it created on the way in, so a failed attempt leaves nothing
+to clean up.
+
+`configure_service` works the same way round: an update starts from the stored
+service and changes only what you passed, so moving a port is the project, the
+name and the new address. It answers with the address to point the caller at,
+and with the variable to write it into when Sonda knows which one that is.
+
+### What is not on MCP, on purpose
+
+- **Deleting a project.** `remove_service` covers a service that has to go, and
+  connecting the same project again is how a configuration that changed gets
+  applied, so nothing is stuck behind the gap. Throwing away a whole project —
+  its services, its schemas, whatever else is in it — is a decision with a
+  person's hand on it, and the web interface has the button.
+- **The live stream.** `wait_for_call` answers the same question with a bound on
+  it, and a server-sent stream held open across a tool call buys nothing an
+  agent can use.
+- **Downloading the certificate authority's bytes.** `trust_certificate` returns
+  where it lives and what to run; installing it changes a machine's trust store,
+  which is the user's act, not the agent's.
+- **Turning redaction off.** There is no such setting anywhere, and MCP is the
+  last surface that would get one.
+
 ### Credentials do not leave
 
-Everything above is filtered before it goes out. `Authorization`, `Cookie`,
+Everything above is filtered before it goes out, with two gaps named at the end
+of this section. `Authorization`, `Cookie`,
 `X-Api-Key`, `password`, `client_secret` and their various spellings come back
 as `[redacted by Sonda]` — in headers, in bodies, and inside JSON nested in a
 body. **There is no setting to turn this off**, deliberately: a flag for it
 would be switched on against a toy project and then forgotten against a real
 one. The web interface still shows everything, because there the reader is you.
 
+Matching a field name only works on a field that has one, so four more passes
+reach where it cannot. Each of them runs at one known place in the answer and
+is unreachable from anywhere else — the endpoint a tool called is what says
+which fields are Sonda's own, so a captured body that happens to hold a `sql`,
+a `detail` or a `postgres` key is left exactly as it was recorded:
+
+- **Query strings**, wherever a URL turns up — the captured path, a `Location`
+  redirect, a link inside a body. `?access_token=`, `?code=` and
+  `?X-Amz-Signature=` are blanked and the rest of the URL is kept, because the
+  path is how you recognise the call.
+- **Postgres**, which is column oriented, so the sensitive name and the
+  sensitive value arrive in different messages. A `RowDescription` is aligned
+  against the `DataRow`s after it, and a statement that names a credential comes
+  back with its structure intact and its literals blanked — including in the
+  one-line summary a listing shows before you have asked for anything, and in
+  the two places a trace repeats that line. The tree drawn as text is not
+  scanned for that line: each node reports what its own reading became and the
+  exact strings are substituted in, so every node is covered at every depth.
+- **A changed credential in a diff.** `diff_calls` addresses a changed field by
+  a path, so the name is a value and the keys around it are `path`, `a` and `b`.
+  When the path names a credential, both sides of the comparison are blanked.
+- **The second copy of a decoded capture.** A Postgres session, a WebSocket, an
+  event stream and a gRPC call are each served twice — decoded, and byte for
+  byte as they crossed — and redacting the first copy is worth nothing while
+  the second is sitting beside it. The verbatim copy is dropped wherever the
+  decoded view replaces it, side by side. Where nothing decodes it, it stays: an
+  event stream's request, a compressed gRPC frame, and any view that came back
+  empty — a 502 HTML page served as `text/event-stream` is still the only record
+  of what happened, and dropping it would leave you with nothing rather than
+  with less.
+
+Two gaps, both deliberate. A protobuf field decoded **without** a schema has a
+number and no name, so there is nothing for name matching to match and the value
+comes back in the clear; give the project a descriptor set, or the service
+reflection, and the field has its name back and is redacted like anything else —
+`schema_status` says which of the two you are getting. And a service's own error
+message — a transport error, a gRPC status — is
+returned as written: reading prose as SQL cuts it at the first apostrophe, and
+blanking any line that names a credential loses `Internal: couldn't refresh the
+session cookie` in the tool that exists to show failures.
+
 Bodies are also shortened by default; `get_call` takes `detail` for the whole
-thing. `detail` does not reveal credentials — that is covered by a test.
+thing. `detail` does not reveal credentials — redaction runs over the whole
+payload first and shortening second, so the default answer is never the leakier
+one. Both are covered by tests, one of which goes through a real tool call.
+
+`SECURITY.md` lists what redaction reaches and, more usefully, what it does not.
 
 The HTTP endpoint refuses requests carrying a foreign `Origin`, which is what
 stops a page in your own browser from reaching it through DNS rebinding and
@@ -766,8 +881,10 @@ password — and a password in the configuration would be a password written int
 This is the one place Sonda rewrites what it keeps, and the reason is that the
 alternative cannot be fixed later. A startup exchange carries the password. If
 the raw bytes were stored as they arrived, the secret would sit in `sonda.db` in
-plaintext and could reach an agent through MCP — whose redaction walks headers
-and JSON keys, which a TCP stream is neither.
+plaintext and could reach an agent through MCP — whose redaction reads field
+names, query strings and the shape of a Postgres exchange, and a startup
+handshake is none of those: the password is a length-prefixed run of bytes in a
+TCP stream, under no name at all.
 
 So the credential bytes are blanked in the tap, as they go past, before anything
 is stored: the PasswordMessage and SASL response bodies, the server's
@@ -1019,6 +1136,18 @@ curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-auth","cut":t
 
 From an agent, `break_service` does the same, and it asks first.
 
+In the interface it is on the service itself, under **PROJECTS**: the row
+carries `LATENCY MS`, `HTTP STATUS`, `CUT` and `ONE CALL IN` beside an `ARM`
+key, and reads back **BROKEN ON PURPOSE** with the rule in force until
+`RESTORE` takes it off. A rule that would do nothing — no latency, no status,
+no cut — is refused, and what the panel shows is the refusal rather than a rule
+that was never armed.
+
+The terminal reads the same state and does not set it, which is the level it
+already works at for stubbing: the bar counts what is armed, the channel
+carries the fault block before its name, and the inspector names the rule
+beside the call being read.
+
 **Latency lets the call through** — the service still answers, it just takes
 longer, which is the case a timeout is meant to catch. **A status or a cut ends
 the call at Sonda**: the service is never reached.
@@ -1034,10 +1163,17 @@ against. Changing a rule restarts its schedule.
 
 Every injected failure carries **`X-Sonda-Fault`** with the reason, is recorded
 as injected, and is marked as such in the field, the inspector and the terminal.
-The channel shows **BROKEN** while a rule is in force. Rules are forgotten when
-Sonda restarts, for the same reason stubbing is: a service that has been failing
-since Tuesday because of a rule nobody remembers setting is a worse afternoon
-than the bug being chased.
+
+A rule in force is stated where the failures are being read, not only where it
+was armed: the channel shows **BROKEN**, and the readout at the top of the
+browser and the bar in the terminal both count what is armed. That matters most
+above `one_in: 1`, where most calls pass through untouched and the injected ones
+on their own look like a service that is merely flaky.
+
+Rules are forgotten when Sonda restarts, for the same reason stubbing is: a
+service that has been failing since Tuesday because of a rule nobody remembers
+setting is a worse afternoon than the bug being chased. Nothing about them is
+written to the database.
 
 ## Stub mode
 
@@ -1260,7 +1396,7 @@ looks.
 | 11 | Stub mode: answer from a recording instead of forwarding | done |
 | 12 | The tree and the stub, on every surface: web, terminal, MCP | done |
 | 13 | WebSocket and server-sent events | done |
-| 14 | Fault injection: latency, forced statuses, cut connections | done |
+| 14 | Fault injection: latency, forced statuses, cut connections, armed and read on every surface | done |
 | 15 | Contract drift: a field gone, a field retyped | done |
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
 | 17 | PostgreSQL: one capture per statement, hung under the request that ran it, with the credentials blanked before they are stored | done |

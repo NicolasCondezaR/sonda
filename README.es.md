@@ -223,6 +223,12 @@ point the caller here:  MS_AUTH_GRPC_URL=127.0.0.1:9152
 Reinicias al que llama con eso en su entorno y su tráfico aparece en el campo.
 No cambia nada en disco, y sacar la variable lo deja como estaba.
 
+El nombre es el que se leyó junto a la dirección al importar el proyecto:
+`MS_AUTH_ADDR`, `MS_AUTH_HOST`, lo que diga el archivo. Solo se deriva del
+servicio y su protocolo cuando Sonda no tiene registro de ningún nombre — un
+servicio agregado a mano, o leído de un compose —, porque un nombre adivinado
+entregado junto al real es una línea que cambia una variable que nadie lee.
+
 ### El archivo de configuración
 
 `sonda.yaml` sigue cargando los ajustes del proceso: dónde escucha la API,
@@ -359,6 +365,10 @@ iguales. Dos cosas necesitaron otra expresión:
   a ser un **bloque completo donde una llamada normal es medio bloque** (`█`
   contra `▄`), con un tercer glifo para una celda que tiene ambos. La forma sigue
   cargando el resultado antes que el color, que es la regla que importa.
+- Un servicio **roto a propósito** es un modo y no una llamada, así que el mismo
+  bloque queda grabado en el canal, delante de su nombre, y la barra cuenta
+  cuántos hay armados: los dos lugares que este cliente tiene para lo que en el
+  navegador son la insignia y la lectura de arriba.
 
 | Tecla | |
 |---|---|
@@ -621,11 +631,14 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `get_call` | Una llamada completa, decodificada |
 | `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
 | `trace_call` | Todas las llamadas que fueron parte de la misma petición, como árbol |
-| `list_services` | Qué se está observando, en qué puertos, y si está escuchando |
+| `list_services` | Qué se está observando, en qué puertos, si está escuchando — y qué está respondiendo desde grabaciones o roto a propósito en este momento |
+| `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
-| `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella |
-| `configure_service` | Agrega o corrige un servicio |
+| `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella. Se puede volver a ejecutar |
+| `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto. Una modificación conserva todo lo que no se le pasó |
+| `remove_service` | Borra un servicio y dice a qué dirección volver a apuntar a quien llamaba. Pregunta antes |
+| `upload_schemas` | Le da al proyecto un descriptor set compilado, para decodificar gRPC donde ningún servicio sirve reflection |
 | `activate_project` | Abre los puertos. Pregunta antes |
 | `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
@@ -667,21 +680,129 @@ que Sonda sabe el mapeo y el agente tiene las manos.
 `.env` y después paró dejaría el entorno mirando a puertos donde no escucha
 nadie.
 
+El inverso solo nombra una variable que Sonda vio de verdad. `MS_AUTH_ADDR`,
+`MS_AUTH_HOST` y `MS_AUTH_HTTP_URL` se aceptan igual que `_URL` al entrar, así
+que reconstruir el nombre a partir del servicio y su protocolo devolvería
+`MS_AUTH_URL`: una variable que nadie lee, mientras la real sigue apuntando a un
+puerto que acaba de cerrarse. El nombre que sí vio queda guardado junto al
+servicio, así que conectar por la mañana y desconectar por la tarde funciona
+aunque Sonda o la máquina se hayan reiniciado en el medio. Cuando el nombre no se
+conoce — un servicio agregado a mano, o uno leído de un compose, que nunca tuvo
+una variable — vuelve en `restore_by_hand`, con la dirección que hay que buscar y
+la dirección que hay que reponer:
+
+```json
+{
+  "changes": { "MS_AUTH_ADDR": { "from": "127.0.0.1:9152", "to": "localhost:50052" } },
+  "restore_by_hand": [
+    {
+      "service": "web",
+      "was_listening_on": "127.0.0.1:9100",
+      "point_back_at": "localhost:3000",
+      "problem": "Sonda does not know which variable pointed at it…"
+    }
+  ]
+}
+```
+
 Crear configuración no molesta a nadie, así que esas herramientas corren
 libremente. Abrir y cerrar puertos te puede cambiar la sesión debajo de los pies,
 así que esas preguntan antes.
 
+### Preguntar dos veces
+
+Editar el archivo y volver a preguntar es el paso siguiente normal, no un error,
+así que `connect_project` acepta el mismo nombre una segunda vez: al proyecto que
+ya existe se le agrega, un servicio que ya tiene se actualiza en su lugar con lo
+que diga el archivo hoy, y todo lo que el archivo no puede expresar — TLS, si se
+verifica el certificado del upstream — se conserva. Una ejecución donde no se
+pudo guardar nada borra el proyecto que creó al entrar, así que un intento
+fallido no deja nada que limpiar.
+
+`configure_service` funciona igual: una modificación parte del servicio guardado
+y cambia solo lo que le pasaste, así que mover un puerto es el proyecto, el
+nombre y la dirección nueva. Responde con la dirección a la que hay que apuntar
+al llamador, y con la variable donde escribirla cuando Sonda sabe cuál es.
+
+### Qué no está en MCP, a propósito
+
+- **Borrar un proyecto.** `remove_service` cubre el servicio que hay que sacar, y
+  volver a conectar el mismo proyecto es como se aplica una configuración que
+  cambió, así que nada queda trabado detrás de esa falta. Tirar un proyecto
+  entero — sus servicios, sus esquemas, lo que haya adentro — es una decisión con
+  una mano humana encima, y el botón está en la interfaz web.
+- **El flujo en vivo.** `wait_for_call` responde lo mismo con un límite de
+  tiempo, y mantener un stream abierto durante una llamada de herramienta no le
+  aporta nada a un agente.
+- **Descargar los bytes de la autoridad certificadora.** `trust_certificate`
+  devuelve dónde vive y qué ejecutar; instalarla modifica el almacén de confianza
+  de la máquina, y ese acto es del usuario, no del agente.
+- **Desactivar el filtrado de credenciales.** No existe esa opción en ninguna
+  parte, y MCP sería la última superficie en tenerla.
+
 ### Las credenciales no salen
 
-Todo lo anterior se filtra antes de salir. `Authorization`, `Cookie`,
+Todo lo anterior se filtra antes de salir, con dos huecos que se nombran al final
+de esta sección. `Authorization`, `Cookie`,
 `X-Api-Key`, `password`, `client_secret` y sus distintas grafías vuelven como
 `[redacted by Sonda]` — en cabeceras, en cuerpos, y dentro de un JSON anidado en
 un cuerpo. **No hay opción para desactivarlo**, a propósito: una bandera para eso
 se enciende probando contra un proyecto de juguete y se olvida encendida contra
 uno real. La interfaz web sigue mostrando todo, porque ahí el que lee eres tú.
 
+Comparar un nombre de campo solo funciona sobre un campo que tiene nombre, así
+que hay cuatro pasadas más que llegan donde eso no alcanza. Cada una corre en un
+lugar conocido de la respuesta y es inalcanzable desde cualquier otro: el
+endpoint que la herramienta llamó es lo que indica qué campos son de Sonda, de
+modo que un cuerpo capturado que casualmente lleve una clave `sql`, `detail` o
+`postgres` queda exactamente como se registró.
+
+- **Cadenas de consulta**, en cualquier lugar donde aparezca una URL: la ruta
+  capturada, un redirect `Location`, un enlace dentro de un cuerpo.
+  `?access_token=`, `?code=` y `?X-Amz-Signature=` se borran y el resto de la
+  URL se conserva, porque la ruta es como reconoces la llamada.
+- **Postgres**, que es un protocolo orientado a columnas: el nombre sensible y
+  el valor sensible llegan en mensajes distintos. Un `RowDescription` se alinea
+  contra los `DataRow` que vienen después, y una sentencia que nombra una
+  credencial vuelve con su estructura intacta y sus literales borrados —
+  incluido el resumen de una línea que el listado muestra antes de que hayas
+  pedido nada, y los dos lugares donde una traza repite esa misma línea. El
+  árbol dibujado como texto no se escanea buscando esa línea: cada nodo informa
+  en qué se convirtió su propia lectura y se sustituyen las cadenas exactas, así
+  que quedan cubiertos todos los nodos a cualquier profundidad.
+- **Una credencial que cambió, dentro de una comparación.** `diff_calls`
+  direcciona el campo que cambió mediante una ruta, así que el nombre viaja como
+  valor y las claves a su alrededor son `path`, `a` y `b`. Cuando esa ruta nombra
+  una credencial, los dos lados de la comparación se borran.
+- **La segunda copia de una captura decodificada.** Una sesión de Postgres, un
+  WebSocket, un flujo de eventos y una llamada gRPC se sirven dos veces —
+  decodificados, y byte a byte tal como cruzaron — y filtrar la primera copia no
+  vale nada mientras la segunda está al lado. La copia literal se descarta allí
+  donde la vista decodificada la reemplaza, lado por lado. Donde nada la
+  decodifica se conserva: la petición de un flujo de eventos, una trama gRPC
+  comprimida y cualquier vista que quedó vacía — una página HTML 502 servida como
+  `text/event-stream` sigue siendo el único registro de lo que pasó, y
+  descartarla te dejaría sin nada en vez de con menos.
+
+Quedan dos huecos, ambos deliberados. Un campo protobuf decodificado **sin**
+esquema tiene un número y no un nombre, así que no hay nada que comparar y su
+valor vuelve en claro; dale al proyecto un descriptor set, o reflexión al
+servicio, y el campo recupera su nombre y se filtra como cualquier otro:
+`schema_status` dice cuál de los dos casos estás viendo. Y el mensaje de error de
+un servicio — un error de transporte, un estado gRPC — vuelve
+tal como se escribió: leer prosa como si fuera SQL la corta en el primer
+apóstrofo, y borrar cualquier línea que nombre una credencial hace perder
+`Internal: couldn't refresh the session cookie` justo en la herramienta que
+existe para mostrar fallos.
+
 Los cuerpos además vienen acortados por defecto; `get_call` acepta `detail` para
-traerlos enteros. `detail` **no** revela credenciales, y eso lo cubre un test.
+traerlos enteros. `detail` **no** revela credenciales: el filtrado recorre la
+respuesta completa primero y el acortado va después, así que la respuesta por
+defecto nunca es la más filtrada. Ambas cosas están cubiertas por tests, uno de
+ellos a través de una llamada real de herramienta.
+
+`SECURITY.md` enumera hasta dónde llega el filtrado y, más útil todavía, hasta
+dónde no.
 
 El endpoint HTTP rechaza las peticiones que traen un `Origin` ajeno, que es lo
 que impide que una página abierta en tu propio navegador llegue hasta él por DNS
@@ -782,8 +903,10 @@ sería una contraseña escrita dentro de `sonda.db`.
 Este es el único lugar donde Sonda reescribe lo que guarda, y la razón es que la
 alternativa ya no se puede corregir después. El intercambio de inicio lleva la
 contraseña. Si los bytes se guardaran tal como llegaron, el secreto quedaría en
-`sonda.db` en texto plano y podría llegar a un agente por MCP, cuya redacción
-recorre cabeceras y claves JSON, y un flujo TCP no es ninguna de las dos cosas.
+`sonda.db` en texto plano y podría llegar a un agente por MCP, cuya redacción lee
+nombres de campo, cadenas de consulta y la forma de un intercambio Postgres, y un
+handshake de inicio no es nada de eso: la contraseña es una corrida de bytes con
+prefijo de longitud dentro de un flujo TCP, sin nombre alguno.
 
 Por eso los bytes de la credencial se borran en la derivación, al pasar, antes
 de que se guarde nada: el cuerpo del PasswordMessage y de las respuestas SASL,
@@ -1042,6 +1165,18 @@ curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-auth","cut":t
 
 Desde un agente, `break_service` hace lo mismo, y pregunta antes.
 
+En la interfaz está sobre el servicio mismo, dentro de **PROJECTS**: la fila
+lleva `LATENCY MS`, `HTTP STATUS`, `CUT` y `ONE CALL IN` junto a una tecla
+`ARM`, y queda leyendo **BROKEN ON PURPOSE** con la regla en vigor hasta que
+`RESTORE` la saca. Una regla que no haría nada — sin latencia, sin estado y sin
+corte — se rechaza, y lo que el panel muestra es ese rechazo y no una regla que
+nunca se armó.
+
+El terminal lee ese mismo estado y no lo cambia, que es el nivel al que ya
+trabaja con el stub: la barra cuenta cuántas reglas hay en vigor, el canal lleva
+el bloque de fallo delante de su nombre, y el inspector nombra la regla junto a
+la llamada que se está leyendo.
+
 **La latencia deja pasar la llamada** — el servicio igual responde, solo que
 tarda más, que es el caso que un timeout debe atrapar. **Un estado o un corte
 terminan la llamada en Sonda**: el servicio nunca se alcanza.
@@ -1057,10 +1192,18 @@ para depurar. Cambiar una regla reinicia su cuenta.
 
 Todo fallo inyectado lleva **`X-Sonda-Fault`** con el motivo, se guarda marcado
 como inyectado, y aparece señalado en el campo, en el inspector y en el
-terminal. El canal muestra **BROKEN** mientras hay una regla en vigor. Las
-reglas se olvidan al reiniciar Sonda, por lo mismo que el stub: un servicio que
-falla desde el martes por una regla que nadie recuerda haber puesto es una peor
-tarde que el bug que se estaba persiguiendo.
+terminal.
+
+Una regla en vigor se dice donde se están leyendo los fallos, y no solo donde se
+armó: el canal muestra **BROKEN**, y tanto la lectura de arriba en el navegador
+como la barra del terminal cuentan cuántas hay. Eso pesa sobre todo con
+`one_in` mayor que 1, donde la mayoría de las llamadas pasa intacta y las
+inyectadas, por sí solas, parecen un servicio simplemente inestable.
+
+Las reglas se olvidan al reiniciar Sonda, por lo mismo que el stub: un servicio
+que falla desde el martes por una regla que nadie recuerda haber puesto es una
+peor tarde que el bug que se estaba persiguiendo. Nada de esto se escribe en la
+base de datos.
 
 ## Modo stub
 
@@ -1291,7 +1434,7 @@ parece.
 | 11 | Modo stub: responder desde una grabación en vez de reenviar | listo |
 | 12 | El árbol y el stub, en todas las superficies: web, terminal y MCP | listo |
 | 13 | WebSocket y eventos server-sent | listo |
-| 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
+| 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas, armadas y leídas en todas las superficies | listo |
 | 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
 | 17 | PostgreSQL: una captura por sentencia, colgada bajo la petición que la ejecutó, con las credenciales borradas antes de guardarlas | listo |

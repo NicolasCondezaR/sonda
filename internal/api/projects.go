@@ -46,6 +46,12 @@ type serviceJSON struct {
 	TLS                bool `json:"tls"`
 	InsecureSkipVerify bool `json:"insecure_skip_verify"`
 
+	// EnvKey is the variable the address was really read from, when a caller
+	// that knew it said so. It is left out rather than sent empty: absent means
+	// Sonda has no evidence of a name, and a client saving a service without it
+	// keeps whatever was recorded instead of erasing it.
+	EnvKey string `json:"env_key,omitempty"`
+
 	// Running is what is actually happening on the port, which is not always
 	// what was configured — a port held by something else is the common case.
 	Running bool   `json:"running"`
@@ -96,6 +102,7 @@ func toProjectJSON(p store.Project, status map[string]supervisor.Status) project
 			ID: svc.ID, Name: svc.Name, Listen: svc.Listen,
 			Upstream: svc.Upstream, Protocol: svc.Protocol, Reflection: svc.Reflection,
 			TLS: svc.TLS, InsecureSkipVerify: svc.InsecureSkipVerify,
+			EnvKey:  svc.EnvKey,
 			Running: st.Running, Error: st.Error,
 			PointAt: pointAt(svc),
 		})
@@ -108,18 +115,29 @@ func toProjectJSON(p store.Project, status map[string]supervisor.Status) project
 // Sonda is an explicit proxy: it sees nothing until whoever makes the call is
 // told to call it instead. That is the one step no amount of configuration
 // screen removes, so the least it can do is hand over the exact line.
+//
+// The stored variable wins whenever there is one, for the reason reversePatch
+// sets out at length: MS_AUTH_ADDR, MS_AUTH_HOST and MS_AUTH_HTTP_URL are all
+// names discovery accepts, so a derived MS_AUTH_URL served beside the real one
+// offers a line that sets a variable nothing reads. The derivation is only
+// reached when Sonda has no evidence of a name at all — a service added by
+// hand, or one read from a compose file, which has no variable to name.
 func pointAt(svc store.Service) string {
-	name := strings.ToUpper(strings.ReplaceAll(svc.Name, "-", "_"))
-	suffix := "_URL"
-	if svc.Protocol == "grpc" {
-		suffix = "_GRPC_URL"
+	name := svc.EnvKey
+	if name == "" {
+		name = strings.ToUpper(strings.ReplaceAll(svc.Name, "-", "_"))
+		if svc.Protocol == "grpc" {
+			name += "_GRPC_URL"
+		} else {
+			name += "_URL"
+		}
 	}
 	// A TLS listener answers nothing on http://, so the line handed over has to
 	// carry the scheme or it is an address that will not work.
 	if svc.TLS {
-		return name + suffix + "=https://" + svc.Listen
+		return name + "=https://" + svc.Listen
 	}
-	return name + suffix + "=" + svc.Listen
+	return name + "=" + svc.Listen
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +270,7 @@ func (s *Server) saveService(w http.ResponseWriter, r *http.Request) {
 
 		TLS:                body.TLS,
 		InsecureSkipVerify: body.InsecureSkipVerify,
+		EnvKey:             strings.TrimSpace(body.EnvKey),
 	}
 
 	if svc.ID == 0 {

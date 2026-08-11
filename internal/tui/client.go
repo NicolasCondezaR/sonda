@@ -375,6 +375,22 @@ func (c *Client) Targets(ctx context.Context) ([]Target, error) {
 	return out.Targets, err
 }
 
+// Faults is what Sonda is breaking on purpose right now, service by service,
+// each with the rule in the words every surface prints.
+//
+// The terminal reads it rather than setting it, which is the level it already
+// works at for stubbing: this client posts nothing except a replay. A rule is
+// state a person forgets they set, and the terminal is often the window left
+// open, so not being able to see one from here is what makes an afternoon
+// disappear into a bug that was armed on purpose.
+func (c *Client) Faults(ctx context.Context) (map[string]string, error) {
+	var out struct {
+		Faults map[string]string `json:"faults"`
+	}
+	err := c.get(ctx, "/api/faults", &out)
+	return out.Faults, err
+}
+
 func (c *Client) Stats(ctx context.Context) (Stats, error) {
 	var out Stats
 	err := c.get(ctx, "/api/stats", &out)

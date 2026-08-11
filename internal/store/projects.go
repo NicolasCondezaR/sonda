@@ -52,6 +52,18 @@ type Service struct {
 	// per service, never once for the process: trusting one self-signed
 	// container is not the same statement as trusting anything.
 	InsecureSkipVerify bool
+
+	// EnvKey is the variable that really carried this address in the project's
+	// own configuration, exactly as discovery read it. It is stored rather than
+	// derived because MS_AUTH_ADDR, MS_AUTH_HOST and MS_AUTH_GRPC_URL are all
+	// accepted and only the file knows which one was there — undoing the wrong
+	// one writes a variable nothing reads while the real one still aims at a
+	// closed port. It lives on the row and not in memory so that a Sonda
+	// restarted between connecting and disconnecting still knows.
+	//
+	// Empty means Sonda never saw one: a service read out of a compose file or
+	// typed in by hand. That gap is reported, never filled with a guess.
+	EnvKey string
 }
 
 var (
@@ -80,17 +92,26 @@ CREATE TABLE IF NOT EXISTS services (
 	position   INTEGER NOT NULL DEFAULT 0,
 	tls        INTEGER NOT NULL DEFAULT 0,
 	insecure_skip_verify INTEGER NOT NULL DEFAULT 0,
+	env_key    TEXT    NOT NULL DEFAULT '',
 	UNIQUE(project_id, name)
 );
 CREATE INDEX IF NOT EXISTS services_project_idx ON services(project_id, position);
 `
 
 // addedServiceColumns brings a services table created by an earlier version up
-// to date. Both default to off, which is the only safe reading of a row written
-// before the columns existed: a service nobody flagged was never unverified.
+// to date. The two flags default to off, which is the only safe reading of a row
+// written before the columns existed: a service nobody flagged was never
+// unverified.
+//
+// env_key defaults to empty for the same reason and it is not a placeholder: a
+// row written before the column existed genuinely has no evidence of which
+// variable named it, so it reads as "Sonda does not know" and is handed back to
+// be restored by hand. Backfilling a plausible name here would be the exact
+// guess the column exists to avoid.
 var addedServiceColumns = map[string]string{
 	"tls":                  `ALTER TABLE services ADD COLUMN tls INTEGER NOT NULL DEFAULT 0`,
 	"insecure_skip_verify": `ALTER TABLE services ADD COLUMN insecure_skip_verify INTEGER NOT NULL DEFAULT 0`,
+	"env_key":              `ALTER TABLE services ADD COLUMN env_key TEXT NOT NULL DEFAULT ''`,
 }
 
 func (s *Store) Projects(ctx context.Context) ([]Project, error) {
@@ -139,7 +160,7 @@ func (s *Store) Projects(ctx context.Context) ([]Project, error) {
 func (s *Store) services(ctx context.Context, projectID int64) ([]Service, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, project_id, name, listen, upstream, protocol, reflection, position,
-		       tls, insecure_skip_verify
+		       tls, insecure_skip_verify, env_key
 		FROM services WHERE project_id = ? ORDER BY position, id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list services: %w", err)
@@ -153,7 +174,8 @@ func (s *Store) services(ctx context.Context, projectID int64) ([]Service, error
 			reflection, terminate, skip int
 		)
 		if err := rows.Scan(&svc.ID, &svc.ProjectID, &svc.Name, &svc.Listen,
-			&svc.Upstream, &svc.Protocol, &reflection, &svc.Position, &terminate, &skip); err != nil {
+			&svc.Upstream, &svc.Protocol, &reflection, &svc.Position, &terminate, &skip,
+			&svc.EnvKey); err != nil {
 			return nil, err
 		}
 		svc.Reflection = reflection != 0
@@ -300,17 +322,21 @@ func (s *Store) DescriptorSet(ctx context.Context, id int64) ([]byte, error) {
 }
 
 func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
-	if err := ValidateService(svc); err != nil {
+	siblings, err := s.siblings(ctx, svc)
+	if err != nil {
+		return 0, err
+	}
+	if err := ValidateService(svc, siblings); err != nil {
 		return 0, err
 	}
 	if svc.ID == 0 {
 		res, err := s.db.ExecContext(ctx, `
 			INSERT INTO services (project_id, name, listen, upstream, protocol, reflection, position,
-			                      tls, insecure_skip_verify)
-			VALUES (?,?,?,?,?,?,?,?,?)`,
+			                      tls, insecure_skip_verify, env_key)
+			VALUES (?,?,?,?,?,?,?,?,?,?)`,
 			svc.ProjectID, svc.Name, svc.Listen, svc.Upstream, svc.Protocol,
 			boolToInt(svc.Reflection), svc.Position,
-			boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify))
+			boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.EnvKey)
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE") {
 				return 0, fmt.Errorf("this project already has a service called %q", svc.Name)
@@ -320,13 +346,19 @@ func (s *Store) SaveService(ctx context.Context, svc Service) (int64, error) {
 		return res.LastInsertId()
 	}
 
+	// A name that arrives overwrites the stored one, so reconnecting a project
+	// whose file changed records the variable that is there today. An update that
+	// carries none keeps it: moving a busy port with configure_service is not
+	// evidence that the variable disappeared, and erasing it there would turn
+	// every later disconnect into restore-by-hand.
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE services SET name = ?, listen = ?, upstream = ?, protocol = ?,
-		       reflection = ?, position = ?, tls = ?, insecure_skip_verify = ?
+		       reflection = ?, position = ?, tls = ?, insecure_skip_verify = ?,
+		       env_key = COALESCE(NULLIF(?, ''), env_key)
 		WHERE id = ?`,
 		svc.Name, svc.Listen, svc.Upstream, svc.Protocol,
 		boolToInt(svc.Reflection), svc.Position,
-		boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.ID)
+		boolToInt(svc.TLS), boolToInt(svc.InsecureSkipVerify), svc.EnvKey, svc.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -341,9 +373,36 @@ func (s *Store) DeleteService(ctx context.Context, id int64) error {
 	return affected(res, errors.New("no service with that id"))
 }
 
+// siblings are the other services of the same project, which is what makes
+// "is this port already spoken for" answerable.
+//
+// An update arrives with an id and no project: the caller changing a service
+// knows which row it is and has no reason to have looked the project up, so the
+// row itself is asked.
+func (s *Store) siblings(ctx context.Context, svc Service) ([]Service, error) {
+	projectID := svc.ProjectID
+	if projectID == 0 && svc.ID != 0 {
+		err := s.db.QueryRowContext(ctx,
+			`SELECT project_id FROM services WHERE id = ?`, svc.ID).Scan(&projectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if projectID == 0 {
+		return nil, nil
+	}
+	return s.services(ctx, projectID)
+}
+
 // ValidateService rejects what would fail at listen time, so a bad entry is a
 // message in the form rather than a port that silently never opened.
-func ValidateService(svc Service) error {
+//
+// siblings are the project's other services, or nil when there is nothing to
+// compare against.
+func ValidateService(svc Service, siblings []Service) error {
 	if strings.TrimSpace(svc.Name) == "" {
 		return errors.New("the service needs a name")
 	}
@@ -367,6 +426,21 @@ func ValidateService(svc Service) error {
 	}
 	if svc.Listen == u.Host {
 		return errors.New("the listen address and the upstream are the same, which would make the service call itself")
+	}
+	// UNIQUE(project_id, name) is the only constraint the table carries, so two
+	// services of one project could be given the same port. Nothing refuses it,
+	// one of the two listeners then fails to bind, and what the user is told is
+	// "address already in use" — which reads as an external process squatting
+	// the port rather than as the other half of their own configuration.
+	//
+	// Checked here rather than as a unique index because the answer worth
+	// giving names the service already holding it, and because an index added
+	// now would refuse to build on a database that already has a pair like this.
+	for _, other := range siblings {
+		if other.ID != svc.ID && other.Listen == svc.Listen {
+			return fmt.Errorf("%s is already the listen address of %q in this project; give this one a different port or move %q first",
+				svc.Listen, other.Name, other.Name)
+		}
 	}
 	// The same rule the configuration file applies, from the same function, so
 	// the form and the YAML cannot disagree about what is allowed.
