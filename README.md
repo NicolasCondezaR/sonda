@@ -222,6 +222,12 @@ point the caller here:  MS_AUTH_GRPC_URL=127.0.0.1:9152
 Restart the caller with that in its environment and its traffic appears in the
 field. Nothing on disk changes, and dropping the variable puts it back.
 
+The name is the one the address was read from when the project was imported —
+`MS_AUTH_ADDR`, `MS_AUTH_HOST`, whatever the file actually says. It is only
+derived from the service and its protocol when Sonda has no record of a name,
+which is a service added by hand or read from a compose file: a guessed name
+served beside the real one is a line that sets a variable nothing reads.
+
 ### The configuration file
 
 `sonda.yaml` still carries the process-level settings — where the API listens,
@@ -356,6 +362,10 @@ needed a different expression:
   block where an ordinary call is a half one** (`█` against `▄`), with a third
   glyph for a cell holding both. Shape still carries the outcome before colour
   does, which is the rule that matters.
+- A service being **broken on purpose** is a mode and not a call, so the same
+  block is engraved on the channel, before its name, and the bar counts how many
+  are armed — the browser's badge and readout in the two places this client has
+  for them.
 
 | Key | |
 |---|---|
@@ -1111,6 +1121,18 @@ curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-auth","cut":t
 
 From an agent, `break_service` does the same, and it asks first.
 
+In the interface it is on the service itself, under **PROJECTS**: the row
+carries `LATENCY MS`, `HTTP STATUS`, `CUT` and `ONE CALL IN` beside an `ARM`
+key, and reads back **BROKEN ON PURPOSE** with the rule in force until
+`RESTORE` takes it off. A rule that would do nothing — no latency, no status,
+no cut — is refused, and what the panel shows is the refusal rather than a rule
+that was never armed.
+
+The terminal reads the same state and does not set it, which is the level it
+already works at for stubbing: the bar counts what is armed, the channel
+carries the fault block before its name, and the inspector names the rule
+beside the call being read.
+
 **Latency lets the call through** — the service still answers, it just takes
 longer, which is the case a timeout is meant to catch. **A status or a cut ends
 the call at Sonda**: the service is never reached.
@@ -1126,10 +1148,17 @@ against. Changing a rule restarts its schedule.
 
 Every injected failure carries **`X-Sonda-Fault`** with the reason, is recorded
 as injected, and is marked as such in the field, the inspector and the terminal.
-The channel shows **BROKEN** while a rule is in force. Rules are forgotten when
-Sonda restarts, for the same reason stubbing is: a service that has been failing
-since Tuesday because of a rule nobody remembers setting is a worse afternoon
-than the bug being chased.
+
+A rule in force is stated where the failures are being read, not only where it
+was armed: the channel shows **BROKEN**, and the readout at the top of the
+browser and the bar in the terminal both count what is armed. That matters most
+above `one_in: 1`, where most calls pass through untouched and the injected ones
+on their own look like a service that is merely flaky.
+
+Rules are forgotten when Sonda restarts, for the same reason stubbing is: a
+service that has been failing since Tuesday because of a rule nobody remembers
+setting is a worse afternoon than the bug being chased. Nothing about them is
+written to the database.
 
 ## Stub mode
 
@@ -1352,7 +1381,7 @@ looks.
 | 11 | Stub mode: answer from a recording instead of forwarding | done |
 | 12 | The tree and the stub, on every surface: web, terminal, MCP | done |
 | 13 | WebSocket and server-sent events | done |
-| 14 | Fault injection: latency, forced statuses, cut connections | done |
+| 14 | Fault injection: latency, forced statuses, cut connections, armed and read on every surface | done |
 | 15 | Contract drift: a field gone, a field retyped | done |
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
 | 17 | PostgreSQL: one capture per statement, hung under the request that ran it, with the credentials blanked before they are stored | done |

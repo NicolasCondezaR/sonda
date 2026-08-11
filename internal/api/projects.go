@@ -115,18 +115,29 @@ func toProjectJSON(p store.Project, status map[string]supervisor.Status) project
 // Sonda is an explicit proxy: it sees nothing until whoever makes the call is
 // told to call it instead. That is the one step no amount of configuration
 // screen removes, so the least it can do is hand over the exact line.
+//
+// The stored variable wins whenever there is one, for the reason reversePatch
+// sets out at length: MS_AUTH_ADDR, MS_AUTH_HOST and MS_AUTH_HTTP_URL are all
+// names discovery accepts, so a derived MS_AUTH_URL served beside the real one
+// offers a line that sets a variable nothing reads. The derivation is only
+// reached when Sonda has no evidence of a name at all — a service added by
+// hand, or one read from a compose file, which has no variable to name.
 func pointAt(svc store.Service) string {
-	name := strings.ToUpper(strings.ReplaceAll(svc.Name, "-", "_"))
-	suffix := "_URL"
-	if svc.Protocol == "grpc" {
-		suffix = "_GRPC_URL"
+	name := svc.EnvKey
+	if name == "" {
+		name = strings.ToUpper(strings.ReplaceAll(svc.Name, "-", "_"))
+		if svc.Protocol == "grpc" {
+			name += "_GRPC_URL"
+		} else {
+			name += "_URL"
+		}
 	}
 	// A TLS listener answers nothing on http://, so the line handed over has to
 	// carry the scheme or it is an address that will not work.
 	if svc.TLS {
-		return name + suffix + "=https://" + svc.Listen
+		return name + "=https://" + svc.Listen
 	}
-	return name + suffix + "=" + svc.Listen
+	return name + "=" + svc.Listen
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {

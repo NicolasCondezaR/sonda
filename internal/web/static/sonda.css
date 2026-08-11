@@ -194,6 +194,11 @@ a.switch__key { display: inline-block; text-decoration: none; }
 
 .readout__fault { color: var(--fault); }
 
+/* A rule in force, said in the colour failure owns. It is the second place
+   outside the field that colour is allowed to mean failure, and it earns it the
+   same way the inspector's line does: the failures on screen are Sonda's. */
+.readout__broken { color: var(--fault); }
+
 /* --------------------------------------------------------------- deck ---- */
 
 .deck {
@@ -1016,6 +1021,60 @@ a.switch__key { display: inline-block; text-decoration: none; }
   padding: 1px var(--tight);
   overflow-wrap: anywhere;
 }
+
+/* Arming a fault: the values and the latch on one line, under the service they
+   break. A latched key like the stub toggle could not carry it — a rule is what
+   to do and how often, so the fields are part of the control. */
+.svc__break {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tight);
+  font-size: 11px;
+  color: var(--ink-faint);
+  padding: var(--hair) 0 var(--hair) var(--base);
+}
+
+/* The reading takes the slack so the controls sit together at the right edge,
+   the way the values on an instrument are read left and set right. */
+.svc__break-state {
+  flex: 1 1 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+}
+
+.svc__break-state--armed { color: var(--fault); }
+
+.svc__break-field,
+.svc__break-cut {
+  display: flex;
+  align-items: center;
+  gap: var(--hair);
+  cursor: pointer;
+}
+
+.svc__break input[type="number"] {
+  /* The browser's spinner is chrome from another world: rounded, gradient-lit
+     and nothing like the rest of this panel. The field stays a number field —
+     validation and the numeric keyboard come with the type, not the arrows. */
+  appearance: textfield;
+  width: 8ch;
+  border: 1px solid var(--rule);
+  background: var(--raised);
+  color: var(--ink);
+  font: 400 12px/1 var(--mono);
+  padding: 4px 6px;
+}
+
+.svc__break input[type="number"]::-webkit-inner-spin-button,
+.svc__break input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.svc__break input:focus { outline: none; border-color: var(--ink-dim); }
 
 .form {
   display: grid;

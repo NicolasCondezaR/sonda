@@ -223,6 +223,12 @@ point the caller here:  MS_AUTH_GRPC_URL=127.0.0.1:9152
 Reinicias al que llama con eso en su entorno y su tráfico aparece en el campo.
 No cambia nada en disco, y sacar la variable lo deja como estaba.
 
+El nombre es el que se leyó junto a la dirección al importar el proyecto:
+`MS_AUTH_ADDR`, `MS_AUTH_HOST`, lo que diga el archivo. Solo se deriva del
+servicio y su protocolo cuando Sonda no tiene registro de ningún nombre — un
+servicio agregado a mano, o leído de un compose —, porque un nombre adivinado
+entregado junto al real es una línea que cambia una variable que nadie lee.
+
 ### El archivo de configuración
 
 `sonda.yaml` sigue cargando los ajustes del proceso: dónde escucha la API,
@@ -359,6 +365,10 @@ iguales. Dos cosas necesitaron otra expresión:
   a ser un **bloque completo donde una llamada normal es medio bloque** (`█`
   contra `▄`), con un tercer glifo para una celda que tiene ambos. La forma sigue
   cargando el resultado antes que el color, que es la regla que importa.
+- Un servicio **roto a propósito** es un modo y no una llamada, así que el mismo
+  bloque queda grabado en el canal, delante de su nombre, y la barra cuenta
+  cuántos hay armados: los dos lugares que este cliente tiene para lo que en el
+  navegador son la insignia y la lectura de arriba.
 
 | Tecla | |
 |---|---|
@@ -1136,6 +1146,18 @@ curl -X POST http://127.0.0.1:9000/api/faults   -d '{"service":"ms-auth","cut":t
 
 Desde un agente, `break_service` hace lo mismo, y pregunta antes.
 
+En la interfaz está sobre el servicio mismo, dentro de **PROJECTS**: la fila
+lleva `LATENCY MS`, `HTTP STATUS`, `CUT` y `ONE CALL IN` junto a una tecla
+`ARM`, y queda leyendo **BROKEN ON PURPOSE** con la regla en vigor hasta que
+`RESTORE` la saca. Una regla que no haría nada — sin latencia, sin estado y sin
+corte — se rechaza, y lo que el panel muestra es ese rechazo y no una regla que
+nunca se armó.
+
+El terminal lee ese mismo estado y no lo cambia, que es el nivel al que ya
+trabaja con el stub: la barra cuenta cuántas reglas hay en vigor, el canal lleva
+el bloque de fallo delante de su nombre, y el inspector nombra la regla junto a
+la llamada que se está leyendo.
+
 **La latencia deja pasar la llamada** — el servicio igual responde, solo que
 tarda más, que es el caso que un timeout debe atrapar. **Un estado o un corte
 terminan la llamada en Sonda**: el servicio nunca se alcanza.
@@ -1151,10 +1173,18 @@ para depurar. Cambiar una regla reinicia su cuenta.
 
 Todo fallo inyectado lleva **`X-Sonda-Fault`** con el motivo, se guarda marcado
 como inyectado, y aparece señalado en el campo, en el inspector y en el
-terminal. El canal muestra **BROKEN** mientras hay una regla en vigor. Las
-reglas se olvidan al reiniciar Sonda, por lo mismo que el stub: un servicio que
-falla desde el martes por una regla que nadie recuerda haber puesto es una peor
-tarde que el bug que se estaba persiguiendo.
+terminal.
+
+Una regla en vigor se dice donde se están leyendo los fallos, y no solo donde se
+armó: el canal muestra **BROKEN**, y tanto la lectura de arriba en el navegador
+como la barra del terminal cuentan cuántas hay. Eso pesa sobre todo con
+`one_in` mayor que 1, donde la mayoría de las llamadas pasa intacta y las
+inyectadas, por sí solas, parecen un servicio simplemente inestable.
+
+Las reglas se olvidan al reiniciar Sonda, por lo mismo que el stub: un servicio
+que falla desde el martes por una regla que nadie recuerda haber puesto es una
+peor tarde que el bug que se estaba persiguiendo. Nada de esto se escribe en la
+base de datos.
 
 ## Modo stub
 
@@ -1385,7 +1415,7 @@ parece.
 | 11 | Modo stub: responder desde una grabación en vez de reenviar | listo |
 | 12 | El árbol y el stub, en todas las superficies: web, terminal y MCP | listo |
 | 13 | WebSocket y eventos server-sent | listo |
-| 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas | listo |
+| 14 | Inyección de fallos: latencia, estados forzados, conexiones cortadas, armadas y leídas en todas las superficies | listo |
 | 15 | Deriva de contratos: un campo que se fue, uno que cambió de tipo | listo |
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
 | 17 | PostgreSQL: una captura por sentencia, colgada bajo la petición que la ejecutó, con las credenciales borradas antes de guardarlas | listo |

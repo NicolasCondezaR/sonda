@@ -82,9 +82,22 @@ func (m Model) renderBar() string {
 	pieces := []string{
 		styleMasthead.Render("S O N D A"),
 		lamp + " " + state,
-		m.key("FAULTS", m.failedOnly) + m.key("ALL", !m.failedOnly),
-		m.windowKeys(),
 	}
+
+	// A rule in force outranks both filter and sweep, and is never shed with
+	// them. This is the line that stops an afternoon: whoever is staring at a
+	// field full of failures reads the bar before anything else, and Sonda
+	// causing them has to be the first thing it says.
+	keep := len(pieces)
+	if n := len(m.broken); n > 0 {
+		pieces = append(pieces, styleFault.Render(fmt.Sprintf("%d BROKEN ON PURPOSE", n)))
+		keep++
+	}
+
+	pieces = append(pieces,
+		m.key("FAULTS", m.failedOnly)+m.key("ALL", !m.failedOnly),
+		m.windowKeys(),
+	)
 	right := m.renderReadout()
 
 	for {
@@ -93,7 +106,7 @@ func (m Model) renderBar() string {
 		if gap >= 1 {
 			return left + strings.Repeat(" ", gap) + right
 		}
-		if len(pieces) > 2 {
+		if len(pieces) > keep {
 			pieces = pieces[:len(pieces)-1]
 			continue
 		}
@@ -197,6 +210,14 @@ func (m Model) renderLanes(fieldWidth int) string {
 		if target.InsecureSkipVerify {
 			name, nameStyle = "!"+name, styleFault
 		}
+		// Being broken on purpose is a mode the service is in, so it is engraved
+		// on the channel and not left to the calls it happens to have ruined.
+		// It takes the shape a fault already has in the field rather than a
+		// second colour, and it goes leftmost because it is the one of these
+		// that was true five minutes ago and may not be true now.
+		if _, broken := m.broken[target.Name]; broken {
+			name, nameStyle = markFault+name, styleFault
+		}
 
 		b.WriteString(cursor + swatch +
 			nameStyle.Render(pad(name, colName)) +
@@ -264,6 +285,16 @@ func (m Model) renderInspector() string {
 	// Sonda's own interference, said before the payload for the same reason the
 	// web client says it: a reader who takes it for the service's failure
 	// spends an hour on a bug that is not there.
+	//
+	// The rule comes before the call it ruined, and is printed whether or not
+	// this particular call was hit: above one_in 1 most calls pass through
+	// untouched, so a reader shown nothing but the injected ones cannot tell the
+	// service is armed at all.
+	if rule := m.broken[d.Target]; rule != "" {
+		lines = append(lines, styleFault.Render(" ARMED · "+truncate(
+			d.Target+" is being broken on purpose by Sonda: "+rule, m.width-10)))
+	}
+
 	if d.Injected {
 		lines = append(lines, styleFault.Render(
 			" BROKEN ON PURPOSE · "+truncate(orDefault(d.Error, "Sonda injected this failure."), m.width-24)))
@@ -861,11 +892,16 @@ func (m Model) renderFooter() string {
 
 /* --------------------------------------------------------------- pieces -- */
 
+// pad measures columns, not bytes. The marks the rail puts in front of a name
+// are block characters of three bytes and one column each, and padding those by
+// length shortens the cell by two — which walks every lane off the channel it
+// belongs to, the one thing this layout cannot get wrong.
 func pad(s string, width int) string {
-	if len(s) >= width {
-		return s[:max(width-1, 0)] + " "
+	if lipgloss.Width(s) >= width {
+		runes := []rune(s)
+		return string(runes[:max(min(width-1, len(runes)), 0)]) + " "
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-lipgloss.Width(s))
 }
 
 func truncate(s string, width int) string {

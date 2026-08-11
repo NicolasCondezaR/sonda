@@ -51,10 +51,16 @@ type Model struct {
 	targets []Target
 	stats   Stats
 	calls   []Call
-	detail  *CallDetail
-	diff    *Diff
-	trace   *Trace
-	drift   *Drift
+
+	// broken is service -> the rule Sonda is applying to it. Read on every
+	// reload rather than remembered: it can be armed from the browser or by an
+	// agent while this window sits open.
+	broken map[string]string
+
+	detail *CallDetail
+	diff   *Diff
+	trace  *Trace
+	drift  *Drift
 
 	// diag is held only while nothing has been captured, which is the only time
 	// it is on screen. probes keeps the last upstream dial separately, with the
@@ -112,9 +118,10 @@ func (m Model) divisions() int        { return windows[m.windowIdx].Divisions }
 type tickMsg time.Time
 type reloadMsg time.Time
 type loadedMsg struct {
-	calls []Call
-	stats Stats
-	err   error
+	calls  []Call
+	stats  Stats
+	broken map[string]string
+	err    error
 }
 type targetsMsg struct {
 	targets []Target
@@ -190,7 +197,11 @@ func (m Model) load() tea.Cmd {
 			return loadedMsg{err: err}
 		}
 		stats, err := m.client.Stats(m.ctx)
-		return loadedMsg{calls: calls, stats: stats, err: err}
+		if err != nil {
+			return loadedMsg{err: err}
+		}
+		broken, err := m.client.Faults(m.ctx)
+		return loadedMsg{calls: calls, stats: stats, broken: broken, err: err}
 	}
 }
 
@@ -287,6 +298,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Oldest first, so appending a streamed call keeps the order.
 		sort.Slice(msg.calls, func(i, j int) bool { return msg.calls[i].ID < msg.calls[j].ID })
 		m.calls, m.stats, m.err, m.live = msg.calls, msg.stats, nil, true
+		m.broken = msg.broken
 		if m.stats.Calls > 0 {
 			// Traffic is arriving; the question the diagnosis answers is no
 			// longer being asked, and a stale one on screen would be worse than

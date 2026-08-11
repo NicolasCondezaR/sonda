@@ -386,6 +386,15 @@ function refreshReadout() {
   if (state.filter === "failed" && shown > 0) dom.readout.classList.add("readout__fault");
   else dom.readout.classList.remove("readout__fault");
 
+  /* A rule in force is never folded into the counts. The bar is where someone
+   * looks first when the field fills with failures, and the control that armed
+   * one lives behind PROJECTS: if this line is not here, the way to find out
+   * that Sonda is the cause is to remember doing it. */
+  if (state.broken.size) {
+    dom.readout.appendChild(el("span", "readout__broken",
+      "  ·  " + state.broken.size + " BROKEN ON PURPOSE"));
+  }
+
   const noneShown = shown === 0;
   dom.empty.hidden = !noneShown;
 
@@ -1648,6 +1657,10 @@ async function call(method, url, body, options) {
   return parsed;
 }
 
+// Answers whether it went through, so a caller with fields on screen can leave
+// them alone after a refusal. The API refuses a rule that would do nothing, and
+// redrawing the row over that refusal would clear what was typed and read as
+// though something had been armed.
 async function mutate(fn, success) {
   try {
     note("working…");
@@ -1658,8 +1671,10 @@ async function mutate(fn, success) {
     renderAdmin();
     // Channels and captures belong to the project that is now listening.
     await boot_reloadAfterProjectChange();
+    return true;
   } catch (err) {
     note(err.message, "fault");
+    return false;
   }
 }
 
@@ -1855,6 +1870,87 @@ function renderService(project, svc) {
     point.appendChild(el("span", "found__taken", svc.error));
   }
   row.appendChild(point);
+  // Same condition as the stub toggle, and for the same reason: a rule only
+  // reaches services whose ports are open, and the API refuses it otherwise.
+  if (project.active) row.appendChild(renderBreak(svc));
+  return row;
+}
+
+/* Breaking a service on purpose, in the row that already says what it is doing.
+ *
+ * Not a latched toggle like stubbing: a rule is what to do and how often, so the
+ * fields are the control and ARM is the latch. They are the three the API takes
+ * and the three the agent tool takes, in that order — a fourth way to say "break
+ * this" is how two surfaces start disagreeing about what a rule is.
+ *
+ * A rule that would do nothing is refused by the API. The refusal is left on
+ * screen as the API wrote it, with the fields exactly as they were typed:
+ * redrawing the row would clear them and read as though something was armed. */
+function renderBreak(svc) {
+  const row = el("div", "svc__break");
+  const rule = state.broken.get(svc.name) || "";
+
+  /* The reading before the controls. Whoever opens this panel while everything
+   * is failing has to meet Sonda's own doing before the fields that caused it,
+   * and a rule is a failure — just Sonda's, not the service's. */
+  row.appendChild(el("span", "svc__break-state" + (rule ? " svc__break-state--armed" : ""),
+    rule ? "BROKEN ON PURPOSE · " + rule : "BREAK ON PURPOSE"));
+
+  const number = (text, title) => {
+    const wrap = el("label", "svc__break-field");
+    wrap.title = title;
+    wrap.appendChild(el("span", "label", text));
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    wrap.appendChild(input);
+    row.appendChild(wrap);
+    return input;
+  };
+
+  const latency = number("LATENCY MS",
+    "Added before the call is forwarded. The service still answers — this is the case a timeout is meant to catch.");
+  const status = number("HTTP STATUS",
+    "Answered with this status instead of forwarding. The service is never reached.");
+  /* A count, and labelled as one. "3" is every third call in that order on
+   * every run; a percentage would be a different sequence each time and turn a
+   * failing test into a coin toss. */
+  const oneIn = number("ONE CALL IN",
+    "A count, not a percentage: 3 means every third call, in that order, every run. Leave it empty to break every call.");
+
+  const cutWrap = el("label", "svc__break-cut");
+  cutWrap.title = "Drop the connection without answering at all — the failure a client handles differently from a 500, and the one almost nobody tests.";
+  const cut = document.createElement("input");
+  cut.type = "checkbox";
+  cutWrap.append(cut, el("span", "label", "CUT"));
+  row.appendChild(cutWrap);
+
+  const arm = button(rule ? "REPLACE" : "ARM", async () => {
+    const armed = await mutate(() => call("POST", "api/faults", {
+      service: svc.name,
+      latency_ms: Number(latency.value) || 0,
+      status: Number(status.value) || 0,
+      cut: cut.checked,
+      one_in: Number(oneIn.value) || 0,
+    }), `${svc.name} is being broken on purpose — until you restore it, or Sonda restarts`);
+    if (!armed) return;
+    await reload();
+    renderAdmin();
+  });
+  arm.title = "Sonda applies this to every call it forwards to " + svc.name +
+    ". Nothing is written down: rules are forgotten when Sonda restarts.";
+  row.appendChild(arm);
+
+  if (rule) {
+    const restore = button("RESTORE", async () => {
+      await mutate(() => call("POST", "api/faults", { service: svc.name, clear: true }),
+        `${svc.name} is answering for itself again`);
+      await reload();
+      renderAdmin();
+    });
+    restore.title = `Take the rule off ${svc.name} and forward its calls untouched again.`;
+    row.appendChild(restore);
+  }
   return row;
 }
 

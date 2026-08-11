@@ -433,8 +433,13 @@ func waitForCall(ctx context.Context, s *Server, a args) (any, error) {
 	// Only calls captured from now on. Without this the first poll would
 	// return whatever happened to be there already and the wait would be a
 	// lie.
+	//
+	// To the nanosecond, and not to the second: the column is microseconds, so a
+	// second-precision bound is really the start of the current second and
+	// matches traffic captured before the wait began. Returning a call that
+	// happened first destroys the only thing this tool is for.
 	started := time.Now().UTC()
-	q.Set("since", started.Format(time.RFC3339))
+	q.Set("since", started.Format(time.RFC3339Nano))
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()

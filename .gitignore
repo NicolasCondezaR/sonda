@@ -10,3 +10,6 @@ sonda.yaml
 /echo.exe
 *.log
 /dist/
+
+# Worktrees de agentes: copias de trabajo, nunca parte del repositorio.
+.claude/worktrees/
