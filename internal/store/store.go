@@ -554,6 +554,11 @@ type TargetStats struct {
 	Target string `json:"target"`
 	Calls  int64  `json:"calls"`
 	Faults int64  `json:"faults"`
+
+	// Last is when this target last captured anything. "Nothing since I started
+	// the client" and "nothing in the last two hours" are different findings,
+	// and a count alone cannot tell them apart.
+	Last time.Time `json:"last,omitzero"`
 }
 
 // faultPredicate is one definition of failure, shared by the stats rollup and
@@ -590,7 +595,7 @@ func (s *Store) Stats(ctx context.Context, project string) (Stats, error) {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT target, COUNT(*), SUM(CASE WHEN `+faultPredicate+` THEN 1 ELSE 0 END)
+		SELECT target, COUNT(*), SUM(CASE WHEN `+faultPredicate+` THEN 1 ELSE 0 END), MAX(started_at)
 		FROM calls`+where+` GROUP BY target`, args...)
 	if err != nil {
 		return st, fmt.Errorf("stats by target: %w", err)
@@ -599,9 +604,15 @@ func (s *Store) Stats(ctx context.Context, project string) (Stats, error) {
 
 	st.ByTarget = []TargetStats{}
 	for rows.Next() {
-		var t TargetStats
-		if err := rows.Scan(&t.Target, &t.Calls, &t.Faults); err != nil {
+		var (
+			t    TargetStats
+			last sql.NullInt64
+		)
+		if err := rows.Scan(&t.Target, &t.Calls, &t.Faults, &last); err != nil {
 			return st, err
+		}
+		if last.Valid {
+			t.Last = time.UnixMicro(last.Int64).UTC()
 		}
 		st.ByTarget = append(st.ByTarget, t)
 	}

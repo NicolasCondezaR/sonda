@@ -108,6 +108,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/services/{id}", s.deleteService)
 	mux.HandleFunc("POST /api/discover", s.discoverServices)
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
+	// Two verbs, one report. GET stays free of side effects so any client may
+	// poll it; POST is the only way to make Sonda dial an upstream, which is
+	// traffic the user did not send and must never happen on a refresh.
+	mux.HandleFunc("GET /api/diagnose", s.diagnose)
+	mux.HandleFunc("POST /api/diagnose", s.diagnose)
 	mux.HandleFunc("GET /api/tls", s.tlsAuthority)
 	mux.HandleFunc("GET /api/tls/ca.pem", s.tlsCertificate)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {

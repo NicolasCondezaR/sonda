@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -223,6 +224,13 @@ func (m Model) renderInspector() string {
 	if m.diff != nil {
 		return m.renderDiff()
 	}
+	if m.detail == nil && m.diag != nil {
+		// Nothing has been captured, so there is no call to select and the hint
+		// below would be an instruction the reader cannot follow. This is where
+		// they are looking when they are confused, so this is where the reading
+		// goes.
+		return m.renderDiagnosis()
+	}
 	if m.detail == nil {
 		return styleFaint.Render(" Select a call: ↑↓ pick a channel, ←→ step along it, enter to read.")
 	}
@@ -324,6 +332,116 @@ func (m Model) renderInspector() string {
 	}
 
 	return strings.Join(clamp(lines, inspectorLines), "\n")
+}
+
+// renderDiagnosis says why nothing is being captured.
+//
+// Every channel gets one line, and the channel under the cursor gets the whole
+// reading. The alternative — printing all of it for all of them — does not fit
+// in the inspector, and the rail cursor is already the way this client says
+// "this one", so nothing new has to be learned to read the rest.
+func (m Model) renderDiagnosis() string {
+	d := m.diag
+	width := m.width - 1
+
+	lines := []string{
+		styleInk.Render(" NOTHING CAPTURED"),
+		styleDim.Render(" " + truncate(d.Summary, width)),
+	}
+	if len(d.Services) == 0 {
+		// No project, or a project with no services: the summary said it all,
+		// and a table of nothing underneath would just be an empty frame.
+		return strings.Join(clamp(append(lines, "", styleFaint.Render(" "+truncate(d.Note, width))), inspectorLines), "\n")
+	}
+
+	lines = append(lines, "")
+	selected := m.selectedService()
+	for _, svc := range d.Services {
+		cursor := " "
+		if svc.Service == selected {
+			cursor = styleInk.Render("▸")
+		}
+		lines = append(lines, cursor+
+			styleDim.Render(pad(svc.Service, 16))+
+			styleFaint.Render(pad(svc.Listen, 22))+
+			styleFaint.Render(pad(fmt.Sprintf("%d conn", svc.Connections), 10))+
+			styleFaint.Render(pad(fmt.Sprintf("%d capt", svc.Captures), 10))+
+			verdictStyle(svc.Verdict).Render(verdictLabel(svc.Verdict)))
+	}
+
+	for _, svc := range d.Services {
+		if svc.Service != selected {
+			continue
+		}
+		lines = append(lines, "")
+		lines = append(lines, indent(svc.Detail, " ", width)...)
+		if line := m.probes[svc.Service]; line != "" {
+			style := styleDim
+			if strings.Contains(line, "refused") {
+				style = styleFault
+			}
+			lines = append(lines, style.Render(" "+truncate(line, width)))
+		}
+		if len(svc.CannotDistinguish) > 0 {
+			lines = append(lines, styleLabel.Render(" SONDA CANNOT TELL THESE APART"))
+			for _, cause := range svc.CannotDistinguish {
+				lines = append(lines, indent(cause, " · ", width)...)
+			}
+		}
+		if len(svc.WhatToCheck) > 0 {
+			lines = append(lines, styleLabel.Render(" WHAT TO CHECK, IN ORDER"))
+			for i, step := range svc.WhatToCheck {
+				lines = append(lines, indent(step, fmt.Sprintf(" %d. ", i+1), width)...)
+			}
+		}
+	}
+
+	lines = append(lines, "", styleFaint.Render(" "+truncate(d.Note, width)))
+	lines = append(lines, styleFaint.Render(" ↑↓ another channel  ·  p dial every upstream once (it never goes through Sonda, so it cannot become a capture)"))
+	return strings.Join(clamp(lines, inspectorLines), "\n")
+}
+
+// selectedService names the channel the rail cursor is on, so the diagnosis
+// expands the same one the rail highlights.
+func (m Model) selectedService() string {
+	if m.lane < 0 || m.lane >= len(m.targets) {
+		if len(m.diag.Services) == 0 {
+			return ""
+		}
+		return m.diag.Services[0].Service
+	}
+	return m.targets[m.lane].Name
+}
+
+// verdictLabel is the machine verdict made readable without being reworded: an
+// agent and a person reading the same session must be reading the same finding.
+func verdictLabel(verdict string) string {
+	return strings.ToUpper(strings.ReplaceAll(verdict, "_", " "))
+}
+
+// verdictStyle keeps fault reserved for failure. A client that has not
+// connected yet is not a failure of anything, and colouring it red would send
+// somebody chasing a fault that does not exist.
+func verdictStyle(verdict string) lipgloss.Style {
+	switch verdict {
+	case "listener_down", "upstream_unreachable":
+		return styleFault
+	case "capturing":
+		return styleArmed
+	default:
+		return styleDim
+	}
+}
+
+// probeLine renders one upstream dial. The clock time is part of the reading:
+// the refresh that follows a probe carries no probe, and an answer redrawn
+// without its timestamp would read as current when it is not.
+func probeLine(svc ServiceDiagnosis) string {
+	at := time.Now().Format("15:04:05")
+	if svc.UpstreamReachable {
+		return fmt.Sprintf("upstream %s accepted a connection at %s", svc.Upstream, at)
+	}
+	return fmt.Sprintf("upstream %s refused a connection at %s — %s", svc.Upstream, at, svc.UpstreamError)
 }
 
 // renderFrames shows one direction of a socket conversation.

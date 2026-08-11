@@ -61,6 +61,18 @@ type Status struct {
 	Listen  string `json:"listen"`
 	Running bool   `json:"running"`
 	Error   string `json:"error,omitempty"`
+
+	// Connections counts every TCP connection this port has accepted since it
+	// opened, whether or not any of them ever became a capture.
+	//
+	// It is the only evidence Sonda has that a client found the port at all. A
+	// client speaking TLS to a plaintext listener, or a protocol this port does
+	// not speak, connects and is never recorded — and without this counter that
+	// reads exactly like a client that was never pointed here, which is a
+	// different problem with a different fix. Counting at accept is what makes
+	// the two separable; nothing further up the stack sees the connection that
+	// failed before a request existed.
+	Connections int64 `json:"connections"`
 }
 
 type listener struct {
@@ -80,6 +92,11 @@ type listener struct {
 	// is the one thing this package exists to prevent.
 	handler atomic.Pointer[http.Handler]
 	serve   atomic.Pointer[func(net.Conn)]
+
+	// accepted survives a swap and dies with a restart, which is the honest
+	// reading: it counts what this socket has seen, and a socket that was
+	// rebound is a new one.
+	accepted atomic.Int64
 }
 
 // ServeHTTP is the stable handler the http.Server holds.
@@ -94,8 +111,14 @@ func (l *listener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	(*h).ServeHTTP(w, r)
 }
 
-// serveConn is the stable function the accept loop holds.
-func (l *listener) serveConn(c net.Conn) { (*l.serve.Load())(c) }
+// serveConn is the stable function the accept loop holds. The count is taken
+// here rather than inside the target's own handler because a raw target may
+// hang up on the first byte, and a connection that arrived is a connection that
+// arrived.
+func (l *listener) serveConn(c net.Conn) {
+	l.accepted.Add(1)
+	(*l.serve.Load())(c)
+}
 
 // swap points a running listener at a rebuilt target.
 func (l *listener) swap(d Desired) {
@@ -182,7 +205,10 @@ func (s *Supervisor) Status() []Status {
 func (s *Supervisor) statusLocked() []Status {
 	out := make([]Status, 0, len(s.running))
 	for key, l := range s.running {
-		st := Status{Key: key, Listen: l.desired.Listen, Running: l.err == nil}
+		st := Status{
+			Key: key, Listen: l.desired.Listen, Running: l.err == nil,
+			Connections: l.accepted.Load(),
+		}
 		if l.err != nil {
 			st.Error = l.err.Error()
 		}
@@ -229,6 +255,16 @@ func (s *Supervisor) start(key string, d Desired) {
 		// No read or write timeout: a debugging proxy must not be the thing
 		// that kills a slow call the developer is trying to observe.
 		ReadHeaderTimeout: 30 * time.Second,
+
+		// StateNew fires once per accepted connection, before the TLS handshake
+		// and before the first request line is parsed. That is deliberately
+		// earlier than the handler: the connections worth counting for a
+		// diagnosis are precisely the ones that never reach a handler.
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateNew {
+				entry.accepted.Add(1)
+			}
+		},
 	}
 	entry.server = server
 	s.running[key] = entry

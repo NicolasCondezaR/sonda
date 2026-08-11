@@ -12,6 +12,11 @@ const MAX_CALLS = 2000;      // bounded so a long session cannot grow without li
 const WINDOWS = new Map([[60000, 4], [300000, 5], [1800000, 6]]);
 const SEARCH_POLL_MS = 2000;
 const PAGE_LIMIT = 500;
+/* The diagnosis is only refreshed while the field is empty, which is the only
+ * time it is on screen. A listener can come back and a client can finally
+ * connect while somebody reads it, and a reading that froze at the moment of
+ * confusion would be the wrong one by the time they acted on it. */
+const DIAG_POLL_MS = 3000;
 
 const state = {
   targets: [],
@@ -30,6 +35,9 @@ const state = {
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
   stubbed: new Set(),        // services answering from recordings, not the wire
   broken: new Map(),         // service -> the rule Sonda is applying to it
+  diagnosis: null,           // why nothing is being captured, when nothing is
+  probes: new Map(),         // service -> the last upstream dial, with its clock time
+  probing: false,
   pxPerMs: 0,
   epoch: Date.now(),
   laneWidth: 0,
@@ -44,6 +52,10 @@ const dom = {
   empty: document.getElementById("field-empty"),
   emptyHeadline: document.getElementById("empty-headline"),
   emptyNote: document.getElementById("empty-note"),
+  emptyDiag: document.getElementById("empty-diag"),
+  diagList: document.getElementById("diag-list"),
+  diagNote: document.getElementById("diag-note"),
+  diagProbe: document.getElementById("diag-probe"),
   readout: document.getElementById("readout"),
   acquisition: document.getElementById("acquisition"),
   acquisitionText: document.getElementById("acquisition-text"),
@@ -376,18 +388,129 @@ function refreshReadout() {
 
   const noneShown = shown === 0;
   dom.empty.hidden = !noneShown;
-  if (noneShown) {
-    if (state.totals.calls === 0) {
-      dom.emptyHeadline.textContent = "ARMED";
-      dom.emptyNote.textContent = "No traffic captured yet. Point a client at a channel's listen port.";
-    } else if (state.filter === "failed") {
-      dom.emptyHeadline.textContent = "NO FAULTS";
-      dom.emptyNote.textContent =
-        `${state.totals.calls} calls captured, none flagged. Switch to ALL to see the whole field.`;
-    } else {
-      dom.emptyHeadline.textContent = "NO MATCH";
-      dom.emptyNote.textContent = "Nothing in this window matches the current filter.";
+
+  /* Nothing captured at all is the only one of these three that is a question
+   * about the instrument rather than about the filter, and it is the one that
+   * gets an empty screen with no explanation. It gets the diagnosis; the other
+   * two already say what is true in one line. */
+  const unexplained = noneShown && state.totals.calls === 0;
+  dom.emptyDiag.hidden = !unexplained;
+  dom.empty.classList.toggle("field__empty--diagnosing", unexplained);
+  watchDiagnosis(unexplained);
+
+  if (!noneShown) return;
+  if (unexplained) {
+    dom.emptyHeadline.textContent = "ARMED · NOTHING CAPTURED";
+    dom.emptyNote.textContent = state.diagnosis
+      ? state.diagnosis.summary
+      : "Reading what Sonda knows about each channel…";
+  } else if (state.filter === "failed") {
+    dom.emptyHeadline.textContent = "NO FAULTS";
+    dom.emptyNote.textContent =
+      `${state.totals.calls} calls captured, none flagged. Switch to ALL to see the whole field.`;
+  } else {
+    dom.emptyHeadline.textContent = "NO MATCH";
+    dom.emptyNote.textContent = "Nothing in this window matches the current filter.";
+  }
+}
+
+/* ----------------------------------------------------------- diagnosis -- */
+
+let diagTimer = null;
+
+function watchDiagnosis(on) {
+  if (on === Boolean(diagTimer)) return;
+  clearInterval(diagTimer);
+  diagTimer = on ? setInterval(() => loadDiagnosis(false), DIAG_POLL_MS) : null;
+  if (on) loadDiagnosis(false);
+}
+
+/* probe is a side effect — it dials the user's services — so it is only ever
+ * passed by the button, never by the timer above. The GET is free of it by
+ * construction rather than by a flag somebody could forget. */
+async function loadDiagnosis(probe) {
+  try {
+    const res = await fetch("api/diagnose", probe ? { method: "POST" } : undefined);
+    if (!res.ok) return;
+    const report = await res.json();
+    if (probe) {
+      /* Kept with the clock time it was taken at, because the poll that follows
+       * carries no probe and the reading must not be redrawn as if it were
+       * current. A stale answer labelled stale is useful; one presented as now
+       * is the tool lying. */
+      const at = new Date().toLocaleTimeString(undefined, { hour12: false });
+      for (const s of report.services || []) {
+        state.probes.set(s.service, { at, reachable: s.upstream_reachable, error: s.upstream_error });
+      }
     }
+    state.diagnosis = report;
+
+    /* The live stream only bumps the local total for calls the current filter
+     * admits, so the first successful call under FAULTS leaves it at zero while
+     * the store knows better — and this panel would keep saying nothing was
+     * captured over a proxy that is demonstrably working. The report counts what
+     * is stored, so it is the authority; reloading puts the field, the readout
+     * and this panel back in step, and the panel goes away on its own. */
+    if ((report.services || []).some((s) => s.captures > 0) && state.totals.calls === 0) {
+      reload();
+      return;
+    }
+
+    renderDiagnosis();
+    if (state.totals.calls === 0) dom.emptyNote.textContent = report.summary;
+  } catch (err) {
+    console.error("sonda: could not read the diagnosis", err);
+  }
+}
+
+/* A verdict is not a fault by default. `fault` is reserved for failure, so only
+ * a port that never opened and an upstream refusing connections get it — a
+ * client that has not connected yet is not a failure of anything. */
+function verdictTone(verdict) {
+  if (verdict === "listener_down" || verdict === "upstream_unreachable") return "fault";
+  if (verdict === "capturing") return "ok";
+  return "flat";
+}
+
+function renderDiagnosis() {
+  const report = state.diagnosis;
+  if (!report) return;
+
+  dom.diagNote.textContent = report.note || "";
+  dom.diagList.replaceChildren();
+
+  for (const svc of report.services || []) {
+    const row = el("div", "diag__row");
+    row.appendChild(el("span", "diag__name", svc.service));
+    row.appendChild(el("span", "diag__cell", svc.listen));
+    row.appendChild(el("span", "diag__cell diag__cell--num", svc.connections + " CONN"));
+    row.appendChild(el("span", "diag__cell diag__cell--num", svc.captures + " CAPT"));
+    row.appendChild(el("span", "diag__state diag__state--" + verdictTone(svc.verdict),
+      svc.verdict.replace(/_/g, " ").toUpperCase()));
+
+    row.appendChild(el("p", "diag__detail", svc.detail));
+
+    const probe = state.probes.get(svc.service);
+    if (probe) {
+      row.appendChild(el("p", "diag__probe" + (probe.reachable ? "" : " diag__probe--fault"),
+        probe.reachable
+          ? `upstream ${svc.upstream} accepted a connection at ${probe.at}`
+          : `upstream ${svc.upstream} refused a connection at ${probe.at} — ${probe.error}`));
+    }
+
+    if (svc.cannot_distinguish && svc.cannot_distinguish.length) {
+      row.appendChild(el("p", "diag__label", "SONDA CANNOT TELL THESE APART"));
+      for (const cause of svc.cannot_distinguish) {
+        row.appendChild(el("p", "diag__cause", cause));
+      }
+    }
+    if (svc.what_to_check && svc.what_to_check.length) {
+      row.appendChild(el("p", "diag__label", "WHAT TO CHECK, IN ORDER"));
+      svc.what_to_check.forEach((step, i) => {
+        row.appendChild(el("p", "diag__step", (i + 1) + ". " + step));
+      });
+    }
+    dom.diagList.appendChild(row);
   }
 }
 
@@ -1393,6 +1516,17 @@ function wireControls() {
 
   dom.openProjects.addEventListener("click", openAdmin);
   dom.closeAdmin.addEventListener("click", closeAdmin);
+
+  /* The only path in the page that makes Sonda touch a user's service. It is a
+   * press, never a timer and never a page load. */
+  dom.diagProbe.addEventListener("click", async () => {
+    if (state.probing) return;
+    state.probing = true;
+    dom.diagProbe.textContent = "PROBING…";
+    await loadDiagnosis(true);
+    state.probing = false;
+    dom.diagProbe.textContent = "PROBE AGAIN";
+  });
 
   dom.hold.addEventListener("click", () => {
     state.held = !state.held;

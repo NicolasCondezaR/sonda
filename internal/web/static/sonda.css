@@ -495,6 +495,126 @@ a.switch__key { display: inline-block; text-decoration: none; }
   max-width: 48ch;
 }
 
+/* An empty field is a health reading, not an absence. With nothing captured at
+   all it says what Sonda knows about each channel, because that is the moment
+   the reader is asking. Hairlines and ground shifts separate the rows: no card,
+   no panel, nothing lifted off the field. */
+.diag {
+  pointer-events: auto;   /* the overlay above is inert; this part is read and pressed */
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tight);
+  width: 100%;
+  max-width: 92ch;
+  min-height: 0;
+  margin-top: var(--tight);
+}
+
+/* With a diagnosis on screen the empty state stops being a centred notice and
+   becomes a panel. A centred 48ch paragraph above a left-aligned table gives two
+   different left edges, and neither of them reads as the start of a line. */
+.field__empty--diagnosing {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.field__empty--diagnosing .field__empty-line,
+.field__empty--diagnosing .field__empty-note {
+  width: 100%;
+  max-width: 92ch;
+}
+
+.diag__list {
+  overflow-y: auto;
+  border-top: 1px solid var(--rule);
+  /* Room for the scrollbar, which otherwise sits on top of the verdict — the
+     one word in the row a reader is looking for. */
+  padding-right: var(--base);
+}
+
+.diag__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 10ch 10ch max-content;
+  gap: var(--tight);
+  align-items: baseline;
+  padding: var(--tight) 0;
+  border-bottom: 1px solid var(--grid);
+  font-size: 12px;
+}
+
+.diag__name { color: var(--ink); overflow-wrap: anywhere; }
+.diag__cell { color: var(--ink-dim); overflow-wrap: anywhere; }
+
+.diag__cell--num {
+  text-align: right;
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+}
+
+.diag__state { font-size: 10px; font-weight: 600; letter-spacing: 0.09em; }
+.diag__state--ok { color: var(--armed); }
+/* fault stays reserved: only a port that never opened and an upstream refusing
+   connections are failures. A client that has not connected yet is not one. */
+.diag__state--fault { color: var(--fault); }
+.diag__state--flat { color: var(--ink-dim); }
+
+.diag__detail,
+.diag__probe,
+.diag__label,
+.diag__cause,
+.diag__step {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.diag__detail { color: var(--ink-dim); line-height: 1.55; padding-top: var(--hair); }
+.diag__probe { color: var(--ink-dim); font-size: 11px; }
+.diag__probe--fault { color: var(--fault); }
+
+.diag__label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+  padding-top: var(--tight);
+}
+
+/* A cause Sonda could not rule out is weaker than a reading it made, and it has
+   to look weaker. The hairline is what marks it as a list without inventing a
+   bullet this system does not have. */
+.diag__cause {
+  color: var(--ink-faint);
+  padding-left: var(--tight);
+  border-left: 1px solid var(--grid);
+  margin-left: 1px;
+}
+
+.diag__step { color: var(--ink-dim); padding-left: var(--base); }
+
+.diag__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-faint);
+}
+
+.diag__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--tight);
+  flex-wrap: wrap;
+}
+
+.diag__caution { font-size: 11px; color: var(--ink-faint); }
+
+@media (max-width: 900px) {
+  .diag__row { grid-template-columns: minmax(0, 1fr) max-content; }
+  .diag__cell { grid-column: 1 / -1; }
+  .diag__cell--num { text-align: left; }
+}
+
 /* ------------------------------------------------------------ actions ---- */
 
 .actions {

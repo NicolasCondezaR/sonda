@@ -20,6 +20,32 @@ It is not a formality. The proxy reads a request body on the transport's
 goroutine while the handler reads the capture, and the fault and stub registries
 are written from an HTTP handler while the proxy reads them on every call.
 
+## Benchmarks
+
+```bash
+go test ./internal/proxy/ -bench=. -benchmem -run=XXX
+```
+
+They measure what inserting Sonda costs, and **only the difference between the
+paired cases means anything**. An absolute figure is mostly loopback and two
+`httptest` servers; the number worth reading is Proxied minus Direct, and then
+Proxied minus the bare `httputil.ReverseProxy`, which separates what capture
+costs from what being a proxy costs. `-count=5` and a couple of thousand
+iterations, or the noise is larger than the thing being measured.
+
+**A loaded machine produces nonsense, and the pairs are how you catch it.**
+While these were being written, a run on a busy laptop reported the bare reverse
+proxy as slower than Sonda — which cannot be true, since Sonda is that proxy
+plus work. That is not a finding, it is the signal to close things and run it
+again. `BenchmarkHTTPSmallProxiedDelayed2ms` is the other check: it injects a
+2 ms fault, so if the proxied-minus-direct difference does not grow by roughly
+2 ms, the harness is measuring something other than time spent inside Sonda and
+none of the rest can be trusted.
+
+The `drops/op` metric on the proxied cases says how many captures the buffer
+threw away instead of writing. A run that drops most of them is not measuring
+the storage path.
+
 ## What the code expects of a change
 
 **Tests use the real thing.** Real SQLite files, real HTTP servers, a real gRPC

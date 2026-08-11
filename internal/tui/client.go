@@ -478,6 +478,65 @@ type DriftChange struct {
 	Kind string `json:"kind"`
 }
 
+// Diagnosis is why nothing is being captured. The reasoning is done once in the
+// API so the terminal, the browser and an agent cannot reach three different
+// conclusions about the same ports.
+type Diagnosis struct {
+	Project  string             `json:"project"`
+	Verdict  string             `json:"verdict"`
+	Summary  string             `json:"summary"`
+	Probed   bool               `json:"upstreams_probed"`
+	Note     string             `json:"note"`
+	Services []ServiceDiagnosis `json:"services"`
+}
+
+type ServiceDiagnosis struct {
+	Service  string `json:"service"`
+	Listen   string `json:"listen"`
+	Upstream string `json:"upstream"`
+	Expects  string `json:"expects"`
+	PointAt  string `json:"point_at"`
+
+	Connections int64 `json:"connections"`
+	Captures    int64 `json:"captures"`
+
+	Verdict string `json:"verdict"`
+	Detail  string `json:"detail"`
+
+	UpstreamProbed    bool   `json:"upstream_probed"`
+	UpstreamReachable bool   `json:"upstream_reachable"`
+	UpstreamError     string `json:"upstream_error"`
+
+	CannotDistinguish []string `json:"cannot_distinguish"`
+	WhatToCheck       []string `json:"what_to_check"`
+}
+
+// Diagnose asks why nothing is being captured.
+//
+// probe additionally dials every upstream, which is traffic the user did not
+// send. It rides on POST for exactly that reason: the periodic refresh calls
+// this with false and physically cannot make Sonda touch a service by mistake.
+func (c *Client) Diagnose(ctx context.Context, probe bool) (*Diagnosis, error) {
+	method := http.MethodGet
+	if probe {
+		method = http.MethodPost
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+"/api/diagnose", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, apiError(resp)
+	}
+	var out Diagnosis
+	return &out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
 func (c *Client) Replay(ctx context.Context, id int64) (*ReplayResult, error) {
 	url := fmt.Sprintf("%s/api/calls/%d/replay", c.base, id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString("{}"))

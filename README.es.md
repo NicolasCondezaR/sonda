@@ -232,6 +232,90 @@ base de datos, y después se ignoran, así una edición hecha en la interfaz nun
 queda deshecha por un archivo viejo. Arrancar sin archivo de configuración es un
 primer uso normal.
 
+## Lo apunté a mi servicio y no veo nada
+
+Este es el primer uso más común de una herramienta así, y todas sus causas se
+ven iguales desde afuera: una pantalla vacía. Por eso Sonda responde la pregunta
+en vez de dejarla abierta. **Cuando no se capturó nada, el campo deja de estar
+vacío y pasa a ser una lectura**: una línea por canal con lo que Sonda sabe de
+él, y la misma respuesta está disponible en la terminal, por la API y para un
+agente:
+
+```bash
+curl -s localhost:9000/api/diagnose | jq
+```
+
+```
+sonda-tui              el inspector lo muestra mientras el campo está vacío
+diagnose_silence       la herramienta MCP que llama un agente cuando falta una captura
+```
+
+### Qué puede decirte
+
+Cada canal recibe un veredicto, y los números que lo sostienen están a la vista:
+
+| Veredicto | Qué significa |
+|---|---|
+| `capturing` | Aquí se están registrando llamadas. Un campo vacío es el filtro, la ventana o el canal seleccionado, no el proxy |
+| `listener_down` | El puerto nunca se abrió, casi siempre porque otra cosa lo tiene tomado. Aquí no puede llegar nada, y el error dice qué pasó |
+| `connected_not_captured` | Algo llegó a este puerto y nunca se convirtió en una llamada. Sonda vio la conexión y no entendió lo que venía por ella |
+| `upstream_unreachable` | El servicio detrás de Sonda rechazó una conexión cuando se le preguntó. Solo se informa después de un sondeo explícito |
+| `no_connections` | Nada tocó este puerto desde que se abrió |
+
+La lectura que más trabajo hace es **`connections`**, que cuenta cada conexión
+TCP que el puerto aceptó, se haya convertido en llamada o no. Conexiones sin
+capturas es un cliente que encontró a Sonda y fue malinterpretado: un cliente
+hablando TLS contra un listener en claro o al revés, o un protocolo que Sonda no
+proxea. Cero conexiones es un cliente que nunca llegó. Son problemas distintos
+con soluciones distintas, y sin ese contador se leen exactamente igual.
+
+Sonda proxea HTTP, gRPC, WebSocket y PostgreSQL. Un cliente de Kafka, de Redis o
+de TCP plano apuntado a un puerto de Sonda es aceptado y nunca entendido, y eso
+aparece como `connected_not_captured` en vez de como silencio.
+
+### Qué no puede decirte, y lo dice
+
+**Sonda no puede ver un cliente que nunca se conectó a ella.** Un puerto sin
+conexiones se lee igual si quien llama sigue hablando directo con el servicio,
+si está apuntado a otro puerto, o si simplemente todavía no se ejecutó. No hay
+señal honesta que separe esas tres, así que el informe las nombra todas y
+entrega lo único que sí las separa: apunta al cliente a Sonda, dispara la
+llamada y mira el contador de conexiones. Se mueve incluso cuando la petición
+está mal. Si se queda en cero, no está llegando nada a Sonda.
+
+### Sondear un upstream es un efecto secundario
+
+Averiguar si el servicio detrás de Sonda está arriba significa marcarlo, y eso
+es tráfico que el usuario no envió. Por eso nunca ocurre solo: ni al cargar la
+página, ni al refrescar, ni por un temporizador.
+
+```bash
+# solo lee lo que Sonda ya sabe, no toca la red
+curl -s localhost:9000/api/diagnose
+
+# además marca una vez cada upstream y corta
+curl -s -X POST localhost:9000/api/diagnose
+```
+
+Pedirlo es la única forma: `PROBE UPSTREAMS` en el navegador, `p` en la
+terminal, `probe_upstreams` en la herramienta MCP. La conexión no envía ningún
+byte y va **directo al servicio, nunca por el listener de Sonda**, así que un
+sondeo jamás puede aparecer en la lista de capturas como si fuera una llamada
+tuya.
+
+### Si sigue sin aparecer nada
+
+- **¿Hay un proyecto activo?** Sin proyecto activo no hay puertos abiertos, y el
+  informe lo dice antes que cualquier otra cosa.
+- **¿El cliente releyó su configuración?** Un proceso que arrancó antes de
+  cambiar la variable de entorno sigue con la dirección vieja.
+- **¿El esquema es el correcto?** Un listener que termina TLS no responde nada
+  en `http://`, y uno en claro no responde nada en `https://`. Por eso la línea
+  que entrega cada servicio lleva el esquema.
+- **Revisa el log de la propia Sonda.** Un handshake TLS rechazado se informa
+  ahí y en ningún otro lado, porque falla antes de que exista una llamada a la
+  que adjuntarlo.
+
 ## El cliente de terminal
 
 El mismo instrumento, en una terminal. Es un segundo cliente de la API y no una
@@ -548,6 +632,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `break_service` | Agregar latencia, forzar un estado o cortar la conexión. Pregunta antes |
 | `contract_drift` | Si esta respuesta cambió de forma desde que funcionaba |
 | `trust_certificate` | Dónde vive la autoridad certificadora de Sonda y qué ejecutar para confiar en ella o quitarla |
+| `diagnose_silence` | «¿Por qué no veo nada?»: por servicio, si el puerto se abrió, si algo se conectó, qué se capturó y qué causas no se pueden distinguir |
 
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
@@ -1082,7 +1167,9 @@ en el host. Ver `sonda.docker.yaml`.
 | `POST /api/projects/{id}/descriptor` | Sube los esquemas compilados de todo el proyecto. |
 | `POST /api/projects/{id}/services` | Agrega o actualiza un servicio. `DELETE /api/services/{id}` quita uno. |
 | `POST /api/discover` | Lee servicios de un `.env` o un compose sin guardar nada. |
-| `GET /api/runtime` | Qué proyecto está activo y qué está escuchando de verdad. |
+| `GET /api/runtime` | Qué proyecto está activo y qué está escuchando de verdad, incluyendo cuántas conexiones aceptó cada puerto. |
+| `GET /api/diagnose` | Por qué no se está capturando nada, servicio por servicio. Solo lee lo que Sonda ya sabe y no toca la red. |
+| `POST /api/diagnose` | El mismo informe, más una conexión TCP a cada upstream. Es un efecto secundario, y por eso no está en el `GET`. |
 | `GET /api/tls` | La autoridad certificadora y los comandos exactos para confiar en ella y para quitarla. Nunca la clave privada. |
 | `GET /api/tls/ca.pem` | Descarga el certificado de la CA. Útil cuando Sonda corre en un contenedor. |
 | `GET /api/stats` | Cantidad de capturas, rango de tiempo y llamadas descartadas bajo carga. |
@@ -1119,6 +1206,73 @@ leerse como operadores de consulta.
 - **La retención corre por temporizador**, aplicando primero la antigüedad y
   después el tope de filas.
 - **Ctrl+C drena el búfer** antes de salir.
+
+## Cuánto cuesta
+
+Sonda parte de la idea de que un depurador que altera el tráfico invalida toda
+conclusión sacada de él, y el tiempo es parte de lo que un proxy altera. Si
+estás persiguiendo un timeout en el límite entre dos servicios, tienes derecho a
+saber cuánto agregó el instrumento que quedó en el medio. Por eso el proxy se
+mide contra sí mismo, en `internal/proxy/bench_test.go`.
+
+| HTTP, cuerpo de 256 bytes | µs por llamada |
+|---|---|
+| Directo al upstream, sin proxy | ~157 |
+| Por un `httputil.ReverseProxy` estándar, sin Sonda | ~430 |
+| Por Sonda, capturando | ~540 |
+| Por Sonda, con el recorder reemplazado por uno que descarta | ~452 |
+
+| gRPC unario | µs por llamada |
+|---|---|
+| Directo al servicio, sin proxy | ~252 |
+| Por un reverse proxy estándar, sin Sonda | ~797 |
+| Por Sonda, capturando | ~960 |
+
+Lo que dicen esas filas:
+
+- **La mayor parte de la latencia agregada es el precio de haber puesto un
+  proxy, no el de capturar.** En HTTP pequeño, el segundo salto TCP más el
+  propio `ReverseProxy` cuestan ~273 µs, y lo que Sonda suma encima son ~110 µs.
+  En gRPC la forma es la misma: ~545 µs del proxy pelado y ~163 µs que agrega
+  Sonda. Quien ponga cualquier proxy en el camino paga la primera parte; solo la
+  segunda es de Sonda.
+- **La mayor parte de lo que suma Sonda es el recorder** — unos 88 µs de los
+  110. Eso no es la petición esperando una escritura en la base: `Record` es un
+  envío no bloqueante a un canal con búfer, y descarta antes que bloquear. Es la
+  captura que se arma y sus cuerpos que se copian en la goroutine de la petición,
+  más la goroutine que drena escribiendo SQLite en las mismas CPU. Es un costo
+  real del diseño y conviene decirlo en vez de esconderlo.
+- **El streaming se mide como retraso por mensaje**, no como throughput, porque
+  el tiempo total de un flujo lo domina lo que el servidor espere entre mensajes.
+  Directo son ~1,63 ms y por Sonda ~2,20 ms, así que un mensaje llega alrededor
+  de 0,6 ms más tarde. Las cifras absolutas no son tiempo de tránsito: incluyen
+  la espera del servidor de prueba pasándose de largo, que la aritmética le carga
+  al tránsito. Ambos casos corren contra el mismo servidor, así que lo único que
+  significa algo es la diferencia.
+- **Capturar un cuerpo grande reserva una copia de él.** Una request de 1 MiB y
+  una response de 1 MiB, con `max_body_bytes` por encima del cuerpo, reservan
+  ~7,4 MB por llamada; la misma llamada con el cuerpo pasado del tope reserva
+  ~2,3 MB. Ese costo aparece como presión de memoria y no como latencia, y
+  `max_body_bytes` es la perilla que lo controla.
+
+Una décima de milisegundo por encima de lo que ya cuesta cualquier proxy es un
+número chico para una herramienta que corre en la misma máquina que los
+servicios que observa. Si es lo bastante chico o no es un juicio sobre lo que
+estás depurando.
+
+**Estas cifras son una medición, no una especificación.** Salen de un solo
+portátil — un Intel Core i9-14900HX sobre Windows — por loopback, contra
+servidores `httptest`, con la máquina haciendo lo que estuviera haciendo, a
+`-benchtime=2000x -count=5` y tomando la corrida del medio de las cinco. Nada de
+esto se promete: otra máquina, una red real o una más cargada dan otros números.
+Si el costo influye en una decisión que tienes que tomar, córrelos tú mismo:
+
+```bash
+go test ./internal/proxy/ -bench=. -benchmem -run=XXX
+```
+
+`CONTRIBUTING.md` explica cómo leer la salida, que es menos evidente de lo que
+parece.
 
 ## Hoja de ruta
 

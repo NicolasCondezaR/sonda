@@ -253,6 +253,29 @@ func readTools() []Tool {
 		},
 
 		{
+			Name:  "diagnose_silence",
+			Title: "Why is nothing being captured",
+			Description: "Why you are seeing nothing. Reports, per service: whether the listener actually bound, how many TCP connections that port has accepted, how many calls were captured and how long ago the last one was, and what the listener expects to speak — then names the cause. " +
+				"Where the evidence does not separate two causes it says both and says what would tell them apart, because a confident wrong answer here sends you down a road with nothing at the end of it. " +
+				"The connection count is the reading that matters most: connections with no captures means a client found the port and Sonda did not understand it — a TLS mismatch, or a protocol Sonda does not proxy. Zero connections means nothing arrived at all, and Sonda cannot see a client that never connected. " +
+				"Ask this the moment a call you expected is not in the capture list, and before search_calls returns empty twice. " +
+				"Set probe_upstreams to also dial each upstream once: that is traffic the user did not send, so it is off by default, it never happens on its own, and it goes straight to the service rather than through Sonda, so it cannot show up as a capture.",
+			Schema: obj(map[string]any{
+				"probe_upstreams": prop("boolean", "Also open and immediately close one TCP connection to each upstream, to find out whether the service behind it is up. No bytes are sent. Defaults to false."),
+			}),
+			// Read-only in the sense clients care about: it changes nothing in
+			// Sonda and nothing in the user's services. openWorldHint is true
+			// because with probe_upstreams it does touch the network.
+			Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": true},
+			Run: func(ctx context.Context, s *Server, a args) (any, error) {
+				if a.boolean("probe_upstreams") {
+					return s.post(ctx, "/api/diagnose", nil)
+				}
+				return s.get(ctx, "/api/diagnose", false)
+			},
+		},
+
+		{
 			Name:  "trust_certificate",
 			Title: "How to trust Sonda's certificate authority",
 			Description: "Where Sonda's local certificate authority lives, what it identifies as, and the exact commands to trust it and to remove it again, per platform. " +
@@ -364,7 +387,7 @@ func waitForCall(ctx context.Context, s *Server, a args) (any, error) {
 			return map[string]any{
 				"matched":        false,
 				"waited_seconds": timeout,
-				"hint":           "No matching call arrived. Check with list_services that the service is being observed, and that whatever makes the call is pointed at Sonda's port rather than the service's own.",
+				"hint":           "No matching call arrived. Run diagnose_silence: it reports whether the listener bound, whether anything connected to the port at all, and which causes it cannot tell apart.",
 			}, nil
 		case <-ticker.C:
 		}

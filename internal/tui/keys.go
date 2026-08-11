@@ -112,6 +112,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadTrace(call.ID)
 
+	case "p":
+		// Only offered while the diagnosis is on screen, because that is the
+		// only place it is explained. Dialling somebody's services is not
+		// something a stray keystroke should do from the middle of a session.
+		if m.diag == nil {
+			return m, nil
+		}
+		m.status = "dialling each upstream once…"
+		m.statusErr = false
+		return m, m.loadDiagnosis(true)
+
 	case "esc":
 		m.detail, m.diff, m.trace, m.drift, m.status = nil, nil, nil, nil, ""
 		return m, nil
