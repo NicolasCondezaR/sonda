@@ -60,15 +60,11 @@ func (s *Server) targets() []config.Target {
 	if active == nil {
 		return nil
 	}
-	out := make([]config.Target, 0, len(active.Services))
-	for _, svc := range active.Services {
-		out = append(out, config.Target{
-			Name: svc.Name, Listen: svc.Listen,
-			Upstream: svc.Upstream, Protocol: svc.Protocol,
-			TLS: svc.TLS, InsecureSkipVerify: svc.InsecureSkipVerify,
-		})
-	}
-	return out
+	// The conversion lives on the project because this literal was written by
+	// hand and lost a field every time one was added: without Reflection and
+	// DescriptorSet the schema report told every gRPC service it was using
+	// reflection, which is exactly backwards for a service that serves none.
+	return active.Targets()
 }
 
 func (s *Server) resolvers() Resolvers { return s.rt.Resolvers() }

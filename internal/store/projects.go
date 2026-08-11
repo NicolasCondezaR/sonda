@@ -465,3 +465,33 @@ func affected(res sql.Result, notFound error) error {
 	}
 	return nil
 }
+
+// Targets is the project's services as the rest of Sonda declares a service:
+// one conversion, in one place.
+//
+// It exists because the hand-written version of it lost fields three times.
+// A struct literal that names ten fields keeps working when an eleventh is
+// added — it just silently stops carrying it, and the zero value is a lie the
+// compiler will never object to. That is how the schema report came to say
+// every gRPC service served reflection: Reflection is a *bool that reads as
+// "on" when nil, and nobody was setting it.
+//
+// The descriptor set belongs to the project rather than to each service, so it
+// can only be filled in from here.
+func (p *Project) Targets() []config.Target {
+	out := make([]config.Target, 0, len(p.Services))
+	for _, svc := range p.Services {
+		reflection := svc.Reflection
+		out = append(out, config.Target{
+			Name:               svc.Name,
+			Listen:             svc.Listen,
+			Upstream:           svc.Upstream,
+			Protocol:           svc.Protocol,
+			DescriptorSet:      p.DescriptorName,
+			Reflection:         &reflection,
+			TLS:                svc.TLS,
+			InsecureSkipVerify: svc.InsecureSkipVerify,
+		})
+	}
+	return out
+}
