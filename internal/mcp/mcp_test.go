@@ -33,6 +33,17 @@ func (f *fakeAPI) last() string {
 	return f.paths[len(f.paths)-1]
 }
 
+// asked reports whether any request contained this. Any, and not the last one:
+// a tool is allowed to make more than one call, and list_services does.
+func (f *fakeAPI) asked(fragment string) bool {
+	for _, p := range f.paths {
+		if strings.Contains(p, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func send(t *testing.T, s *Server, msg string) *response {
 	t.Helper()
 	return s.Handle(context.Background(), []byte(msg))
@@ -69,6 +80,84 @@ func TestInitializeAnswersWithTheProtocolVersion(t *testing.T) {
 	}
 	if _, ok := res["capabilities"].(map[string]any)["tools"]; !ok {
 		t.Error("the server does not advertise the tools capability, so no client will list them")
+	}
+}
+
+// The specification says a server that supports the version the client asked
+// for answers with that same version. Answering with its own instead leaves the
+// client deciding whether to hang up on a server it is compatible with.
+func TestInitializeEchoesAVersionItSupports(t *testing.T) {
+	cases := map[string]string{
+		"2025-11-25": "2025-11-25",
+		"2025-06-18": "2025-06-18",
+		"2024-11-05": "2024-11-05",
+		// Not supported: the answer is what this server does speak, and the
+		// client decides.
+		"1999-01-01": protocolVersion,
+		"":           protocolVersion,
+	}
+
+	for asked, want := range cases {
+		s := New(&fakeAPI{}, "test")
+		resp := send(t, s, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"`+asked+`","capabilities":{}}}`)
+		if got := resp.Result.(map[string]any)["protocolVersion"]; got != want {
+			t.Errorf("asked for %q, answered %v, want %s", asked, got, want)
+		}
+	}
+}
+
+// Stubbing and fault injection are state a person forgets they turned on. If
+// reading them needs the tool that changes them, the client stops to ask
+// permission for a question — so the listing carries them.
+func TestListServicesReportsTheRuntimeSwitches(t *testing.T) {
+	api := &routedAPI{routes: map[string]string{
+		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":true,"services":[{"name":"ms-auth"}]}]}`,
+		"GET /api/stub":     `{"stubbed":["ms-auth"],"note":"..."}`,
+		"GET /api/faults":   `{"faults":{"ms-admin":"500 on one call in three"},"note":"..."}`,
+	}}
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "list_services", `{}`)
+	if isError {
+		t.Fatalf("list_services failed: %s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	stubbed, _ := out["stubbed"].([]any)
+	if len(stubbed) != 1 || stubbed[0] != "ms-auth" {
+		t.Errorf("stubbed = %v, want the service answering from recordings", out["stubbed"])
+	}
+	faults, _ := out["faults"].(map[string]any)
+	if faults["ms-admin"] == nil {
+		t.Errorf("faults = %v, want the rule in force", out["faults"])
+	}
+	if out["projects"] == nil {
+		t.Error("folding the switches in lost the services themselves")
+	}
+}
+
+// A Sonda too old to answer, or one built without stubbing, must not read as
+// "nothing is stubbed": that is the one wrong answer here, because it is the
+// answer that lets a stub go unnoticed.
+func TestAnUnreadableSwitchSaysSoRatherThanLookingEmpty(t *testing.T) {
+	api := &routedAPI{routes: map[string]string{
+		"GET /api/projects": `{"projects":[]}`,
+	}}
+	s := New(api, "test")
+
+	text, _ := callTool(t, s, "list_services", `{}`)
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"stubbed", "faults"} {
+		state, _ := out[field].(map[string]any)
+		if state["unknown"] == nil {
+			t.Errorf("%s = %v, want it to say it could not be read", field, out[field])
+		}
 	}
 }
 
@@ -122,8 +211,9 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 	want := map[string]bool{
 		"recent_failures": true, "search_calls": true, "get_call": true,
 		"diff_calls": true, "trace_call": true, "contract_drift": true, "list_services": true, "wait_for_call": true,
-		"trust_certificate": true, "diagnose_silence": true,
+		"trust_certificate": true, "diagnose_silence": true, "schema_status": true,
 		"replay_call": true, "connect_project": true, "configure_service": true,
+		"remove_service": true, "upload_schemas": true,
 		"activate_project": true, "disconnect_project": true, "set_stub": true, "break_service": true,
 	}
 	got := map[string]bool{}
@@ -161,13 +251,15 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 //	replay_call         really hits a service
 //	activate_project    opens ports and can pull the floor out mid-debug
 //	disconnect_project  closes them
+//	remove_service      closes one port and throws its configuration away
 //
 // Everything else either reads, or writes configuration that disturbs nobody
-// until a project is activated.
+// until a project is activated — upload_schemas included: it changes how bytes
+// are read, not what is listening.
 func TestOnlyTheToolsThatChangeWhatIsRunningAskFirst(t *testing.T) {
 	shouldAsk := map[string]bool{
 		"replay_call": true, "activate_project": true, "disconnect_project": true,
-		"set_stub": true, "break_service": true,
+		"set_stub": true, "break_service": true, "remove_service": true,
 	}
 
 	s := New(&fakeAPI{}, "test")
@@ -219,7 +311,10 @@ func TestToolsQueryTheExpectedEndpoints(t *testing.T) {
 		{"get_call", `{"id":42}`, []string{"GET /api/calls/42"}},
 		{"diff_calls", `{"a":1,"b":2}`, []string{"GET /api/diff?a=1&b=2"}},
 		{"trace_call", `{"id":42}`, []string{"GET /api/trace?call=42"}},
-		{"list_services", `{}`, []string{"GET /api/projects"}},
+		// The two runtime switches are folded in, so an agent can read them
+		// without calling the tool that changes them.
+		{"list_services", `{}`, []string{"GET /api/projects", "GET /api/stub", "GET /api/faults"}},
+		{"schema_status", `{}`, []string{"GET /api/schemas"}},
 		// The probe is a side effect, so the two calls have to be different
 		// requests: a GET that dialled the user's services would be one.
 		{"diagnose_silence", `{}`, []string{"GET /api/diagnose"}},
@@ -235,8 +330,8 @@ func TestToolsQueryTheExpectedEndpoints(t *testing.T) {
 			continue
 		}
 		for _, want := range c.wantContains {
-			if !strings.Contains(api.last(), want) {
-				t.Errorf("%s requested %q, which does not contain %q", c.tool, api.last(), want)
+			if !api.asked(want) {
+				t.Errorf("%s requested %v, none of which contains %q", c.tool, api.paths, want)
 			}
 		}
 	}

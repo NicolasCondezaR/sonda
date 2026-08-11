@@ -89,7 +89,7 @@ func readTools() []Tool {
 			Description: "What has failed recently: transport errors, HTTP 4xx and 5xx, non-zero gRPC statuses, and GraphQL responses carrying errors, newest first. " +
 				"The last two are the ones a status code hides — both report failure under HTTP 200. This is the first thing to ask when something is broken and you do not know where.",
 			Schema: obj(map[string]any{
-				"limit": prop("integer", "How many to return. Defaults to 20."),
+				"limit": prop("integer", "How many to return. Defaults to 20, capped at 200."),
 			}),
 			Annotations: readOnly,
 			Run: func(ctx context.Context, s *Server, a args) (any, error) {
@@ -244,11 +244,23 @@ func readTools() []Tool {
 			Name:  "list_services",
 			Title: "Services being observed",
 			Description: "Which services Sonda is proxying right now, on which ports, and whether each one is actually listening. Also reports which project is active. Ask this first if you are unsure whether the traffic you expect is even being captured. " +
-				"Each service also reports tls — whether Sonda answers that port with a certificate — and insecure_skip_verify, which means the upstream's certificate is not being checked for that one service.",
+				"Each service also reports tls — whether Sonda answers that port with a certificate — and insecure_skip_verify, which means the upstream's certificate is not being checked for that one service. " +
+				"Each project reports has_descriptor and descriptor_name: that is the answer to whether its gRPC messages can be decoded at all, since a service serving no reflection has nothing else to read a schema from. " +
+				"The answer also carries the two runtime switches, so they cannot be left on unnoticed: stubbed lists the services answering from recordings instead of being called, and faults lists the failures being injected.",
+			Schema:      obj(map[string]any{}),
+			Annotations: readOnly,
+			Run:         listServices,
+		},
+
+		{
+			Name:  "schema_status",
+			Title: "Where gRPC field names are coming from",
+			Description: "Per gRPC service: whether its schema came from the service's own reflection or from the project's descriptor set, which descriptor set that was, and the error when neither worked. " +
+				"Ask it when messages come back without field names. It separates the three causes that look identical from the outside — reflection is off or unsupported, the descriptor set does not cover this service, or the service was down when Sonda asked — and only the last one fixes itself.",
 			Schema:      obj(map[string]any{}),
 			Annotations: readOnly,
 			Run: func(ctx context.Context, s *Server, a args) (any, error) {
-				return s.get(ctx, "/api/projects", false)
+				return s.get(ctx, "/api/schemas", false)
 			},
 		},
 
@@ -330,6 +342,46 @@ func readTools() []Tool {
 			},
 		},
 	}
+}
+
+// listServices answers with the configuration and the two runtime switches at
+// once.
+//
+// Stubbing and fault injection are state a person forgets they turned on, and
+// until now the only way for an agent to read either was to call the tool that
+// changes it — which a client interrupts to ask permission for, so the cheapest
+// way to learn "is anything stubbed" was to offer to stub something. They are
+// folded in here rather than given two read-only tools of their own because
+// this is already the call an agent makes to orient itself, and both are
+// properties of exactly the services it lists.
+func listServices(ctx context.Context, s *Server, _ args) (any, error) {
+	out, err := s.get(ctx, "/api/projects", false)
+	if err != nil {
+		return nil, err
+	}
+	projects, ok := out.(map[string]any)
+	if !ok {
+		return out, nil
+	}
+	projects["stubbed"] = switchState(ctx, s, "/api/stub", "stubbed")
+	projects["faults"] = switchState(ctx, s, "/api/faults", "faults")
+	return projects, nil
+}
+
+// switchState reads one runtime switch. A Sonda that cannot answer says so in
+// place of the value: an empty list would read as "nothing is stubbed", which
+// is the one wrong answer this must never give.
+func switchState(ctx context.Context, s *Server, path, field string) any {
+	out, err := s.get(ctx, path, false)
+	if err != nil {
+		return map[string]any{"unknown": err.Error()}
+	}
+	if body, ok := out.(map[string]any); ok {
+		if value, ok := body[field]; ok {
+			return value
+		}
+	}
+	return out
 }
 
 // waitForCall polls rather than subscribing. Sonda has a live stream, but it

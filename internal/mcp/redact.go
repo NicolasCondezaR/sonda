@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -88,6 +89,11 @@ func clean(v any, detail bool) any {
 		for i, val := range t {
 			out[i] = clean(val, detail)
 		}
+		// Everything above matches on keys. A Postgres capture puts the
+		// sensitive name and the sensitive value in different messages of this
+		// same list, so it needs the one thing a per-key walk cannot do: look
+		// at the neighbours.
+		alignPostgres(out)
 		return out
 
 	case string:
@@ -105,7 +111,7 @@ func clean(v any, detail bool) any {
 				return truncate(string(out), detail)
 			}
 		}
-		return truncate(t, detail)
+		return truncate(redactQuery(t), detail)
 
 	default:
 		return v
@@ -159,6 +165,237 @@ func redactedLike(v any) any {
 	default:
 		return redacted
 	}
+}
+
+// redactQuery blanks the sensitive parameters of a query string and leaves
+// everything else exactly as it was.
+//
+// A captured path is stored as the full request URI, so `GET
+// /oauth/callback?access_token=ya29…` reaches an agent whole: the key is
+// "path", which is not sensitive, and the credential is in the value. It is the
+// most likely leak in ordinary use — OAuth callbacks, signed URLs, `?api_key=`
+// — and it travels in the *summary*, so it arrives on the first tool call
+// without anyone asking for detail.
+//
+// Blanking the whole path instead would be safe and useless: the path is how a
+// person recognises which call they are looking at.
+//
+// This runs on every string rather than on a list of URL-bearing field names.
+// A second list would have to be kept in step with every place a URL is stored
+// — `Location` and `Referer` headers, diff and trace paths, a link inside a
+// body — and the one that drifts is the one that leaks. A string with no `?` is
+// returned byte for byte, so a body that is not a URL cannot be altered.
+func redactQuery(s string) string {
+	mark := strings.IndexByte(s, '?')
+	if mark < 0 {
+		return s
+	}
+	query := s[mark+1:]
+
+	// A fragment is not part of the query, and letting it ride along on the
+	// last parameter would put `#section` inside the value being examined.
+	fragment := ""
+	if hash := strings.IndexByte(query, '#'); hash >= 0 {
+		query, fragment = query[:hash], query[hash:]
+	}
+
+	pairs := strings.Split(query, "&")
+	changed := false
+	for i, pair := range pairs {
+		eq := strings.IndexByte(pair, '=')
+		if eq < 0 {
+			// A parameter with no value carries nothing to leak, and its name
+			// is worth keeping: `?debug` says something about the call.
+			continue
+		}
+		key := pair[:eq]
+		// `?%61pi_key=` is the same parameter as `?api_key=`, and a sender that
+		// wanted to hide from a filter would spell it the first way.
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			key = decoded
+		}
+		if !isSensitive(key) {
+			continue
+		}
+		// The key is kept as it arrived, so a repeated parameter still reads as
+		// two occurrences rather than collapsing into one.
+		pairs[i] = pair[:eq+1] + redacted
+		changed = true
+	}
+	if !changed {
+		return s
+	}
+	return s[:mark+1] + strings.Join(pairs, "&") + fragment
+}
+
+// alignPostgres closes the hole that key matching cannot reach in a Postgres
+// capture: the protocol is column oriented, so the sensitive *name* and the
+// sensitive *value* arrive in different places.
+//
+// A RowDescription names the columns and the DataRows that follow carry the
+// values, aligned by position — `SELECT api_key FROM tokens` comes back as
+// `columns:[{name:"api_key"}]` and `values:[{text:"sk_live_…"}]`, and nothing
+// in a per-key walk ever sees the two together. Same for a Bind: its parameters
+// are positions, and the statement that gives them meaning was a Parse earlier
+// in the list.
+//
+// It walks any list, not only a Postgres one. Guarding on protocol would mean
+// this function has to be told where the messages are, which is the kind of
+// coupling that survives exactly until someone adds a tool that returns them
+// somewhere else.
+func alignPostgres(list []any) {
+	var names []string
+	// Keyed by prepared statement name, which is "" for the unnamed statement
+	// every driver uses for a one-shot query — so the common case correlates
+	// like any other.
+	credentialStatement := map[string]bool{}
+
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		if cols, ok := m["columns"].([]any); ok {
+			names = names[:0]
+			for _, c := range cols {
+				col, _ := c.(map[string]any)
+				name, _ := col["name"].(string)
+				names = append(names, name)
+			}
+		}
+		if values, ok := m["values"].([]any); ok {
+			for i, v := range values {
+				if i < len(names) && isSensitive(names[i]) {
+					blankText(v)
+				}
+			}
+		}
+
+		statement, _ := m["statement"].(string)
+		if sql, ok := m["sql"].(string); ok && namesCredential(sql) {
+			m["sql"] = blankSQLLiterals(sql)
+			credentialStatement[statement] = true
+		}
+		if params, ok := m["params"].([]any); ok && credentialStatement[statement] {
+			// A bind parameter is a position with no name, so there is no way
+			// to tell which of them is the password. When the statement they
+			// belong to touches a credential, all of them go.
+			for _, p := range params {
+				blankText(p)
+			}
+		}
+	}
+}
+
+// blankText blanks the decoded text of one Postgres value. A binary value has
+// no text field — its bytes are never serialised — so there is nothing to do
+// and nothing is invented. The size stays, because a reader still needs to see
+// that a value was there.
+func blankText(v any) {
+	value, ok := v.(map[string]any)
+	if !ok {
+		return
+	}
+	if _, has := value["text"]; has {
+		value["text"] = redacted
+	}
+}
+
+// namesCredential reports whether a statement mentions a credential-like
+// identifier — a `password` column, a `tokens` table.
+//
+// This is the trigger for the two blunt things below, and it is deliberately
+// the same word list the rest of the file uses. It answers "could this
+// statement be carrying a secret", never "where in it".
+func namesCredential(sql string) bool {
+	for _, word := range strings.FieldsFunc(sql, func(r rune) bool {
+		return !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9')
+	}) {
+		if isSensitive(word) {
+			return true
+		}
+	}
+	return false
+}
+
+// blankSQLLiterals replaces the contents of every string literal in a
+// statement, keeping the statement itself readable.
+//
+// It only runs on a statement namesCredential already flagged. Doing it to
+// every statement would mangle the thing the capture was opened for, and doing
+// it to none returns `INSERT INTO users (email, password) VALUES ('a',
+// 'hunter2')` verbatim. Blanking the literals and nothing else keeps the shape
+// — the tables, the columns, the operators — which is what an agent reads a
+// statement for, and drops the part that is a credential.
+//
+// It cannot tell which literal is the secret, so it takes them all. Within a
+// statement that names a credential that is the right direction: the cost is a
+// literal a person can still read in the web interface.
+func blankSQLLiterals(sql string) string {
+	var b strings.Builder
+	for i := 0; i < len(sql); {
+		switch sql[i] {
+		case '\'':
+			b.WriteString("'" + redacted + "'")
+			i = endOfQuoted(sql, i)
+		case '$':
+			if tag, end, ok := dollarQuoted(sql, i); ok {
+				b.WriteString(tag + redacted + tag)
+				i = end
+				continue
+			}
+			b.WriteByte(sql[i])
+			i++
+		default:
+			b.WriteByte(sql[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
+// endOfQuoted returns the index one past the closing quote of the literal that
+// opens at start. A doubled quote is an escaped one and does not end it.
+//
+// An unterminated literal blanks the rest of the statement. That is what a
+// backslash escape inside an E” string produces, and running long is the safe
+// way to be wrong here.
+func endOfQuoted(sql string, start int) int {
+	for i := start + 1; i < len(sql); i++ {
+		if sql[i] != '\'' {
+			continue
+		}
+		if i+1 < len(sql) && sql[i+1] == '\'' {
+			i++
+			continue
+		}
+		return i + 1
+	}
+	return len(sql)
+}
+
+// dollarQuoted recognises Postgres' $tag$…$tag$ form, which needs no escaping
+// and would otherwise carry a password straight past the quote scanner.
+//
+// A tag never starts with a digit, which is what keeps `$1` — a bind
+// placeholder, and far more common than dollar quoting — from being read as the
+// opening of a literal.
+func dollarQuoted(sql string, start int) (tag string, end int, ok bool) {
+	i := start + 1
+	for i < len(sql) && (sql[i] == '_' || sql[i] >= 'a' && sql[i] <= 'z' || sql[i] >= 'A' && sql[i] <= 'Z' || (i > start+1 && sql[i] >= '0' && sql[i] <= '9')) {
+		i++
+	}
+	if i >= len(sql) || sql[i] != '$' {
+		return "", 0, false
+	}
+	tag = sql[start : i+1]
+	closing := strings.Index(sql[i+1:], tag)
+	if closing < 0 {
+		// Unterminated, so the body runs to the end of the statement.
+		return tag, len(sql), true
+	}
+	return tag, i + 1 + closing + len(tag), true
 }
 
 // cleanJSON is the single door every payload leaves through. Tools call this

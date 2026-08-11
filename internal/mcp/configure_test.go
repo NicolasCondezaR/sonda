@@ -154,12 +154,66 @@ func TestConnectProjectNeedsSomethingToRead(t *testing.T) {
 }
 
 // Without the inverse, an agent that repointed a .env and then disconnected
-// leaves the environment pointing at ports nobody is listening on.
-func TestDisconnectReturnsTheInversePatch(t *testing.T) {
+// leaves the environment pointing at ports nobody is listening on. The inverse
+// has to name the variable that was really there — discovery accepts _ADDR,
+// _ADDRESS, _HOST and _HTTP_URL as readily as _URL, so a name derived from the
+// service instead would undo a variable the project never had while leaving the
+// real one aimed at a port that just closed.
+func TestConnectThenDisconnectNamesTheVariableThatWasReallyThere(t *testing.T) {
+	api := &routedAPI{routes: map[string]string{
+		"POST /api/discover": `{"found":[
+		  {"name":"ms-auth","upstream":"http://localhost:50052","protocol":"grpc",
+		   "listen":"127.0.0.1:9152","key":"MS_AUTH_ADDR","original":"localhost:50052"}
+		]}`,
+		"POST /api/projects": `{"id":3,"name":"core-delpagroup"}`,
+		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":true,"services":[
+		  {"id":7,"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc"}
+		]}]}`,
+		"POST /api/projects/deactivate": `{"projects":[]}`,
+	}}
+	s := New(api, "test")
+
+	if text, isError := callTool(t, s, "connect_project",
+		`{"name":"core-delpagroup","files":[{"filename":".env","content":"MS_AUTH_ADDR=localhost:50052"}]}`); isError {
+		t.Fatalf("connect_project failed: %s", text)
+	}
+
+	text, isError := callTool(t, s, "disconnect_project", `{}`)
+	if isError {
+		t.Fatalf("disconnect failed: %s", text)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	changes, _ := out["changes"].(map[string]any)
+	entry, ok := changes["MS_AUTH_ADDR"].(map[string]any)
+	if !ok {
+		t.Fatalf("the variable the project actually has is not in the inverse patch: %v", changes)
+	}
+	if entry["from"] != "127.0.0.1:9152" || entry["to"] != "localhost:50052" {
+		t.Errorf("inverse patch is %v, want Sonda's port back to the real one", entry)
+	}
+	// The derived name is the bug: writing it would set something nothing reads.
+	if _, invented := changes["MS_AUTH_GRPC_URL"]; invented {
+		t.Errorf("a variable was invented from the service name: %v", changes)
+	}
+	if out["restore_by_hand"] != nil {
+		t.Errorf("a service Sonda does know the variable for was handed back: %v", out["restore_by_hand"])
+	}
+	if !api.called("POST /api/projects/deactivate") {
+		t.Error("nothing was actually deactivated")
+	}
+}
+
+// A service added by hand, or read out of a compose file, never had a variable
+// Sonda saw. Neither does anything at all after a restart. Naming one anyway is
+// the failure this tool exists to prevent, so it says what it knows instead.
+func TestDisconnectWillNotInventAVariableItNeverSaw(t *testing.T) {
 	api := &routedAPI{routes: map[string]string{
 		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":true,"services":[
-		  {"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc"},
-		  {"name":"web","listen":"127.0.0.1:9100","upstream":"http://localhost:3000","protocol":"http"}
+		  {"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc"}
 		]}]}`,
 		"POST /api/projects/deactivate": `{"projects":[]}`,
 	}}
@@ -174,22 +228,197 @@ func TestDisconnectReturnsTheInversePatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	changes, _ := out["changes"].(map[string]any)
-	grpc, ok := changes["MS_AUTH_GRPC_URL"].(map[string]any)
-	if !ok {
-		t.Fatalf("the gRPC service is not in the inverse patch: %v", changes)
+	if changes, _ := out["changes"].(map[string]any); len(changes) != 0 {
+		t.Errorf("a variable was guessed: %v", changes)
 	}
-	// Exactly the reverse of what connect handed out.
-	if grpc["from"] != "127.0.0.1:9152" || grpc["to"] != "localhost:50052" {
-		t.Errorf("inverse patch is %v, want Sonda's port back to the real one", grpc)
+	byHand, _ := out["restore_by_hand"].([]any)
+	if len(byHand) != 1 {
+		t.Fatalf("the service was not reported as the agent's to restore: %v", out)
 	}
-	// An HTTP service gets _URL, not _GRPC_URL — the same rule discovery used
-	// to read the names apart in the first place.
-	if _, ok := changes["WEB_URL"]; !ok {
-		t.Errorf("the HTTP service is missing or misnamed: %v", changes)
+	entry, _ := byHand[0].(map[string]any)
+	// Saying "I do not know" is only useful with the two addresses that let the
+	// agent go and find it.
+	if entry["was_listening_on"] != "127.0.0.1:9152" || entry["point_back_at"] != "localhost:50052" {
+		t.Errorf("the gap does not say what to search for and what to put back: %v", entry)
 	}
-	if !api.called("POST /api/projects/deactivate") {
-		t.Error("nothing was actually deactivated")
+	if problem, _ := entry["problem"].(string); problem == "" {
+		t.Error("the gap does not say why Sonda cannot name the variable")
+	}
+	if next, _ := out["next_steps"].(string); !strings.Contains(next, "restore_by_hand") {
+		t.Errorf("next_steps does not point at the gap: %q", next)
+	}
+}
+
+// oneService is a project with something already in it, which is the state
+// every "fix that port" call is made against.
+func oneService() *routedAPI {
+	return &routedAPI{routes: map[string]string{
+		"GET /api/projects": `{"projects":[{"id":3,"name":"core-delpagroup","active":false,"services":[
+		  {"id":7,"name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc","reflection":true}
+		]}]}`,
+		"POST /api/projects/3/services":   `{"projects":[]}`,
+		"DELETE /api/services/7":          `{"projects":[]}`,
+		"POST /api/projects/3/descriptor": `{"stored":4,"services":2,"name":"descriptors.binpb"}`,
+	}}
+}
+
+// saved returns the body of the last save, which is where the difference
+// between changing a service and adding one actually lives.
+func saved(t *testing.T, api *routedAPI) map[string]any {
+	t.Helper()
+	for i := len(api.calls) - 1; i >= 0; i-- {
+		if !strings.Contains(api.calls[i], "/services") {
+			continue
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(api.bodies[i]), &body); err != nil {
+			t.Fatalf("the save body is not JSON: %v", err)
+		}
+		return body
+	}
+	t.Fatal("nothing was saved")
+	return nil
+}
+
+// The tool says it can change a service that is already there. Without the id
+// the API inserts, the insert collides with UNIQUE(project_id, name), and every
+// attempt to move a port Sonda could not take answers 400 — which is exactly
+// what connect_project tells the agent to do about a busy port.
+func TestConfigureServiceChangesTheServiceThatIsAlreadyThere(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","listen":"127.0.0.1:9252","upstream":"http://localhost:50052","protocol":"grpc"}`)
+	if isError {
+		t.Fatalf("configure_service failed: %s", text)
+	}
+
+	body := saved(t, api)
+	if id, _ := body["id"].(float64); int64(id) != 7 {
+		t.Errorf("saved with id %v, want 7 — without it the API inserts and the name collides", body["id"])
+	}
+	if body["listen"] != "127.0.0.1:9252" {
+		t.Errorf("listen = %v, want the new port", body["listen"])
+	}
+	// Moving a port must not silently turn schema resolution off for a service
+	// that had it on.
+	if reflection, _ := body["reflection"].(bool); !reflection {
+		t.Errorf("reflection = %v, want the setting the service already had", body["reflection"])
+	}
+}
+
+// A name the project does not have is an addition, and an addition must not
+// carry an id: the API would then update a service that does not exist.
+func TestConfigureServiceAddsANameTheProjectDoesNotHave(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-admin","listen":"127.0.0.1:9153","upstream":"http://localhost:50053","protocol":"grpc"}`)
+	if isError {
+		t.Fatalf("configure_service failed: %s", text)
+	}
+
+	body := saved(t, api)
+	if _, ok := body["id"]; ok {
+		t.Errorf("a new service was saved with an id: %v", body)
+	}
+	// The same default connect_project uses. A service that does serve
+	// reflection gets it by asking for it.
+	if reflection, _ := body["reflection"].(bool); reflection {
+		t.Errorf("reflection = %v, want false unless asked for", body["reflection"])
+	}
+}
+
+func TestConfigureServiceTakesReflectionFromTheAgent(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	if _, isError := callTool(t, s, "configure_service",
+		`{"project":"core-delpagroup","name":"ms-auth","listen":"127.0.0.1:9152","upstream":"http://localhost:50052","protocol":"grpc","reflection":false}`); isError {
+		t.Fatal("configure_service failed")
+	}
+	if reflection, _ := saved(t, api)["reflection"].(bool); reflection {
+		t.Error("reflection:false was ignored, so the agent cannot turn it off")
+	}
+}
+
+// Deleting is the repair path a person has in the web interface. Without it an
+// agent that cannot fix a service in place has nowhere to go.
+func TestRemoveServiceDeletesByNameAndSaysWhatToPutBack(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "remove_service", `{"project":"core-delpagroup","name":"ms-auth"}`)
+	if isError {
+		t.Fatalf("remove_service failed: %s", text)
+	}
+	if !api.called("DELETE /api/services/7") {
+		t.Errorf("the service was not deleted by its id: %v", api.calls)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatal(err)
+	}
+	// The port is gone, so whatever was aimed at it needs the real address.
+	if out["point_back_at"] != "localhost:50052" {
+		t.Errorf("point_back_at = %v, want the real service", out["point_back_at"])
+	}
+}
+
+func TestRemoveServiceSaysWhatTheProjectDoesHave(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "remove_service", `{"project":"core-delpagroup","name":"ms-atuh"}`)
+	if !isError {
+		t.Fatal("a service that does not exist was removed anyway")
+	}
+	if !strings.Contains(text, "ms-auth") {
+		t.Errorf("the error does not say what the project has: %s", text)
+	}
+	if api.called("DELETE ") {
+		t.Errorf("something was deleted despite the name being wrong: %v", api.calls)
+	}
+}
+
+// Without this an agent can wire up a whole gRPC system where no service serves
+// reflection — the ordinary case — and every message comes back undecoded.
+func TestUploadSchemasSendsTheDecodedBytes(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	// "sonda" in base64, split across lines the way a long one arrives.
+	text, isError := callTool(t, s, "upload_schemas",
+		`{"project":"core-delpagroup","filename":"delpa.binpb","content_base64":"c29u\nZGE="}`)
+	if isError {
+		t.Fatalf("upload_schemas failed: %s", text)
+	}
+
+	if !api.called("POST /api/projects/3/descriptor?name=delpa.binpb") {
+		t.Errorf("the descriptor set did not reach the project: %v", api.calls)
+	}
+	if got := api.bodies[len(api.bodies)-1]; got != "sonda" {
+		t.Errorf("the endpoint received %q, want the decoded bytes", got)
+	}
+}
+
+func TestUploadSchemasRefusesSomethingThatIsNotBase64(t *testing.T) {
+	api := oneService()
+	s := New(api, "test")
+
+	text, isError := callTool(t, s, "upload_schemas",
+		`{"project":"core-delpagroup","filename":"delpa.binpb","content_base64":"not base64!!"}`)
+	if !isError {
+		t.Fatal("garbage was accepted as a descriptor set")
+	}
+	if !strings.Contains(text, "base64") {
+		t.Errorf("the error does not say what was wrong: %s", text)
+	}
+	if api.called("POST /api/projects/3/descriptor") {
+		t.Error("garbage was uploaded anyway")
 	}
 }
 

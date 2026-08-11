@@ -621,11 +621,14 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `get_call` | Una llamada completa, decodificada |
 | `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
 | `trace_call` | Todas las llamadas que fueron parte de la misma petición, como árbol |
-| `list_services` | Qué se está observando, en qué puertos, y si está escuchando |
+| `list_services` | Qué se está observando, en qué puertos, si está escuchando — y qué está respondiendo desde grabaciones o roto a propósito en este momento |
+| `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
 | `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella |
-| `configure_service` | Agrega o corrige un servicio |
+| `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto |
+| `remove_service` | Borra un servicio y dice a qué dirección volver a apuntar a quien llamaba. Pregunta antes |
+| `upload_schemas` | Le da al proyecto un descriptor set compilado, para decodificar gRPC donde ningún servicio sirve reflection |
 | `activate_project` | Abre los puertos. Pregunta antes |
 | `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
@@ -667,9 +670,46 @@ que Sonda sabe el mapeo y el agente tiene las manos.
 `.env` y después paró dejaría el entorno mirando a puertos donde no escucha
 nadie.
 
+El inverso solo nombra una variable que Sonda vio de verdad. `MS_AUTH_ADDR`,
+`MS_AUTH_HOST` y `MS_AUTH_HTTP_URL` se aceptan igual que `_URL` al entrar, así
+que reconstruir el nombre a partir del servicio y su protocolo devolvería
+`MS_AUTH_URL`: una variable que nadie lee, mientras la real sigue apuntando a un
+puerto que acaba de cerrarse. Cuando el nombre no se conoce — un servicio
+agregado a mano, uno leído de un compose, o cualquiera si Sonda se reinició en el
+medio — vuelve en `restore_by_hand`, con la dirección que hay que buscar y la
+dirección que hay que reponer:
+
+```json
+{
+  "changes": { "MS_AUTH_ADDR": { "from": "127.0.0.1:9152", "to": "localhost:50052" } },
+  "restore_by_hand": [
+    {
+      "service": "web",
+      "was_listening_on": "127.0.0.1:9100",
+      "point_back_at": "localhost:3000",
+      "problem": "Sonda does not know which variable pointed at it…"
+    }
+  ]
+}
+```
+
 Crear configuración no molesta a nadie, así que esas herramientas corren
 libremente. Abrir y cerrar puertos te puede cambiar la sesión debajo de los pies,
 así que esas preguntan antes.
+
+### Qué no está en MCP, a propósito
+
+- **Borrar un proyecto.** `remove_service` cubre el servicio que hay que sacar;
+  tirar un proyecto entero — sus servicios, sus esquemas — es una decisión con
+  una mano humana encima, y el botón está en la interfaz web.
+- **El flujo en vivo.** `wait_for_call` responde lo mismo con un límite de
+  tiempo, y mantener un stream abierto durante una llamada de herramienta no le
+  aporta nada a un agente.
+- **Descargar los bytes de la autoridad certificadora.** `trust_certificate`
+  devuelve dónde vive y qué ejecutar; instalarla modifica el almacén de confianza
+  de la máquina, y ese acto es del usuario, no del agente.
+- **Desactivar el filtrado de credenciales.** No existe esa opción en ninguna
+  parte, y MCP sería la última superficie en tenerla.
 
 ### Las credenciales no salen
 

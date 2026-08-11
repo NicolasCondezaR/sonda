@@ -609,11 +609,14 @@ that is already running, so it is still the same data:
 | `get_call` | One call in full, decoded |
 | `diff_calls` | "This one worked and this one did not — what changed?" |
 | `trace_call` | Every call that was part of the same request, as a tree |
-| `list_services` | What is being observed, on which ports, and whether it is listening |
+| `list_services` | What is being observed, on which ports, whether it is listening — and what is stubbed or being broken right now |
+| `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing |
 | `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
 | `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it |
-| `configure_service` | Add or fix one service |
+| `configure_service` | Add one service, or change one that is already there — the name is the identity, so calling it again moves the port |
+| `remove_service` | Delete one service, and say what address to point the caller back at. Asks first |
+| `upload_schemas` | Give a project a compiled descriptor set, so gRPC decodes where no service serves reflection |
 | `activate_project` | Open the ports. Asks first |
 | `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
@@ -655,9 +658,46 @@ the mapping and the agent has the hands.
 `.env` and then stopped would leave the environment aimed at ports nobody is
 listening on.
 
+The inverse only ever names a variable Sonda actually saw. `MS_AUTH_ADDR`,
+`MS_AUTH_HOST` and `MS_AUTH_HTTP_URL` are all accepted on the way in, so
+rebuilding the name out of the service and its protocol would hand back
+`MS_AUTH_URL` — a variable nothing reads, while the real one still points at a
+port that just closed. Where the name is not known — a service added by hand,
+one read out of a compose file, or any service at all if Sonda was restarted in
+between — it comes back under `restore_by_hand`, with the address to search for
+and the address to put back:
+
+```json
+{
+  "changes": { "MS_AUTH_ADDR": { "from": "127.0.0.1:9152", "to": "localhost:50052" } },
+  "restore_by_hand": [
+    {
+      "service": "web",
+      "was_listening_on": "127.0.0.1:9100",
+      "point_back_at": "localhost:3000",
+      "problem": "Sonda does not know which variable pointed at it…"
+    }
+  ]
+}
+```
+
 Creating configuration disturbs nobody, so those tools run freely. Opening and
 closing ports can pull the floor out from under you mid-debug, so those ask
 first.
+
+### What is not on MCP, on purpose
+
+- **Deleting a project.** `remove_service` covers a service that has to go;
+  throwing away a whole project — its services, its schemas — is a decision with
+  a person's hand on it, and the web interface has the button.
+- **The live stream.** `wait_for_call` answers the same question with a bound on
+  it, and a server-sent stream held open across a tool call buys nothing an
+  agent can use.
+- **Downloading the certificate authority's bytes.** `trust_certificate` returns
+  where it lives and what to run; installing it changes a machine's trust store,
+  which is the user's act, not the agent's.
+- **Turning redaction off.** There is no such setting anywhere, and MCP is the
+  last surface that would get one.
 
 ### Credentials do not leave
 

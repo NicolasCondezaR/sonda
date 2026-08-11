@@ -89,11 +89,62 @@ Concretely:
   nothing else; the boundary is the port mapping instead. Keep the host side on
   `127.0.0.1` — the `docker run` line in `README.md` and `compose.yaml` both do.
 
+## What MCP redacts, and what it cannot
+
 The MCP server is the one place credentials are held back, because there the
 answers leave the machine and land in whatever model an agent is driving.
 `Authorization`, `Cookie`, `password` and their various spellings come back as
 `[redacted by Sonda]`, in headers and inside bodies, and there is no setting to
-turn that off.
+turn that off. The web interface still shows everything, because there the
+reader is the owner.
+
+**Redaction matches on the name, never on the value.** Sniffing values sounds
+cleverer and fails both ways: it misses an opaque session id and mangles a
+legitimate field that happens to look like base64. So the question it can answer
+is always "is this field called something credential-like", and everything below
+follows from that.
+
+What it reaches:
+
+- **Header and JSON field names**, in any spelling — `api_key`, `apiKey`,
+  `X-API-KEY` and `x-company-auth-token` all land on the same answer.
+- **Inside a captured body**, when the body is itself JSON. A body is stored as
+  one opaque string, so this is a second pass through the same walk.
+- **Query-string parameters**, wherever a URL appears — the captured path, a
+  `Location` redirect, a `Referer`, a link inside a body. Only the value of a
+  sensitive parameter is blanked; the path, the other parameters and any
+  fragment stay, because the path is how a person recognises the call.
+- **Postgres column values**, by aligning a `RowDescription` with the `DataRow`s
+  after it: `SELECT api_key FROM tokens` puts the sensitive name in one message
+  and the secret in the next, which no per-field rule can see on its own.
+- **String literals in a Postgres statement that names a credential**, plus the
+  bind parameters of that statement. `INSERT INTO users (email, password)
+  VALUES ('a', 'hunter2')` comes back with its structure intact and its literals
+  blanked. A bind parameter is a position with no name, so when the statement it
+  belongs to touches a credential, all of its parameters go.
+
+What it does **not** reach, and will not:
+
+- **A secret under a name that says nothing.** `{"value": "sk_live_…"}`,
+  `{"data": "…"}`, a column called `col3`. There is no name to match.
+- **A Postgres statement that names no credential.** `INSERT INTO t VALUES
+  ('sk_live_…')` keeps its literal, and the bind parameters of an ordinary
+  statement are returned in the clear — deliberately, because the values are
+  usually the reason the capture was opened.
+- **A `DataRow` with no `RowDescription` before it** in the same capture, and a
+  `Bind` whose `Parse` is not in the same capture. The alignment has nothing to
+  align against.
+- **Binary values and non-JSON bodies.** Bytes are reported by size only, so
+  there is nothing to redact — and nothing decoded either.
+- **Personal data.** An email address, a name, an address and a card number are
+  not credentials and are returned whole.
+
+Over-redaction is the direction this errs in. The cost of blanking one field too
+many is that a person reads it in the interface instead; the cost of the other
+mistake is a production token in someone else's model.
+
+**If your captures hold something the rules above cannot see, do not point an
+agent at them.** Redaction is a floor, not a guarantee.
 
 ## Reporting a vulnerability
 

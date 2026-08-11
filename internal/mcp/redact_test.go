@@ -1,9 +1,13 @@
 package mcp
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/NicolasCondezaR/sonda/internal/pgwire"
 )
 
 // Sonda stores real bearer tokens and session cookies. Everything that leaves
@@ -202,6 +206,11 @@ func TestNonJSONBodiesArePassedThroughUnchanged(t *testing.T) {
 		"<xml><sku>ABC-9</sku></xml>",
 		"{not really json",
 		"[unclosed",
+		// Query-string redaction reads every string looking for a `?`. One that
+		// holds no credential has to come back byte for byte, or an ordinary
+		// body is corrupted by the machinery meant to protect it.
+		"GET /search?q=hello&sort=asc HTTP/1.1",
+		"is that a question? yes = definitely",
 	} {
 		payload, err := json.Marshal(map[string]any{"text": body})
 		if err != nil {
@@ -239,5 +248,250 @@ func TestGraphQLVariablesAreRedactedLikeAnyOtherPayload(t *testing.T) {
 	}
 	if !strings.Contains(out, "nico@delpaintl.com") {
 		t.Errorf("the rest of the variables were lost with it:\n%s", out)
+	}
+}
+
+// A captured path is stored as the whole request URI, so a credential in the
+// query string reaches an agent under the key "path" — which is not sensitive,
+// and which travels in the summary, so it arrives on the first tool call
+// without anyone asking for detail. Nothing covered this before.
+func TestCredentialsInAQueryStringAreRedacted(t *testing.T) {
+	// Built the way the proxy builds it: r.URL.RequestURI() of a real request.
+	u, err := url.Parse("http://auth.internal/oauth/callback?state=xyz789&access_token=ya29.A0ARrdaM-SECRET&expires_in=3599")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"calls": []any{map[string]any{
+		"id": 41, "target": "auth", "protocol": "http", "method": "GET",
+		"path": u.RequestURI(), "status": 302, "duration_ms": 12.4,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := cleaned(t, string(payload), false)
+
+	if strings.Contains(got, "ya29.A0ARrdaM-SECRET") {
+		t.Errorf("an OAuth token in the query string left the machine:\n%s", got)
+	}
+	// The path is how a person recognises the call. Blanking it whole would be
+	// safe and useless.
+	for _, want := range []string{"/oauth/callback", "state=xyz789", "expires_in=3599", "access_token="} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q was lost with it:\n%s", want, got)
+		}
+	}
+}
+
+func TestQueryRedactionHandlesTheAwkwardShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		path     string
+		gone     []string
+		kept     []string
+		verbatim bool
+	}{
+		{name: "no query at all", path: "/v1/orders/42", verbatim: true},
+		{name: "nothing sensitive", path: "/v1/orders?page=2&sort=desc", verbatim: true},
+		{
+			name: "the same key twice",
+			path: "/v1/x?token=FIRST&other=keep&token=SECOND",
+			gone: []string{"FIRST", "SECOND"},
+			kept: []string{"other=keep"},
+		},
+		{
+			name: "a parameter with no value",
+			path: "/v1/x?debug&api_key=LEAK&trace",
+			gone: []string{"LEAK"},
+			kept: []string{"debug", "trace"},
+		},
+		{
+			name: "a fragment after the query",
+			path: "/v1/x?access_token=LEAK#section-2",
+			gone: []string{"LEAK"},
+			kept: []string{"#section-2"},
+		},
+		{
+			name: "a percent-encoded key",
+			path: "/v1/x?%61ccess%5Ftoken=LEAK",
+			gone: []string{"LEAK"},
+		},
+		{
+			name: "an absolute URL in a Location header",
+			path: "https://app.example.com/land?session=LEAK&ref=email",
+			gone: []string{"LEAK"},
+			kept: []string{"https://app.example.com/land", "ref=email"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactQuery(tc.path)
+			if tc.verbatim && got != tc.path {
+				t.Fatalf("an untouchable path was altered\n  sent: %q\n  got:  %q", tc.path, got)
+			}
+			for _, secret := range tc.gone {
+				if strings.Contains(got, secret) {
+					t.Errorf("%q survived: %s", secret, got)
+				}
+			}
+			for _, want := range tc.kept {
+				if !strings.Contains(got, want) {
+					t.Errorf("%q was lost: %s", want, got)
+				}
+			}
+		})
+	}
+}
+
+// A redirect to an OAuth callback puts the same credential in a response
+// header, under a name the word list has no reason to hold.
+func TestCredentialsInARedirectAreRedacted(t *testing.T) {
+	got := cleaned(t, `{"response":{"headers":{
+	  "Location":["https://app.local/cb?code=4%2Fabc&access_token=ya29.LEAKED"],
+	  "Content-Type":["text/html"]}}}`, true)
+
+	if strings.Contains(got, "ya29.LEAKED") {
+		t.Errorf("a token in a Location header left the machine:\n%s", got)
+	}
+	if !strings.Contains(got, "app.local/cb") {
+		t.Errorf("the redirect target was lost with it:\n%s", got)
+	}
+}
+
+// The Postgres shapes below are built from real protocol bytes and read back
+// through pgwire, so the tests see the JSON the API actually serves rather than
+// a convenient hand-written version of it.
+
+func pgMsg(typ byte, body ...[]byte) []byte {
+	var payload []byte
+	for _, p := range body {
+		payload = append(payload, p...)
+	}
+	out := []byte{typ}
+	out = binary.BigEndian.AppendUint32(out, uint32(len(payload)+4))
+	return append(out, payload...)
+}
+
+func pgStr(s string) []byte { return append([]byte(s), 0) }
+func pgU16(v int) []byte    { return binary.BigEndian.AppendUint16(nil, uint16(v)) }
+func pgU32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
+func pgI32(v int32) []byte  { return pgU32(uint32(v)) }
+
+// pgColumn is one entry of a RowDescription: name, table OID, column number,
+// type OID, type length, type modifier, format code.
+func pgColumn(name string) []byte {
+	out := pgStr(name)
+	out = append(out, pgU32(16384)...)
+	out = append(out, pgU16(1)...)
+	out = append(out, pgU32(25)...) // text
+	out = append(out, pgU16(65535)...)
+	out = append(out, pgU32(4294967295)...)
+	return append(out, pgU16(0)...)
+}
+
+func pgText(s string) []byte { return append(pgI32(int32(len(s))), s...) }
+
+// pgCapture runs the bytes through the same decoder and the same JSON encoding
+// the /api/calls/{id} handler uses.
+func pgCapture(t *testing.T, sent, received []byte) string {
+	t.Helper()
+	fromClient, _ := pgwire.Deframe(sent, true)
+	fromServer, _ := pgwire.Deframe(received, false)
+	payload, err := json.Marshal(map[string]any{
+		"id":       88,
+		"protocol": "postgres",
+		"postgres": map[string]any{"sent": fromClient, "received": fromServer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(payload)
+}
+
+// The column name is in a value position and the secret is in another message
+// entirely, so key matching structurally cannot see either.
+func TestSensitiveColumnsBlankTheirValues(t *testing.T) {
+	sent := pgMsg('Q', pgStr("SELECT api_key, label FROM tokens WHERE owner = 12"))
+	received := pgMsg('T', pgU16(2), pgColumn("api_key"), pgColumn("label"))
+	received = append(received, pgMsg('D', pgU16(2), pgText("sk_live_9f8e7d6c"), pgText("staging key"))...)
+	received = append(received, pgMsg('C', pgStr("SELECT 1"))...)
+
+	got := cleaned(t, pgCapture(t, sent, received), true)
+
+	if strings.Contains(got, "sk_live_9f8e7d6c") {
+		t.Errorf("a secret column value left the machine:\n%s", got)
+	}
+	// The aligned column beside it is ordinary data and the statement is the
+	// reason the capture was opened. Both stay.
+	for _, want := range []string{"staging key", "api_key", "FROM tokens"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q was lost:\n%s", want, got)
+		}
+	}
+}
+
+// A statement that names a credential carries its literals in the clear, and
+// "sql" is not a sensitive key.
+func TestLiteralsInACredentialStatementAreBlanked(t *testing.T) {
+	sent := pgMsg('Q', pgStr("INSERT INTO users (email, password) VALUES ('nico@delpaintl.com', 'hunter2')"))
+
+	got := cleaned(t, pgCapture(t, sent, nil), true)
+
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("a password literal left the machine:\n%s", got)
+	}
+	// Everything that makes the statement readable survives.
+	for _, want := range []string{"INSERT INTO users", "email", "password", "VALUES"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q was lost, the statement is no longer readable:\n%s", want, got)
+		}
+	}
+}
+
+// Dollar quoting needs no escaping, so a scanner that only knows about single
+// quotes walks straight past the secret.
+func TestDollarQuotedLiteralsAreBlankedToo(t *testing.T) {
+	sent := pgMsg('Q', pgStr("UPDATE accounts SET secret = $tag$ hun'ter2 $tag$ WHERE id = 3"))
+
+	got := cleaned(t, pgCapture(t, sent, nil), true)
+
+	if strings.Contains(got, "hun'ter2") {
+		t.Errorf("a dollar-quoted secret left the machine:\n%s", got)
+	}
+	if !strings.Contains(got, "UPDATE accounts") {
+		t.Errorf("the statement was lost with it:\n%s", got)
+	}
+}
+
+// A bind parameter is a position with no name. The statement that gives it
+// meaning arrived in an earlier Parse, under a name the Bind refers back to.
+func TestBindParametersOfACredentialStatementAreBlanked(t *testing.T) {
+	parse := pgMsg('P', pgStr("s1"), pgStr("UPDATE users SET password_hash = $1 WHERE id = $2"), pgU16(2), pgU32(25), pgU32(23))
+	bind := pgMsg('B', pgStr(""), pgStr("s1"), pgU16(0), pgU16(2), pgText("$2a$10$REALHASH"), pgText("4711"))
+
+	got := cleaned(t, pgCapture(t, append(parse, bind...), nil), true)
+
+	if strings.Contains(got, "REALHASH") {
+		t.Errorf("a bound credential left the machine:\n%s", got)
+	}
+	if !strings.Contains(got, "password_hash") {
+		t.Errorf("the statement was lost with it:\n%s", got)
+	}
+}
+
+// The blunt instruments above only fire on a statement that names a
+// credential. An ordinary query is the reason the tool exists, and it must come
+// back whole — values included.
+func TestOrdinaryStatementsKeepTheirValues(t *testing.T) {
+	parse := pgMsg('P', pgStr(""), pgStr("SELECT id, total FROM orders WHERE status = 'paid' AND city = $1"), pgU16(1), pgU32(25))
+	bind := pgMsg('B', pgStr(""), pgStr(""), pgU16(0), pgU16(1), pgText("Santiago"))
+	received := pgMsg('T', pgU16(2), pgColumn("id"), pgColumn("total"))
+	received = append(received, pgMsg('D', pgU16(2), pgText("9001"), pgText("14990"))...)
+
+	got := cleaned(t, pgCapture(t, append(parse, bind...), received), true)
+
+	for _, want := range []string{"'paid'", "Santiago", "9001", "14990"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q was redacted from an ordinary query:\n%s", want, got)
+		}
 	}
 }
