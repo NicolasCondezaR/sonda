@@ -61,6 +61,19 @@
       <div class="field__empty" id="field-empty" hidden>
         <p class="field__empty-line" id="empty-headline">ARMED</p>
         <p class="field__empty-note" id="empty-note">Waiting for traffic through the proxy.</p>
+
+        <!-- An empty field is where the user is confused, so the reading goes
+             here rather than behind a menu. It stays out of the document until
+             there is genuinely nothing captured: with traffic on screen this is
+             noise over the measurement. -->
+        <div class="diag" id="empty-diag" hidden>
+          <div class="diag__list" id="diag-list"></div>
+          <p class="diag__note" id="diag-note"></p>
+          <div class="diag__foot">
+            <button type="button" class="switch__key switch__key--lone" id="diag-probe">PROBE UPSTREAMS</button>
+            <span class="diag__caution" id="diag-caution">Dials each upstream once and hangs up. It goes straight to the service, never through Sonda, so it cannot appear as a capture.</span>
+          </div>
+        </div>
       </div>
     </div>
     <div class="field__now" aria-hidden="true"></div>

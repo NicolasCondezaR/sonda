@@ -91,3 +91,55 @@ func TestAgainstLiveAPI(t *testing.T) {
 
 	t.Log("\n" + frame)
 }
+
+// TestDiagnosisAgainstLiveAPI checks the half of the diagnosis that hand-made
+// structs cannot: that the JSON the API writes lands in the fields this package
+// reads. The report is written in one package and decoded in another, so a
+// renamed field would leave the terminal drawing a table of blanks and every
+// unit test in here would still pass.
+//
+//	SONDA_API=http://127.0.0.1:9000 go test ./internal/tui/ -run Live -v
+func TestDiagnosisAgainstLiveAPI(t *testing.T) {
+	base := os.Getenv("SONDA_API")
+	if base == "" {
+		t.Skip("set SONDA_API to check the terminal client against a running sonda")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	client := NewClient(base)
+	report, err := client.Diagnose(ctx, false)
+	if err != nil {
+		t.Fatalf("could not read the diagnosis: %v", err)
+	}
+	if report.Verdict == "" || report.Summary == "" || report.Note == "" {
+		t.Fatalf("the report decoded empty: %+v", report)
+	}
+	for _, svc := range report.Services {
+		if svc.Service == "" || svc.Listen == "" || svc.Verdict == "" || svc.Detail == "" {
+			t.Fatalf("a service decoded with holes in it: %+v", svc)
+		}
+		if svc.Expects == "" || svc.PointAt == "" {
+			t.Errorf("%s carries neither what the listener expects nor the line that points a caller at it", svc.Service)
+		}
+	}
+
+	m := New(ctx, client, nil)
+	if m.targets, err = client.Targets(ctx); err != nil {
+		t.Fatalf("could not read targets: %v", err)
+	}
+	m.diag, m.live = report, true
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
+	frame := updated.(Model).View()
+
+	for i, line := range strings.Split(frame, "\n") {
+		if got := len([]rune(stripANSI(line))); got > 120 {
+			t.Errorf("line %d is %d characters wide", i, got)
+		}
+	}
+	if plain := stripANSI(frame); !strings.Contains(plain, "NOTHING CAPTURED") {
+		t.Error("the diagnosis did not reach the frame")
+	}
+	t.Log("\n" + frame)
+}

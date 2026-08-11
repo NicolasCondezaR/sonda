@@ -24,8 +24,10 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/grpcwire"
 )
 
-// startUpstream runs the demo gRPC service and returns its address.
-func startUpstream(t *testing.T) string {
+// startUpstream runs the demo gRPC service and returns its address. It takes a
+// TB rather than a T so the benchmarks can stand up the same upstream the tests
+// use, instead of a second one that might not behave the same.
+func startUpstream(t testing.TB) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

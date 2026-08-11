@@ -56,6 +56,15 @@ type Model struct {
 	trace   *Trace
 	drift   *Drift
 
+	// diag is held only while nothing has been captured, which is the only time
+	// it is on screen. probes keeps the last upstream dial separately, with the
+	// clock time it was taken at: the refresh that follows carries no probe, and
+	// redrawing an old answer as though it were current would be the instrument
+	// lying about a measurement it did not make.
+	diag     *Diagnosis
+	probes   map[string]string
+	probedAt time.Time
+
 	failedOnly bool
 	windowIdx  int
 	search     textinput.Model
@@ -133,6 +142,11 @@ type replayMsg struct {
 	result *ReplayResult
 	err    error
 }
+type diagnoseMsg struct {
+	diag  *Diagnosis
+	probe bool
+	err   error
+}
 type streamMsg Call
 
 func (m Model) Init() tea.Cmd {
@@ -208,6 +222,15 @@ func (m Model) loadDiff(a, b int64) tea.Cmd {
 	}
 }
 
+// loadDiagnosis asks why nothing is being captured. probe is passed only by the
+// key that asks for it, never by the periodic refresh.
+func (m Model) loadDiagnosis(probe bool) tea.Cmd {
+	return func() tea.Msg {
+		d, err := m.client.Diagnose(m.ctx, probe)
+		return diagnoseMsg{diag: d, probe: probe, err: err}
+	}
+}
+
 func (m Model) replay(id int64) tea.Cmd {
 	return func() tea.Msg {
 		result, err := m.client.Replay(m.ctx, id)
@@ -264,6 +287,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Oldest first, so appending a streamed call keeps the order.
 		sort.Slice(msg.calls, func(i, j int) bool { return msg.calls[i].ID < msg.calls[j].ID })
 		m.calls, m.stats, m.err, m.live = msg.calls, msg.stats, nil, true
+		if m.stats.Calls > 0 {
+			// Traffic is arriving; the question the diagnosis answers is no
+			// longer being asked, and a stale one on screen would be worse than
+			// none.
+			m.diag, m.probes = nil, nil
+			return m, nil
+		}
+		return m, m.loadDiagnosis(false)
+
+	case diagnoseMsg:
+		if msg.err != nil {
+			// The reconnect lamp already says the API is unreachable, and a
+			// second complaint in the footer would push out the status the user
+			// is actually acting on.
+			return m, nil
+		}
+		m.diag = msg.diag
+		if msg.probe {
+			m.probes, m.probedAt = map[string]string{}, time.Now()
+			for _, svc := range msg.diag.Services {
+				m.probes[svc.Service] = probeLine(svc)
+			}
+			m.status = ""
+		}
 		return m, nil
 
 	case detailMsg:

@@ -400,3 +400,75 @@ func TestBothKindsOfListenerRunTogether(t *testing.T) {
 		t.Errorf("raw listener: %q", got)
 	}
 }
+
+// A connection that never becomes a request is the only evidence Sonda has that
+// a client found the port at all: a client speaking TLS to a plaintext listener,
+// or a protocol this listener does not speak, connects and is never recorded.
+// Counting at accept is what separates that from a client that was never
+// pointed here — two different problems with two different fixes.
+func TestConnectionsAreCountedEvenWhenNothingBecomesARequest(t *testing.T) {
+	s := New()
+	served, raw, quiet := freePort(t), freePort(t), freePort(t)
+	s.Apply([]Desired{
+		{Key: "served", Listen: served, Handler: echo("ok")},
+		{Key: "raw", Listen: raw, Serve: func(c net.Conn) { c.Close() }},
+		{Key: "quiet", Listen: quiet, Handler: echo("ok")},
+	})
+	defer s.StopAll()
+
+	// The first bytes of a TLS handshake against a plaintext listener. No
+	// handler ever runs, which is precisely why the handler cannot be where
+	// this is counted.
+	hello, err := net.DialTimeout("tcp", served, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello.Write([]byte{0x16, 0x03, 0x01, 0x00, 0x05, 'h', 'i'})
+	// No reply is waited for on purpose: a real handshake gets none either, and
+	// the count is taken at accept, which has already happened.
+	hello.Close()
+
+	// And a connection that sends nothing at all: a dial-only health check, a
+	// port scan, or a client that gave up. This one never reaches any read, so
+	// counting anywhere later than accept misses it entirely.
+	silent, err := net.DialTimeout("tcp", served, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	silent.Close()
+
+	bare, err := net.DialTimeout("tcp", raw, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare.Close()
+
+	// The count is taken on the listener's own goroutine, so reading it the
+	// instant after Close is reading a race rather than a bug.
+	var counts map[string]int64
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		counts = map[string]int64{}
+		for _, st := range s.Status() {
+			counts[st.Key] = st.Connections
+		}
+		if counts["served"] >= 2 && counts["raw"] > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Exactly two: one connection that spoke the wrong protocol and one that
+	// never spoke at all. A count that is short has missed the case where
+	// nothing was ever read, and one that is over is counting a connection
+	// twice as it changes state.
+	if counts["served"] != 2 {
+		t.Errorf("served counted %d connection(s), want 2 — a failed handshake and a dial that sent nothing are both connections", counts["served"])
+	}
+	if counts["raw"] == 0 {
+		t.Error("a connection to a raw listener was not counted")
+	}
+	if counts["quiet"] != 0 {
+		t.Errorf("a port nobody dialled reports %d connection(s)", counts["quiet"])
+	}
+}
