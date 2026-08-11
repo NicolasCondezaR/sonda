@@ -1020,14 +1020,3 @@ func cleanAnswer(endpoint string, payload []byte, detail bool) (any, error) {
 	}
 	return clean(v, positionFor(endpoint), detail), nil
 }
-
-// cleanJSON redacts a listing of captures.
-//
-// It exists because wait_for_call polls /api/calls itself instead of going
-// through get — it has to read the payload to decide whether to keep waiting —
-// so it is the one caller that holds bytes without an endpoint beside them.
-// Anything else belongs in cleanAnswer, where the endpoint says what the
-// payload is.
-func cleanJSON(payload []byte, detail bool) (any, error) {
-	return cleanAnswer("/api/calls", payload, detail)
-}

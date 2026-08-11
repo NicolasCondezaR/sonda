@@ -134,7 +134,7 @@ func TestDetailDoesNotRevealCredentials(t *testing.T) {
 // Replacing a list with a string changes the shape of the reply, and a client
 // parsing headers would break on the one field it was never going to read.
 func TestRedactionKeepsTheShape(t *testing.T) {
-	v, err := cleanJSON([]byte(`{"headers":{"Cookie":["a","b"]}}`), false)
+	v, err := cleanAnswer("/api/calls", []byte(`{"headers":{"Cookie":["a","b"]}}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestNonJSONBodiesArePassedThroughUnchanged(t *testing.T) {
 		// Compared on the value, not on its encoding: Go escapes &, < and > as
 		// & and friends when marshalling, so asserting against the JSON
 		// text would fail on bodies this function never touched.
-		v, err := cleanJSON(payload, true)
+		v, err := cleanAnswer("/api/calls", payload, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -683,7 +683,7 @@ func pgError(code, message string) []byte {
 }
 
 // sondaHolding writes the calls into a real store and hands back the MCP server
-// in front of the real API. Every other test in this file calls cleanJSON
+// in front of the real API. Every other test in this file calls cleanAnswer
 // directly, which is how a leak in a field no test constructed — the one-line
 // summary — survived: it is derived on insert and it is a plain string, so
 // nothing in a hand-written payload ever contained it.

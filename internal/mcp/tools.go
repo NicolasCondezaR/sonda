@@ -454,7 +454,11 @@ func waitForCall(ctx context.Context, s *Server, a args) (any, error) {
 				Calls []json.RawMessage `json:"calls"`
 			}
 			if json.Unmarshal(payload, &body) == nil && len(body.Calls) > 0 {
-				cleaned, err := cleanJSON(payload, false)
+				// The endpoint is passed rather than assumed: redaction is
+				// chosen by position now, and a call site that hardcodes which
+				// position it is at holds that agreement in a comment instead
+				// of in the code that polls.
+				cleaned, err := cleanAnswer("/api/calls?"+q.Encode(), payload, false)
 				if err != nil {
 					return nil, err
 				}
