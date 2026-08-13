@@ -36,10 +36,19 @@
              autocomplete="off" placeholder="path, id, payload text">
     </div>
 
+    <!-- Cursors, the way the instrument they come from labels them. They are
+         also clickable and not keyboard-only: a device nobody can find is a
+         device that is not there. -->
+    <div class="switch" role="group" aria-label="Cursors">
+      <button type="button" class="switch__key" id="cursor-a" aria-pressed="false" disabled>A</button>
+      <button type="button" class="switch__key" id="cursor-b" aria-pressed="false" disabled>B</button>
+    </div>
+
     <button type="button" class="switch__key switch__key--lone" id="hold" aria-pressed="false">HOLD</button>
     <button type="button" class="switch__key switch__key--lone" id="open-projects">PROJECTS</button>
   </div>
 
+  <output class="calipers" id="calipers" aria-live="polite" hidden></output>
   <output class="readout" id="readout" aria-live="polite"></output>
 </header>
 

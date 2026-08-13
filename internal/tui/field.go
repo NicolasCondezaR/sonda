@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -85,24 +86,41 @@ func Mark(c Cell) string {
 
 // renderLane draws one channel's row, with the time grid showing through the
 // empty cells so the divisions always line up with the labelled axis.
-func renderLane(cells []Cell, colour lipgloss.Color, divisions []int, selected int) string {
+// cursors are the columns A and B fall on, either of which may be -1.
+func renderLane(cells []Cell, colour lipgloss.Color, divisions []int, selected int, cursors [2]int) string {
 	call := lipgloss.NewStyle().Foreground(colour)
 	var b strings.Builder
 
 	for i, cell := range cells {
 		glyph := Mark(cell)
+		var style lipgloss.Style
 		switch {
 		case i == selected:
-			b.WriteString(styleSelected.Render(glyph))
+			style = styleSelected
 		case cell.Faults > 0:
-			b.WriteString(styleFault.Render(glyph))
+			style = styleFault
 		case cell.Calls > 0:
-			b.WriteString(call.Render(glyph))
+			style = call
 		case contains(divisions, i):
-			b.WriteString(styleGrid.Render(gridV))
+			style, glyph = styleGrid, gridV
 		default:
-			b.WriteString(styleGrid.Render(markEmpty))
+			style, glyph = styleGrid, markEmpty
 		}
+
+		// A cursor is drawn over the trace, never instead of it. One terminal
+		// cell holds one glyph, so replacing the mark would hide a call — and
+		// hiding a call in the column you are measuring is the one thing this
+		// field cannot do. The underline crosses every lane at that column and
+		// leaves the mark and its channel colour intact; where the cell is
+		// empty, the cursor is the hairline itself, in ink rather than grid so
+		// it reads above the divisions.
+		if i == cursors[0] || i == cursors[1] {
+			if cell.Calls == 0 {
+				style, glyph = styleInk, gridV
+			}
+			style = style.Underline(true)
+		}
+		b.WriteString(style.Render(glyph))
 	}
 	return b.String()
 }
@@ -132,7 +150,7 @@ func contains(xs []int, x int) bool {
 
 // axisLabels writes the time ruler. Values land on round figures because the
 // division count is chosen per window, the same way the web client does it.
-func axisLabels(width int, window time.Duration, count int) string {
+func axisLabels(width int, window time.Duration, count int, cursors [2]int) string {
 	if width <= 0 {
 		return ""
 	}
@@ -150,7 +168,37 @@ func axisLabels(width int, window time.Duration, count int) string {
 		place(i*width/count, "-"+shortSpan(window-time.Duration(i)*step))
 	}
 	place(width-3, "NOW")
+
+	// The cursor letters engrave on the ruler, which is where a bench instrument
+	// puts them, and they overwrite a tick because a cursor is the reading being
+	// taken right now and a tick is furniture. Rendered as one string with the
+	// ticks so the row stays exactly `width` cells wide.
+	for i, letter := range []string{"A", "B"} {
+		if cursors[i] >= 0 && cursors[i] < width {
+			row[cursors[i]] = []rune(letter)[0]
+		}
+	}
 	return styleFaint.Render(string(row))
+}
+
+// humanMillis formats a measured span the way the web client's duration() does,
+// step for step: seconds past a second, whole milliseconds above one, and two
+// decimals below. Both clients reading the same capture have to print the same
+// number — a user who sees 342ms in one and 0.34s in the other has to work out
+// which one to believe.
+//
+// Nothing is rounded into a friendlier shape: DESIGN.md is explicit that 1201ms
+// is the reading and "about a second" is a lie about what was measured.
+func humanMillis(d time.Duration) string {
+	ms := float64(d) / float64(time.Millisecond)
+	switch {
+	case ms >= 1000:
+		return strconv.FormatFloat(ms/1000, 'f', 2, 64) + "s"
+	case ms >= 1:
+		return strconv.Itoa(int(math.Round(ms))) + "ms"
+	default:
+		return strconv.FormatFloat(ms, 'f', 2, 64) + "ms"
+	}
 }
 
 func shortSpan(d time.Duration) string {

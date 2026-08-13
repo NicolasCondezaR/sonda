@@ -40,7 +40,7 @@ func sampleModel(t *testing.T, width, height int) Model {
 		m.calls = append(m.calls, call("orders", at(now, age+3*time.Second), false))
 	}
 	m.calls = append(m.calls, Call{
-		ID: 500, Target: "orders", Protocol: "grpc", Method: "POST",
+		ID: newID(), Target: "orders", Protocol: "grpc", Method: "POST",
 		Path: "/demo.v1.Orders/Fail", Status: 200, DurationMS: 0.53,
 		GRPCStatus: &grpcFault, GRPCStatusText: "PermissionDenied",
 		GRPCMessage: "no tienes acceso a este pedido",

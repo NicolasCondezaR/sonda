@@ -83,6 +83,12 @@ type Model struct {
 	lane     int
 	selected int64
 
+	// The two measurement cursors, A and B, each holding a call id for the same
+	// reason the selection does: a column would drift onto its neighbour as the
+	// trace advances. Pinned to captures, the span between them is always the
+	// difference of two recorded times rather than a reading about the view.
+	cursorA, cursorB int64
+
 	status    string
 	statusErr bool
 	live      bool

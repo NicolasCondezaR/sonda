@@ -94,6 +94,19 @@ func (m Model) renderBar() string {
 		keep++
 	}
 
+	// The cursor reading goes ahead of the switches, which is what makes it
+	// outlive them when the terminal is narrow: shedding takes from the far end.
+	// It earns that place for the opposite reason to the broken rule — it is a
+	// measurement the user asked for by pressing a key a second ago, while a
+	// latched switch's position is also legible from the field it is filtering.
+	//
+	// Deliberately not added to keep: below about thirty columns the whole left
+	// side is truncated mid-word anyway, so a guard that only fires there would
+	// protect nothing while reading as though it protected something.
+	if reading := m.caliperReading(); reading != "" {
+		pieces = append(pieces, styleInk.Render(reading))
+	}
+
 	pieces = append(pieces,
 		m.key("FAULTS", m.failedOnly)+m.key("ALL", !m.failedOnly),
 		m.windowKeys(),
@@ -168,7 +181,9 @@ func (m Model) renderReadout() string {
 func (m Model) renderAxis(fieldWidth int) string {
 	head := styleHeader.Render(pad("CHANNEL", colCursor+colSwatch+colName)) +
 		styleHeader.Render(pad("CALLS", colCalls)) + styleHeader.Render(pad("FAULT", colFaults))
-	return head + styleRule.Render(ruleV) + axisLabels(fieldWidth, m.window(), m.divisions())
+	a, b := m.cursorColumns(fieldWidth)
+	return head + styleRule.Render(ruleV) +
+		axisLabels(fieldWidth, m.window(), m.divisions(), [2]int{a, b})
 }
 
 func (m Model) renderLanes(fieldWidth int) string {
@@ -177,6 +192,7 @@ func (m Model) renderLanes(fieldWidth int) string {
 	}
 
 	divisions := divisionColumns(fieldWidth, m.divisions())
+	cursorA, cursorB := m.cursorColumns(fieldWidth)
 	byTarget := map[string]TargetStat{}
 	for _, stat := range m.stats.ByTarget {
 		byTarget[stat.Target] = stat
@@ -224,7 +240,8 @@ func (m Model) renderLanes(fieldWidth int) string {
 			styleFaint.Render(pad(fmt.Sprint(stat.Calls), colCalls)) +
 			faultStyle.Render(pad(fmt.Sprint(stat.Faults), colFaults)) +
 			styleRule.Render(ruleV) +
-			renderLane(cells, colour, divisions, m.selectedColumn(i, fieldWidth)) + "\n")
+			renderLane(cells, colour, divisions, m.selectedColumn(i, fieldWidth),
+				[2]int{cursorA, cursorB}) + "\n")
 	}
 	return b.String()
 }
@@ -940,8 +957,9 @@ func (m Model) renderFooter() string {
 	// other discovery path: nothing on screen suggests a jump to either end of a
 	// lane, and only the tree and the contract views say how to close themselves.
 	keys := []string{
-		"↑↓ chan", "←→ call", "g/G ends", "⏎ read", "esc close", "t tree", "c contract",
-		"r replay", "d diff", "f faults", "w window", "h hold", "/ find",
+		"↑↓ chan", "←→ call", "g/G ends", "⏎ read", "a/b cursors", "esc close",
+		"t tree", "c contract", "r replay", "d diff", "f faults", "w window",
+		"h hold", "/ find",
 	}
 	prefix := " "
 	if search := m.search.Value(); search != "" {

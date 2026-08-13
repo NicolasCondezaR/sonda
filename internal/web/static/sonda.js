@@ -31,6 +31,13 @@ const state = {
   frozen: false,             // pointer resting in the field holds the trace
   frozenOffset: 0,
   selected: null,
+  // The two cursors hold call ids, not screen positions or timestamps. The
+  // field is a window sliding on its own, so a cursor parked at an x would
+  // measure the view's pixel-to-time scale rather than the traffic — and a
+  // reading that is about the screen has no business on an instrument whose
+  // first principle is fidelity. Pinned to captures, every delta is the
+  // difference between two recorded times.
+  cursors: { a: null, b: null },
   detail: null,             // the call currently in the inspector
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
   stubbed: new Set(),        // services answering from recordings, not the wire
@@ -57,6 +64,9 @@ const dom = {
   diagNote: document.getElementById("diag-note"),
   diagProbe: document.getElementById("diag-probe"),
   readout: document.getElementById("readout"),
+  calipers: document.getElementById("calipers"),
+  cursorA: document.getElementById("cursor-a"),
+  cursorB: document.getElementById("cursor-b"),
   acquisition: document.getElementById("acquisition"),
   acquisitionText: document.getElementById("acquisition-text"),
   search: document.getElementById("search"),
@@ -279,7 +289,101 @@ function renderLanes() {
     dom.lanes.appendChild(lane);
     target.track = track;
   }
+  // The cursor layer is stacked over every lane, so it needs to know how tall
+  // the stack is; the lanes rebuild whenever the channel list changes.
+  dom.lanes.style.setProperty("--lane-count", state.targets.length);
+  dom.lanes.appendChild(caliperLayer());
   measure();
+  renderCursors();
+}
+
+/* ------------------------------------------------------------- cursors -- */
+
+let layer = null;
+const caliperNodes = {};
+
+function caliperLayer() {
+  if (!layer) {
+    layer = el("div", "calipers-layer");
+    for (const which of ["a", "b"]) {
+      const node = el("div", "caliper");
+      node.hidden = true;
+      node.appendChild(el("span", "caliper__letter", which.toUpperCase()));
+      caliperNodes[which] = node;
+      layer.appendChild(node);
+    }
+  }
+  return layer;
+}
+
+// setCursor pins a cursor to the selected call, or lifts it when it is already
+// on that one — the same key both places and clears, the way a latched control
+// works.
+function setCursor(which) {
+  if (state.selected === null) return;
+  state.cursors[which] = state.cursors[which] === state.selected ? null : state.selected;
+  renderCursors();
+}
+
+function renderCursors() {
+  for (const which of ["a", "b"]) {
+    const node = caliperNodes[which];
+    const call = state.calls.get(state.cursors[which]);
+    if (!node) continue;
+    if (!call) {
+      // A cursor cannot point at a capture the field no longer holds. Dropping
+      // it is the honest move: keeping the letter with nothing under it would
+      // claim a measurement against something that scrolled out of the window.
+      state.cursors[which] = null;
+      node.hidden = true;
+      continue;
+    }
+    node.hidden = false;
+    node.style.left = xFor(call.started_at) + "px";
+  }
+  renderCaliperReading();
+}
+
+function renderCaliperReading() {
+  const a = state.calls.get(state.cursors.a);
+  const b = state.calls.get(state.cursors.b);
+
+  dom.cursorA.setAttribute("aria-pressed", String(Boolean(a)));
+  dom.cursorB.setAttribute("aria-pressed", String(Boolean(b)));
+  const armed = state.selected !== null;
+  dom.cursorA.disabled = !armed && !a;
+  dom.cursorB.disabled = !armed && !b;
+  const how = "Select a call, then place this cursor on it";
+  dom.cursorA.title = a ? "Lift cursor A" : how;
+  dom.cursorB.title = b ? "Lift cursor B" : how;
+
+  if (!a && !b) {
+    dom.calipers.hidden = true;
+    dom.calipers.replaceChildren();
+    return;
+  }
+
+  dom.calipers.hidden = false;
+  dom.calipers.replaceChildren();
+
+  if (!a || !b) {
+    // One cursor down is not a measurement. Say which is missing rather than
+    // showing a dash: naming the next key is the recovery.
+    const placed = a ? "A" : "B";
+    const missing = a ? "B" : "A";
+    dom.calipers.appendChild(
+      el("span", "calipers__hint", `${placed} SET · PRESS ${missing.toLowerCase()} ON ANOTHER CALL`));
+    return;
+  }
+
+  const ta = new Date(a.started_at).getTime();
+  const tb = new Date(b.started_at).getTime();
+  // The arrow carries which cursor is earlier, so the reading never has to show
+  // a negative span. Start to start, the reading that answers "and how long
+  // after that did the next call go out" — each call's own duration is still on
+  // screen as the width of its mark.
+  const order = tb >= ta ? "A→B" : "B→A";
+  dom.calipers.appendChild(document.createTextNode(`${order} ${duration(Math.abs(tb - ta))}`));
 }
 
 function addEvent(call, isNew) {
@@ -318,6 +422,9 @@ function repositionAll() {
       node.style.width = Math.max(3, call.duration_ms * state.pxPerMs) + "px";
     }
   }
+  // A changed window or width rescales the axis, so the cursors have to be
+  // re-solved from their calls' times rather than kept at their old pixels.
+  renderCursors();
 }
 
 /* One transform per frame moves the whole field; events keep static positions. */
@@ -343,6 +450,9 @@ function advance() {
   for (const target of state.targets) {
     if (target.track) target.track.style.transform = `translateX(${offset}px)`;
   }
+  // The cursors ride the same offset as the tracks. Anything else and a cursor
+  // would drift off the call it is pinned to as the trace advances.
+  if (layer) layer.style.transform = `translateX(${offset}px)`;
   if (!state.frozen) prune(offset);
   requestAnimationFrame(advance);
 }
@@ -357,13 +467,19 @@ function freeze(on) {
 
 function prune(offset) {
   if (state.nodes.size < 200) return;
+  let dropped = false;
   for (const [id, node] of state.nodes) {
     if (parseFloat(node.style.left) + offset < -80) {
       node.remove();
       state.nodes.delete(id);
       state.calls.delete(id);
+      if (state.cursors.a === id || state.cursors.b === id) dropped = true;
     }
   }
+  // Only when a pruned call was carrying a cursor: this runs inside the frame
+  // loop, and re-reading both cursors every frame to find nothing is work the
+  // field does not need to do.
+  if (dropped) renderCursors();
 }
 
 /* ------------------------------------------------------------- readout -- */
@@ -667,6 +783,9 @@ async function select(id) {
     node.setAttribute("aria-pressed", String(otherID === id));
   }
   state.selected = id;
+  // A call is now selected, so the cursor controls have something to be placed
+  // on: they stop being disabled the moment that becomes true.
+  renderCaliperReading();
   dom.inspector.hidden = false;
   dom.inspectorIdle.hidden = true;
   dom.inspectorBody.hidden = false;
@@ -1541,6 +1660,9 @@ function closeInspector() {
   state.selected = null;
   state.detail = null;
   dom.diffBody.hidden = true;
+  // The cursors stay where they are — they measure the field, not the
+  // inspector. Only the controls go back to having nothing to place.
+  renderCaliperReading();
   for (const node of state.nodes.values()) node.setAttribute("aria-pressed", "false");
   dom.inspectorBody.hidden = true;
   dom.inspectorIdle.hidden = false;
@@ -1613,7 +1735,16 @@ function wireControls() {
       event.preventDefault();
       dom.search.focus();
     }
+    // Not while typing in the search box, where a and b are just letters.
+    if (document.activeElement === dom.search) return;
+    if (event.key === "a" || event.key === "b") {
+      event.preventDefault();
+      setCursor(event.key);
+    }
   });
+
+  dom.cursorA.addEventListener("click", () => setCursor("a"));
+  dom.cursorB.addEventListener("click", () => setCursor("b"));
 
   // The rail and the lanes are one grid read across two columns; letting them
   // scroll apart would misalign every channel with its own traffic.

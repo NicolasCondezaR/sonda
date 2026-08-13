@@ -55,6 +55,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right", "L":
 		return m.step(1)
 
+	case "a", "b":
+		// The two measurement cursors. Same key places and lifts, and the span
+		// between them appears in the bar as soon as both are down.
+		if err := m.placeCursor(msg.String()[0]); err != nil {
+			m.status, m.statusErr = err.Error(), true
+			return m, nil
+		}
+		m.status, m.statusErr = "", false
+		return m, nil
+
 	case "home", "g":
 		// Oldest call on this lane.
 		return m.selectIndex(0)
