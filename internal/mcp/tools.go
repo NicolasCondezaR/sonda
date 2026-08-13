@@ -150,15 +150,20 @@ func readTools() []Tool {
 		{
 			Name:  "get_call",
 			Title: "Read one call",
-			Description: "One captured call in full: headers, both bodies decoded, timing, gRPC status and trailers. " +
-				"A WebSocket comes back as the frames of both directions, unmasked and labelled by kind, with the close code when there is one. " +
-				"A server-sent event stream comes back as its events. " +
-				"A GraphQL POST comes back as the operations it carried — type, name, the fields asked for, the variables sent, and any errors the response held, with their path and code. " +
-				"A Postgres statement comes back as the protocol messages of both directions: the SQL, its bind parameters, the rows described, the command tags and any server error with its SQLSTATE. " +
-				"The first statement of a connection also carries that connection's opening — the startup parameters and which authentication mechanism was demanded — because those happened once and belong somewhere. " +
-				"An AMQP capture comes back as frames with channels, routing decisions, content properties, message text, acknowledgements and broker close errors. Content-bearing methods include their header and body frames. " +
-				"Database passwords, AMQP SASL challenges and AMQP SASL responses were blanked when the bytes were captured, so they are not there to ask for; the selected authentication mechanism remains named. " +
-				"Bodies are shortened unless you ask for detail.",
+			// This description used to inventory, per protocol, which fields
+			// come back: WebSocket frames, SSE events, GraphQL operations,
+			// Postgres messages, AMQP frames. About two hundred tokens of it,
+			// paid on every request by every client that loads tool
+			// definitions eagerly — to describe a payload the reader is about
+			// to receive and can simply read. What cannot be discovered from
+			// the answer is what stayed: that credentials were blanked at
+			// capture time rather than withheld here, because an agent that
+			// does not know this asks again with detail and pays twice for
+			// nothing; and that lists and strings are shortened, because that
+			// is the difference between a short answer and a missing one.
+			Description: "One captured call in full: headers, both bodies decoded, timing, protocol-specific messages, and the terminal status. The shape follows the protocol — frames for a socket, operations for GraphQL, statements for Postgres, frames for AMQP. " +
+				"Database passwords and AMQP SASL exchanges were blanked when the bytes were captured, so they are not here to ask for; the mechanism that was chosen is still named. " +
+				"Long strings and long lists are shortened, and each says what it left out. Ask for detail only when you need the whole payload.",
 			Schema: obj(map[string]any{
 				"id":     prop("integer", "The call id, as returned by the other tools."),
 				"detail": prop("boolean", "Return bodies whole instead of shortened. Ask for this only when you need the full payload."),
@@ -266,11 +271,11 @@ func readTools() []Tool {
 		{
 			Name:  "diagnose_silence",
 			Title: "Why is nothing being captured",
-			Description: "Why you are seeing nothing. Reports, per service: whether the listener actually bound, how many TCP connections that port has accepted, how many calls were captured and how long ago the last one was, and what the listener expects to speak — then names the cause. " +
-				"Where the evidence does not separate two causes it says both and says what would tell them apart, because a confident wrong answer here sends you down a road with nothing at the end of it. " +
+			Description: "Why you are seeing nothing. Reports, per service: whether the listener bound, how many TCP connections that port accepted, how many calls were captured and how long ago, what the listener expects to speak — then names the cause. Where the evidence does not separate two causes it says both, and says what would tell them apart. " +
 				"The connection count is the reading that matters most: connections with no captures means a client found the port and Sonda did not understand it — a TLS mismatch, or a protocol Sonda does not proxy. Zero connections means nothing arrived at all, and Sonda cannot see a client that never connected. " +
+				"Services that read the same are grouped so one reading is not repeated per service; the shape field in the answer says how to read it. " +
 				"Ask this the moment a call you expected is not in the capture list, and before search_calls returns empty twice. " +
-				"Set probe_upstreams to also dial each upstream once: that is traffic the user did not send, so it is off by default, it never happens on its own, and it goes straight to the service rather than through Sonda, so it cannot show up as a capture.",
+				"Set probe_upstreams to also dial each upstream once: that is traffic the user did not send, so it is off by default and goes straight to the service rather than through Sonda, so it cannot show up as a capture.",
 			Schema: obj(map[string]any{
 				"probe_upstreams": prop("boolean", "Also open and immediately close one TCP connection to each upstream, to find out whether the service behind it is up. No bytes are sent. Defaults to false."),
 			}),
@@ -279,10 +284,23 @@ func readTools() []Tool {
 			// because with probe_upstreams it does touch the network.
 			Annotations: map[string]any{"readOnlyHint": true, "destructiveHint": false, "openWorldHint": true},
 			Run: func(ctx context.Context, s *Server, a args) (any, error) {
+				var out any
+				var err error
 				if a.boolean("probe_upstreams") {
-					return s.post(ctx, "/api/diagnose", nil)
+					out, err = s.post(ctx, "/api/diagnose", nil)
+				} else {
+					out, err = s.get(ctx, "/api/diagnose", false)
 				}
-				return s.get(ctx, "/api/diagnose", false)
+				if err != nil {
+					return nil, err
+				}
+				// Compacting happens here rather than in the API: the web and
+				// the terminal render every service at no cost, and only the
+				// trip into a model's context is expensive. See compact.go.
+				if body, ok := out.(map[string]any); ok {
+					return compactDiagnosis(body), nil
+				}
+				return out, nil
 			},
 		},
 

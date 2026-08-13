@@ -821,6 +821,34 @@ That address is directly usable. The project API's `point_at` field and
 `https://host:port`), and Postgres remains `host:port` for insertion into the
 caller's own DSN.
 
+### What an answer costs an agent
+
+Everything an agent reads comes out of its context, so an answer that repeats
+itself is a real cost with nothing bought. Two bounds exist for that, and both
+apply to MCP only — the web and the terminal render every service and every
+frame at no cost to anyone, and a capability that behaves differently per client
+is one nobody can reason about.
+
+- **Readings that are the same are stated once.** `diagnose_silence` on a project
+  of twenty-two quiet services used to return twenty-two copies of one paragraph,
+  differing only in the address spliced into each sentence: about 6.900 tokens,
+  96% of it per-service entries. It now groups services whose reading is
+  identical, states the shared sentences once with `{listen}`, `{point_at}`,
+  `{expects}` and `{upstream}` standing for each member's own field, and lifts
+  the facts every member agreed on into `same_for_all`. The same report is about
+  2.100 tokens. **Nothing is dropped**: every original sentence can be
+  reconstructed from the placeholders and the fields beside them, and a reading
+  that genuinely differs — two services capturing different numbers of calls —
+  stays separate rather than being folded into its neighbour.
+- **Long strings and long lists say what they left out.** A string over 2.000
+  characters is cut, and a list over 24 entries keeps both ends with a marker in
+  the middle naming how many are missing. Both ends, not the first 24: a stream's
+  outcome is at its end, so keeping only the head would drop the part being
+  debugged. `detail: true` on `get_call` returns everything, whole.
+
+Neither bound is a summary. A summary decides for the reader which services
+matter, and the reader is the one debugging.
+
 ### What is not on MCP, on purpose
 
 - **Deleting a project.** `remove_service` covers a service that has to go, and

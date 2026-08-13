@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -1344,5 +1345,94 @@ func assertBodySurvives(t *testing.T, body string) {
 	}
 	if !reflect.DeepEqual(sent, back) {
 		t.Errorf("a third-party body was rewritten\n  sent: %s\n  got:  %s", body, call.Response.Text)
+	}
+}
+
+// A capture is not always one message. A socket conversation of four hundred
+// frames or a gRPC stream of two hundred arrived whole: maxString capped each
+// entry and nothing capped how many there were, so the sum was enormous while
+// every part of it looked small.
+func TestALongListIsClippedAtBothEndsAndSaysSo(t *testing.T) {
+	const total = 200
+	msgs := make([]string, 0, total)
+	for i := range total {
+		msgs = append(msgs, fmt.Sprintf(`{"seq":%d,"text":"m%d"}`, i, i))
+	}
+	payload := []byte(`{"messages":[` + strings.Join(msgs, ",") + `]}`)
+
+	v, err := cleanAnswer("/api/calls", payload, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := v.(map[string]any)["messages"].([]any)
+
+	if len(list) != maxItems+1 {
+		t.Fatalf("kept %d entries, want %d plus one marker", len(list), maxItems)
+	}
+
+	// The first entry survives, and so does the last — a stream's outcome is at
+	// its end, and keeping only the head would drop the part being debugged.
+	first := list[0].(map[string]any)
+	last := list[len(list)-1].(map[string]any)
+	if first["seq"] != float64(0) {
+		t.Errorf("the first entry is seq %v, want 0", first["seq"])
+	}
+	if last["seq"] != float64(total-1) {
+		t.Errorf("the last entry is seq %v, want %d", last["seq"], total-1)
+	}
+
+	// And the gap is named where the entries were removed from, with the count.
+	marker, ok := list[maxItems/2].(string)
+	if !ok {
+		t.Fatalf("no marker where the middle was dropped: %T", list[maxItems/2])
+	}
+	for _, want := range []string{fmt.Sprint(total - maxItems), fmt.Sprint(total), "ask for detail"} {
+		if !strings.Contains(marker, want) {
+			t.Errorf("the marker %q does not mention %q", marker, want)
+		}
+	}
+}
+
+// detail is the way out, and it has to be a real way out: nothing clipped, no
+// marker inserted, every entry present.
+func TestDetailReturnsEveryEntryOfALongList(t *testing.T) {
+	const total = 200
+	msgs := make([]string, 0, total)
+	for i := range total {
+		msgs = append(msgs, fmt.Sprintf(`{"seq":%d}`, i))
+	}
+	payload := []byte(`{"messages":[` + strings.Join(msgs, ",") + `]}`)
+
+	v, err := cleanAnswer("/api/calls", payload, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := v.(map[string]any)["messages"].([]any)
+
+	if len(list) != total {
+		t.Fatalf("detail returned %d of %d entries", len(list), total)
+	}
+	for i, item := range list {
+		if item.(map[string]any)["seq"] != float64(i) {
+			t.Fatalf("entry %d is %v; detail must not reorder or replace anything", i, item)
+		}
+	}
+}
+
+// A list that fits is left exactly as it was. Header values arrive as lists of
+// one or two, and inserting a marker into those would be noise in every reply.
+func TestAShortListIsNotTouched(t *testing.T) {
+	v, err := cleanAnswer("/api/calls", []byte(`{"messages":[{"seq":0},{"seq":1},{"seq":2}]}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := v.(map[string]any)["messages"].([]any)
+	if len(list) != 3 {
+		t.Fatalf("a list of 3 came back with %d entries", len(list))
+	}
+	for _, item := range list {
+		if _, isMarker := item.(string); isMarker {
+			t.Errorf("a short list got a truncation marker: %v", list)
+		}
 	}
 }
