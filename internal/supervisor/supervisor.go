@@ -30,8 +30,8 @@ type Desired struct {
 	Handler http.Handler
 
 	// Serve takes each accepted connection instead of an HTTP server, for a
-	// target that never speaks HTTP at all — Postgres is framed messages from
-	// its first byte, so there is no request for a handler to be given.
+	// target that never speaks HTTP at all — Postgres and AMQP are framed from
+	// their first byte, so there is no request for a handler to be given.
 	//
 	// It is a field on the same struct rather than a second kind of listener
 	// because everything that makes this package worth having — a port that
@@ -40,10 +40,9 @@ type Desired struct {
 	// either way. Only the four lines between Accept and the goroutine differ.
 	Serve func(net.Conn)
 
-	// TLS makes the listener terminate encryption before the handler sees
-	// anything. It is not a third kind of listener: it is the same HTTP listener
-	// wearing a tls.Config, and Handler is served exactly as it would be
-	// otherwise.
+	// TLS makes the listener terminate encryption before the handler or raw
+	// Serve function sees anything. It is not a third kind of listener: either
+	// listener wears a tls.Config and receives the decrypted connection.
 	//
 	// It does change what sameKind means, though. The config is baked into the
 	// socket at tls.NewListener time and there is no way to put it on or take it
@@ -228,6 +227,14 @@ func (s *Supervisor) start(key string, d Desired) {
 		return
 	}
 
+	if d.TLS != nil {
+		// Wrapped after the bind, so a port already taken still fails above with
+		// an error attached to this listener rather than at handshake time on a
+		// goroutine nobody is reading. Raw protocols such as AMQP use the same
+		// listener wrapper; their Serve function receives the decrypted stream.
+		ln = tls.NewListener(ln, d.TLS)
+	}
+
 	if d.Serve != nil {
 		entry := &listener{desired: d, raw: ln}
 		entry.swap(d)
@@ -235,17 +242,6 @@ func (s *Supervisor) start(key string, d Desired) {
 		go accept(ln, entry.serveConn)
 		slog.Info("listening", "service", key, "listen", d.Listen)
 		return
-	}
-
-	if d.TLS != nil {
-		// Wrapped after the bind, so a port already taken still fails above with
-		// an error attached to this listener rather than at handshake time on a
-		// goroutine nobody is reading.
-		//
-		// The server's own TLSConfig is deliberately left nil: net/http then
-		// assumes the listener may already be a TLS one and wires up HTTP/2,
-		// which is what a gRPC client over https needs.
-		ln = tls.NewListener(ln, d.TLS)
 	}
 
 	entry := &listener{desired: d}

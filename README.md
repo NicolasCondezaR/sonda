@@ -1,9 +1,9 @@
 # Sonda
 
 A capturing proxy for local development traffic. Point a client at Sonda
-instead of the service it talks to, and every request and response that crosses
-it becomes searchable — arranged into the request it belonged to, replayable,
-comparable, and readable by a coding agent as well as by you.
+instead of the service it talks to, and the HTTP calls, streams, database
+statements and AMQP units that cross it become searchable, comparable where
+that is meaningful, and readable by a coding agent as well as by you.
 
 It exists because debugging between services usually means reading logs from
 several containers, none of which contain the payload. `mitmproxy` solves this
@@ -17,12 +17,13 @@ this is aimed at.
 
 ![The event field: one lane per service, faults as full-height bars](docs/assets/sonda-field.jpg)
 
-> **Status: phase 19.** Capture, decoding, storage, search, the query API, the
+> **Status: phase 19 complete.** Capture, decoding, storage, search, the query API, the
 > web interface, replay, structural diff, a terminal client, project management,
 > [request trees](#agents), [stub mode](#stub-mode), an
 > [MCP server for coding agents](#agents) and [TLS](#tls) all work, and the whole
-> thing runs from `docker compose up`. Phase 19 is AMQP 0-9-1, where the wire
-> decoder is written and capture is not built yet. See [Roadmap](#roadmap).
+> thing runs from `docker compose up`. [AMQP 0-9-1](#amqp-0-9-1) and AMQPS now
+> run through the same capture, storage and inspection surfaces. See
+> [Roadmap](#roadmap).
 
 ## How it works
 
@@ -47,9 +48,10 @@ Two properties drive the design:
   the wire and decoded only when displayed. Re-serializing would lose unknown
   fields and reorder keys, which is what makes replay meaningless — and it lets
   a capture become readable later, once its schema is available. The single
-  exception is stated where it applies: a [Postgres](#postgresql) password is
-  blanked in the capture before it is written, because a credential in a
-  plaintext file cannot be taken back out afterwards.
+  exceptions are stated where they apply: [Postgres](#postgresql) passwords and
+  [AMQP](#amqp-0-9-1) SASL challenges and responses are blanked in the capture
+  before it is written, because a credential in a plaintext file cannot be
+  taken back out afterwards.
 
 ## Install
 
@@ -110,6 +112,58 @@ with `curl`, or clear the flag once. Homebrew does this for you.
 ```bash
 xattr -dr com.apple.quarantine sonda sonda-tui echo grpcdemo
 ```
+
+### Start Sonda when you sign in to Windows
+
+On Windows, Sonda can install one Task Scheduler entry for the current user.
+It runs at ordinary user privilege, only after that user signs in, and stores
+no password:
+
+```powershell
+sonda autostart install -config "$HOME\.sonda\sonda.yaml"
+sonda autostart status
+```
+
+`install` creates the task, or reuses it only when its complete definition still
+matches the current user and configuration. It never replaces a foreign or
+modified task at Sonda's deterministic name. It starts the verified task
+immediately and waits for `/health`; no restart is needed to check the setup.
+The usual lifecycle is:
+
+```powershell
+sonda autostart start
+sonda autostart stop
+sonda autostart restart
+sonda autostart uninstall
+```
+
+If installation used a non-default configuration path, pass that same
+`-config PATH` to `status`, `start`, `stop`, `restart`, and `uninstall`. Those
+commands derive the expected task locally instead of trusting metadata stored
+inside the task.
+
+The managed task sets the configuration path and working directory absolutely,
+runs on battery, keeps one instance, has no 72-hour limit, starts when available,
+and retries a failed process three times at one-minute intervals. When the
+running binary is the exact `apps/sonda/current` target of a verified Scoop
+shim, it uses that shim so `scoop update sonda` does not strand the task on an
+old version. A binary run from a release ZIP or local build is treated as
+portable: put it in its final location before installing autostart. If it is
+moved later, restore the original path or remove the old task manually in Task
+Scheduler before installing again; Sonda will not overwrite the changed action.
+
+Stopping signals only the Sonda instance identified by this task and lets its
+capture queue drain. If graceful signaling fails while the canonical task is
+unchanged and its expected control event still proves that the managed process
+is active, the sole fallback is to end that exact scheduled task; status reports
+that the fallback was abrupt. Sonda never kills every process named `sonda.exe`.
+
+Autostart refuses a configuration whose `api_listen` is not loopback. The
+explicit `-allow-non-loopback` override exists for isolated environments, but
+it exposes an unauthenticated API that can read captures and change proxy state.
+`uninstall` removes only the task; configuration, database, certificate
+authority and logs remain in place. Logs go beside the configuration as
+`sonda.log`, with one bounded rotated copy.
 
 ## Quick start
 
@@ -290,9 +344,10 @@ not proxy at all. Zero connections is a client that never arrived. Those are
 different problems with different fixes, and without that count they read
 exactly the same.
 
-Sonda proxies HTTP, gRPC, WebSocket and PostgreSQL. A Kafka, Redis or plain TCP
-client pointed at a Sonda port is accepted and never understood, which shows up
-as `connected_not_captured` rather than as silence.
+Sonda proxies HTTP (including WebSocket upgrades and server-sent events), gRPC,
+PostgreSQL and AMQP 0-9-1. A Kafka, Redis or plain TCP client pointed at a Sonda
+port is accepted and never understood, which shows up as
+`connected_not_captured` rather than as silence.
 
 ### What it cannot tell you, and says so
 
@@ -568,16 +623,16 @@ instead of a wall of red and green:
 
 Sonda writes the bytes that crossed the wire into a SQLite file. **That
 includes whatever your traffic carries**: `Authorization` headers, session
-cookies, API keys, personal data. Nothing is redacted on the way in, and that is
-a deliberate choice rather than an oversight — redacting the capture would mean
-it is no longer what was sent, which breaks both the fidelity the tool is built
-on and replay along with it.
+cookies, API keys, personal data. Application payloads are not redacted on the
+way in, and that is a deliberate choice rather than an oversight — redacting a
+replayable capture would mean it is no longer what was sent.
 
-There is exactly one exception, and it is one because the trade-off runs the
-other way: a **Postgres** password is blanked in the capture as the bytes go
-past. A database capture cannot be replayed anyway, so nothing is lost by not
-keeping it, and the alternative is a live credential in a plaintext file. See
-[PostgreSQL](#postgresql).
+Two connection-handshake exceptions make the safer trade-off: a
+**Postgres** password and **AMQP SASL challenges and responses** are blanked in
+the stored copy as the bytes go past. Neither capture can be replayed without
+the connection state that is already gone, and the alternative is a live
+credential in a plaintext file. See [PostgreSQL](#postgresql) and
+[AMQP 0-9-1](#amqp-0-9-1).
 
 The other place credentials are held back is [the MCP server](#agents), because
 there the answers leave the machine.
@@ -644,7 +699,7 @@ that is already running, so it is still the same data:
 | `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it. Safe to run again |
 | `configure_service` | Add one service, or change one that is already there — the name is the identity, so calling it again moves the port. An update keeps every setting it was not asked about |
 | `remove_service` | Delete one service, and say what address to point the caller back at. Asks first |
-| `upload_schemas` | Give a project a compiled descriptor set, so gRPC decodes where no service serves reflection |
+| `upload_schemas` | Give a project a compiled descriptor set, so gRPC decodes where no service serves reflection. Local stdio accepts a file `path`; HTTP MCP accepts base64 content |
 | `activate_project` | Open the ports. Asks first |
 | `disconnect_project` | Close them and hand back the edit that undoes the pointing. Asks first |
 | `set_stub` | Answer for a service from recordings instead of forwarding. Asks first |
@@ -656,6 +711,22 @@ that is already running, so it is still the same data:
 `wait_for_call` is the one that turns Sonda into a check rather than a viewer:
 the agent makes a change, triggers the action, and waits for what should have
 gone over the wire. Nothing arriving is also an answer.
+
+`upload_schemas` has two transports with deliberately different file access:
+
+```json
+{ "project": "core-delpagroup", "path": "C:\\work\\descriptors.binpb" }
+```
+
+That `path` form is available only to the local `sonda mcp` stdio process. It
+accepts a file up to 32 MiB from the machine that launched it, keeps the path's
+base name as the descriptor name, and sends the bytes to Sonda. The HTTP MCP
+endpoint at `/mcp` never reads a path from Sonda's filesystem. Use the existing content
+form there, or over stdio when the JSON stays within its message limit:
+
+```json
+{ "project": "core-delpagroup", "filename": "descriptors.binpb", "content_base64": "..." }
+```
 
 ### Connecting a project by asking
 
@@ -729,6 +800,12 @@ to clean up.
 service and changes only what you passed, so moving a port is the project, the
 name and the new address. It answers with the address to point the caller at,
 and with the variable to write it into when Sonda knows which one that is.
+That address is directly usable. The project API's `point_at` field and
+`configure_service`'s `listening_on` return `http://host:port` for HTTP
+(`https://` with listener TLS), while AMQP returns `amqp://host:port` or
+`amqps://host:port`. Plaintext gRPC remains `host:port` (listener TLS makes it
+`https://host:port`), and Postgres remains `host:port` for insertion into the
+caller's own DSN.
 
 ### What is not on MCP, on purpose
 
@@ -755,7 +832,9 @@ of this section. `Authorization`, `Cookie`,
 as `[redacted by Sonda]` — in headers, in bodies, and inside JSON nested in a
 body. **There is no setting to turn this off**, deliberately: a flag for it
 would be switched on against a toy project and then forgotten against a real
-one. The web interface still shows everything, because there the reader is you.
+one. The web interface shows the stored application payloads because there the
+reader is you; Postgres and AMQP handshake secrets are already absent from every
+surface because they were blanked before persistence.
 
 Matching a field name only works on a field that has one, so four more passes
 reach where it cannot. Each of them runs at one known place in the answer and
@@ -775,11 +854,17 @@ a `detail` or a `postgres` key is left exactly as it was recorded:
   the two places a trace repeats that line. The tree drawn as text is not
   scanned for that line: each node reports what its own reading became and the
   exact strings are substituted in, so every node is covered at every depth.
+- **AMQP authentication**, whose challenge and response are opaque byte strings
+  rather than named fields. Sonda blanks the SASL response in
+  `connection.start-ok` and both sides of `connection.secure` before
+  persistence. It stores no raw bytes from an incomplete frame that could carry
+  a credential. The selected mechanism name, such as `PLAIN`, remains visible.
+  Forwarding still uses the original bytes.
 - **A changed credential in a diff.** `diff_calls` addresses a changed field by
   a path, so the name is a value and the keys around it are `path`, `a` and `b`.
   When the path names a credential, both sides of the comparison are blanked.
 - **The second copy of a decoded capture.** A Postgres session, a WebSocket, an
-  event stream and a gRPC call are each served twice — decoded, and byte for
+  event stream, a gRPC call and an AMQP unit are each served twice — decoded, and byte for
   byte as they crossed — and redacting the first copy is worth nothing while
   the second is sitting beside it. The verbatim copy is dropped wherever the
   decoded view replaces it, side by side. Where nothing decodes it, it stays: an
@@ -971,6 +1056,77 @@ GraphQL have, answered the same way.
 transaction that are gone, and sending the SQL again would run it somewhere
 else. Every surface refuses, including the API itself, so an agent gets the same
 answer the browser does.
+
+## AMQP 0-9-1
+
+Declare RabbitMQ as an `amqp` target and point the client at Sonda, keeping the
+client's own user, password and virtual host:
+
+```yaml
+  - name: events
+    listen: 127.0.0.1:9401
+    upstream: amqp://127.0.0.1:5672
+    protocol: amqp
+```
+
+```text
+AMQP_URL=amqp://app:change-me@127.0.0.1:9401/orders
+```
+
+The configured upstream must not contain credentials. Sonda forwards the
+client's own handshake byte for byte and has no use for a second copy of the
+password in configuration.
+
+Use `amqps://` when the broker hop speaks TLS. Listener TLS is independent:
+
+```yaml
+  - name: secure-events
+    listen: 127.0.0.1:9402
+    upstream: amqps://rabbitmq.internal:5671
+    protocol: amqp
+    tls: true
+```
+
+Here Sonda verifies the broker certificate and the caller uses
+`amqps://127.0.0.1:9402`. As with HTTPS, the caller must trust Sonda's local
+authority. `insecure_skip_verify: true` is accepted only for this one
+`amqps://` target and is recorded everywhere; it is not a global switch.
+
+### What one capture means
+
+AMQP is a bidirectional session rather than a request/response protocol, so
+Sonda stores useful, direction-specific units instead of inventing pairs:
+
+- `basic.publish`, `basic.return`, `basic.deliver` and `basic.get-ok` include
+  their content header and body frames for that channel.
+- Handshake, topology, acknowledgement and close methods stand alone. Heartbeat
+  frames are forwarded but omitted from storage.
+- The list carries the AMQP method and a searchable route, queue, virtual host
+  or channel. Message text and broker replies are also indexed.
+- Broker `close` and `return` errors with reply codes of 300 or greater are
+  faults in the API, web field, terminal and `recent_failures`.
+
+`GET /api/calls/{id}` exposes the decoded frames under `amqp.sent` and
+`amqp.received`, plus `sent_incomplete` and `received_incomplete`. The web
+inspector and TUI render those same frames. MCP `get_call` returns that decoded
+view and removes the redundant raw copy; `search_calls` accepts
+`protocol: "amqp"` and the same method, path and text filters as other captures.
+
+### Credentials and limits
+
+What the broker receives is untouched. In the copy stored by Sonda, SASL
+challenges and responses from `connection.start-ok`, `connection.secure` and
+`connection.secure-ok` are zeroed while the selected mechanism name remains.
+If a connection ends in the middle of a frame that could contain a credential,
+Sonda records its size and error but stores none of those partial raw bytes.
+
+A frame larger than the 16 MiB capture parser limit is still forwarded, but is
+stored only as size and error metadata. `max_body_bytes` independently limits
+how many bytes of an otherwise valid unit reach SQLite; forwarding is still
+complete. These captures cannot be replayed, stubbed or fault-injected: doing so
+would require recreating a connection and channel state that no longer exists.
+Sonda supports AMQP **0-9-1**, not AMQP 1.0, and does not reconstruct broker
+transactions or pair publishes with deliveries.
 
 ## TLS
 
@@ -1270,7 +1426,7 @@ targets:
   - name: admin-api
     listen: 127.0.0.1:9102
     upstream: http://127.0.0.1:3000
-    protocol: http     # http, grpc or postgres
+    protocol: http     # http, grpc, postgres or amqp
 
   - name: payments
     listen: 127.0.0.1:9103
@@ -1278,6 +1434,11 @@ targets:
     protocol: http
     tls: true                    # answer this port with a certificate, for callers that refuse http://
     insecure_skip_verify: false  # per service, never global. See TLS below
+
+  - name: events
+    listen: 127.0.0.1:9401
+    upstream: amqp://127.0.0.1:5672  # amqps:// for a TLS broker
+    protocol: amqp
 ```
 
 Then point whatever calls `admin-api` at `127.0.0.1:9102`. The same binary and
@@ -1292,7 +1453,7 @@ host. See `sonda.docker.yaml`.
 | Method and path | Purpose |
 |---|---|
 | `GET /api/calls` | List captures, newest first. Filters: `target`, `method`, `path`, `status`, `protocol`, `grpc_status`, `failed`, `q`, `since`, `until`, `limit`, `before_id`. `failed=true` is only the failures, `failed=false` only the calls that did not fail, and leaving it out is both. |
-| `GET /api/calls/{id}` | One capture with headers and bodies. |
+| `GET /api/calls/{id}` | One capture with headers and bodies, plus the protocol-specific decoded view (`grpc`, `socket`, `stream`, `graphql`, `postgres` or `amqp`) when applicable. |
 | `GET /api/targets` | The configured targets. |
 | `GET /api/schemas` | Per gRPC target: which schema source resolved, or why none did. |
 | `POST /api/calls/{id}/replay` | Send the call again, optionally onto another channel. |
@@ -1433,15 +1594,15 @@ looks.
 | 16 | GraphQL: the operation behind every identical POST, and its errors counted as failures | done |
 | 17 | PostgreSQL: one capture per statement, hung under the request that ran it, with the credentials blanked before they are stored | done |
 | 18 | TLS: terminated for the client from a local authority Sonda never installs, spoken to the upstream, and recorded on every capture as verified or not | done |
-| 19 | AMQP 0-9-1: the wire decoder, with the credentials named but not decoded | decoder done, capture not built |
+| 19 | AMQP 0-9-1 and AMQPS: byte-exact relay, useful capture units, SASL sanitization, search and decoded API/MCP/web/TUI views | done |
 
 Kafka is deliberately absent from that table. Why is below.
 
 ### Why Kafka is absent
 
-**Sonda has no Kafka listener today.** `protocol:` takes `http`, `grpc` and
-`postgres`, and Kafka frames arriving at an HTTP listener are read as a
-malformed request. Nothing in this section is usable yet: it is why the row is
+**Sonda has no Kafka listener today.** `protocol:` takes `http`, `grpc`,
+`postgres` and `amqp`; Kafka frames arriving at any of those listeners are not
+Kafka captures. Nothing in this section is usable yet: it is why the row is
 missing, not a recipe.
 
 Putting a proxy in front of a broker does not work, and the reason is not the
@@ -1478,6 +1639,12 @@ left to build is a `kafka` protocol with a raw listener and a decoder beside
   caller has to be pointed at Sonda and has to trust its authority. Traffic
   that merely passes through on its way elsewhere is forwarded, not decoded.
 - Compressed gRPC messages are not decompressed.
+- AMQP support is 0-9-1 only. Captures are direction-specific protocol units,
+  not reconstructed transactions or publish/delivery pairs, and they cannot be
+  replayed, stubbed or fault-injected.
+- AMQP frames above the 16 MiB capture parser limit are still forwarded but only
+  size and error metadata are stored. The ordinary `max_body_bytes` storage cap
+  also applies to captured AMQP units.
 - The `Host` header is rewritten to the upstream, like any reverse proxy.
 - A truncated capture cannot be replayed; the refusal is deliberate.
 - GraphQL fragment spreads are not resolved: a top-level `...Fields` contributes

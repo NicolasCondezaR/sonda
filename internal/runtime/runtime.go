@@ -195,11 +195,17 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 		// Keyed by service id, so renaming a service does not close its port
 		// and moving it to another port does.
 		want := supervisor.Desired{Key: fmt.Sprintf("svc-%d", svc.ID), Listen: svc.Listen}
-		if svc.Protocol == config.ProtocolPostgres {
+		switch svc.Protocol {
+		case config.ProtocolPostgres:
 			// A database connection is framed messages from its first byte, so
 			// there is no request an HTTP handler could be given.
 			want.Serve = p.ServePostgres
-		} else {
+		case config.ProtocolAMQP:
+			want.Serve = p.ServeAMQP
+			if svc.TLS {
+				want.TLS = ca.Config()
+			}
+		default:
 			want.Handler = p.Handler()
 			if svc.TLS {
 				want.TLS = ca.Config()

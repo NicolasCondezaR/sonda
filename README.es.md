@@ -1,10 +1,10 @@
 # Sonda
 
 Un proxy que captura el tráfico de desarrollo local. Apunta un cliente a Sonda
-en vez de al servicio con el que habla, y cada request y cada response que lo
-cruza queda disponible para buscar — ordenada dentro de la petición a la que
-perteneció, reenviable, comparable, y legible tanto por ti como por un agente de
-código.
+en vez de al servicio con el que habla, y las llamadas HTTP, los flujos, las
+sentencias de base de datos y las unidades AMQP que lo cruzan quedan disponibles
+para buscar, comparar cuando corresponde y leer tanto por ti como por un agente
+de código.
 
 Existe porque depurar entre servicios suele significar leer logs de varios
 contenedores, y ninguno contiene el payload. `mitmproxy` resuelve esto muy bien
@@ -18,13 +18,13 @@ al que apunta.
 
 ![El campo de eventos: un carril por servicio, los fallos como barras de alto completo](docs/assets/sonda-field.jpg)
 
-> **Estado: fase 19.** Captura, decodificación, almacenamiento, búsqueda, la API
+> **Estado: fase 19 completa.** Captura, decodificación, almacenamiento, búsqueda, la API
 > de consulta, la interfaz web, el replay, el diff estructural, un cliente de
 > terminal, la gestión de proyectos, los [árboles de petición](#agentes), el
 > [modo stub](#modo-stub), un [servidor MCP para agentes de código](#agentes)
-> y [TLS](#tls) funcionan, y todo se levanta con `docker compose up`. La fase 19
-> es AMQP 0-9-1: el decodificador del protocolo está escrito y la captura
-> todavía no. Ver [Hoja de ruta](#hoja-de-ruta).
+> y [TLS](#tls) funcionan, y todo se levanta con `docker compose up`.
+> [AMQP 0-9-1](#amqp-0-9-1) y AMQPS ya pasan por las mismas superficies de
+> captura, almacenamiento e inspección. Ver [Hoja de ruta](#hoja-de-ruta).
 
 ## Cómo funciona
 
@@ -47,9 +47,10 @@ Dos propiedades sostienen el diseño:
   cruzaron el cable y se decodifican solo al mostrarlos. Re-serializar perdería
   campos desconocidos y reordenaría claves, que es justo lo que vuelve inútil un
   replay — y así una captura se puede volver legible más adelante, cuando
-  aparezca su esquema. La única excepción se declara donde aplica: la contraseña
-  de [Postgres](#postgresql) se borra de la captura antes de escribirla, porque
-  una credencial en un archivo en texto plano ya no se puede sacar después.
+  aparezca su esquema. Las excepciones se declaran donde corresponden: las
+  contraseñas de [Postgres](#postgresql) y los desafíos y respuestas SASL de
+  [AMQP](#amqp-0-9-1) se borran de la captura antes de escribirla, porque una
+  credencial en un archivo de texto plano ya no se puede retirar después.
 
 ## Instalación
 
@@ -110,6 +111,62 @@ con `curl`, o limpias la marca una vez. Homebrew lo hace por ti.
 ```bash
 xattr -dr com.apple.quarantine sonda sonda-tui echo grpcdemo
 ```
+
+### Iniciar Sonda al entrar a Windows
+
+En Windows, Sonda puede instalar una tarea del Programador de tareas para el
+usuario actual. Se ejecuta con privilegios normales, solo después de que ese
+usuario inicia sesión, y no almacena contraseñas:
+
+```powershell
+sonda autostart install -config "$HOME\.sonda\sonda.yaml"
+sonda autostart status
+```
+
+`install` crea la tarea o la reutiliza solamente cuando su definición completa
+aún coincide con el usuario y la configuración actuales. Nunca reemplaza una
+tarea ajena o modificada que ocupe el nombre determinístico de Sonda. Inicia de
+inmediato la tarea verificada y espera `/health`; no es necesario reiniciar para
+probarla. El ciclo habitual es:
+
+```powershell
+sonda autostart start
+sonda autostart stop
+sonda autostart restart
+sonda autostart uninstall
+```
+
+Si la instalación usó una ruta de configuración no predeterminada, pasa el
+mismo `-config PATH` a `status`, `start`, `stop`, `restart` y `uninstall`. Estos
+comandos derivan localmente la tarea esperada en vez de confiar en metadata
+almacenada dentro de la tarea.
+
+La tarea fija como rutas absolutas la configuración y el directorio de trabajo,
+funciona con batería, mantiene una sola instancia, no tiene el límite de 72
+horas, se inicia cuando vuelve a estar disponible y reintenta tres veces, con
+intervalos de un minuto, si el proceso falla. Cuando el binario en ejecución es
+el target exacto `apps/sonda/current` de un shim verificable de Scoop, usa ese
+shim para que `scoop update sonda` no deje la tarea apuntando a una versión
+antigua. Un binario ejecutado desde un ZIP o un build local se considera
+portable: colócalo en su ubicación definitiva antes de instalar el inicio
+automático. Si después lo mueves, restaura la ruta original o elimina manualmente
+la tarea antigua en el Programador de tareas antes de volver a instalar; Sonda
+no sobrescribe una acción que cambió.
+
+La detención señala únicamente la instancia de Sonda identificada por esta
+tarea y permite drenar la cola de capturas. Si la señalización limpia falla, la
+tarea canónica no cambió y su evento de control esperado todavía demuestra que
+el proceso gestionado sigue activo, el único fallback es finalizar esa tarea
+programada exacta; el estado informa que la detención fue abrupta. Sonda nunca
+mata todos los procesos llamados `sonda.exe`.
+
+El inicio automático rechaza una configuración cuyo `api_listen` no sea
+loopback. El override explícito `-allow-non-loopback` existe para entornos
+aislados, pero expone una API sin autenticación que puede leer capturas y
+cambiar el estado del proxy. `uninstall` elimina solamente la tarea; conserva
+la configuración, la base de datos, la autoridad certificadora y los logs. Los
+logs se escriben junto a la configuración en `sonda.log`, con una copia rotada
+y acotada.
 
 ## Inicio rápido
 
@@ -290,9 +347,11 @@ hablando TLS contra un listener en claro o al revés, o un protocolo que Sonda n
 proxea. Cero conexiones es un cliente que nunca llegó. Son problemas distintos
 con soluciones distintas, y sin ese contador se leen exactamente igual.
 
-Sonda proxea HTTP, gRPC, WebSocket y PostgreSQL. Un cliente de Kafka, de Redis o
-de TCP plano apuntado a un puerto de Sonda es aceptado y nunca entendido, y eso
-aparece como `connected_not_captured` en vez de como silencio.
+Sonda actúa como proxy para HTTP —incluidas las actualizaciones a WebSocket y
+los eventos enviados por el servidor—, gRPC, PostgreSQL y AMQP 0-9-1. Un cliente
+de Kafka, de Redis o de TCP plano apuntado a un puerto de Sonda es aceptado y
+nunca entendido, y eso aparece como `connected_not_captured` en vez de como
+silencio.
 
 ### Qué no puede decirte, y lo dice
 
@@ -370,7 +429,7 @@ CHANNEL       CALLS FAULT │-30M         -25M        -20M        -15M        -1
  ↑↓ chan · ←→ call · g/G ends · ⏎ read · esc close · t tree · c contract · r replay · d diff · f faults · w window · h hold · / find · q quit
 ```
 
-La traducción es casi directa: la monoespaciada es gratis acá, las líneas de un
+La traducción es casi directa: la monoespaciada es gratuita aquí, las líneas de un
 píxel pasan a caracteres de dibujo de cajas, y los colores de canal se mantienen
 iguales. Dos cosas necesitaron otra expresión:
 
@@ -577,16 +636,16 @@ de rutas en vez de un muro de rojo y verde:
 
 Sonda escribe en un archivo SQLite los bytes que cruzaron el cable. **Eso
 incluye lo que sea que lleve tu tráfico**: cabeceras `Authorization`, cookies de
-sesión, claves de API, datos personales. Nada se redacta al entrar, y es una
-decisión deliberada y no un descuido: redactar la captura significaría que ya no
-es lo que se envió, lo que rompe tanto la fidelidad sobre la que está construida
-la herramienta como el replay junto con ella.
+sesión, claves de API, datos personales. Los payloads de aplicación no se
+redactan al entrar, y es una decisión deliberada y no un descuido: redactar una
+captura que se puede reenviar significaría que ya no es lo que se envió.
 
-Hay exactamente una excepción, y lo es porque ahí el balance se invierte: la
-contraseña de **Postgres** se borra de la captura mientras los bytes pasan. Una
-captura de base de datos no se puede reenviar de todos modos, así que no se
-pierde nada por no guardarla, y la alternativa es una credencial viva en un
-archivo en texto plano. Ver [PostgreSQL](#postgresql).
+Dos excepciones del handshake de conexión toman el balance más seguro: la
+contraseña de **Postgres** y los **desafíos y respuestas SASL de AMQP** se borran
+de la copia almacenada mientras los bytes pasan. Ninguna de esas capturas se
+puede reenviar sin el estado de conexión que ya desapareció, y la alternativa
+es una credencial viva en un archivo de texto plano. Ver
+[PostgreSQL](#postgresql) y [AMQP 0-9-1](#amqp-0-9-1).
 
 El otro lugar donde las credenciales sí se retienen es [el servidor
 MCP](#agentes), porque ahí las respuestas salen de la máquina.
@@ -656,7 +715,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella. Se puede volver a ejecutar |
 | `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto. Una modificación conserva todo lo que no se le pasó |
 | `remove_service` | Borra un servicio y dice a qué dirección volver a apuntar a quien llamaba. Pregunta antes |
-| `upload_schemas` | Le da al proyecto un descriptor set compilado, para decodificar gRPC donde ningún servicio sirve reflection |
+| `upload_schemas` | Entrega al proyecto un descriptor set compilado, para decodificar gRPC donde ningún servicio ofrece reflection. El transporte stdio local acepta una `path`; MCP por HTTP acepta contenido en base64 |
 | `activate_project` | Abre los puertos. Pregunta antes |
 | `disconnect_project` | Los cierra y devuelve la edición que deshace el apuntado. Pregunta antes |
 | `set_stub` | Responder por un servicio desde grabaciones en vez de reenviar. Pregunta antes |
@@ -668,6 +727,24 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 `wait_for_call` es la que convierte a Sonda en un verificador y no solo en un
 visor: el agente hace un cambio, dispara la acción y espera lo que debería haber
 cruzado. Que no llegue nada también es una respuesta.
+
+`upload_schemas` tiene dos transportes con acceso a archivos deliberadamente
+distinto:
+
+```json
+{ "project": "core-delpagroup", "path": "C:\\work\\descriptors.binpb" }
+```
+
+La forma con `path` solo está disponible para el proceso stdio local
+`sonda mcp`. Acepta un archivo de hasta 32 MiB en la máquina que lo inició,
+conserva el nombre base de la ruta como nombre del descriptor y envía los bytes
+a Sonda. El endpoint MCP por HTTP en `/mcp` nunca lee una ruta del sistema de archivos de
+Sonda. Allí se usa la forma existente por contenido, que también funciona por
+stdio si el JSON cabe en el límite de mensaje:
+
+```json
+{ "project": "core-delpagroup", "filename": "descriptors.binpb", "content_base64": "..." }
+```
 
 ### Conectar un proyecto pidiéndolo
 
@@ -741,6 +818,12 @@ fallido no deja nada que limpiar.
 y cambia solo lo que le pasaste, así que mover un puerto es el proyecto, el
 nombre y la dirección nueva. Responde con la dirección a la que hay que apuntar
 al llamador, y con la variable donde escribirla cuando Sonda sabe cuál es.
+Esa dirección se puede usar directamente. El campo `point_at` de la API de
+proyectos y `listening_on` de `configure_service` devuelven `http://host:port`
+para HTTP —o `https://` con TLS en el listener—, mientras que AMQP devuelve
+`amqp://host:port` o `amqps://host:port`. gRPC en texto plano conserva
+`host:port` —con TLS en el listener pasa a `https://host:port`—, y Postgres
+conserva `host:port` para insertarlo en el DSN del propio llamador.
 
 ### Qué no está en MCP, a propósito
 
@@ -768,7 +851,9 @@ de esta sección. `Authorization`, `Cookie`,
 `[redacted by Sonda]` — en cabeceras, en cuerpos, y dentro de un JSON anidado en
 un cuerpo. **No hay opción para desactivarlo**, a propósito: una bandera para eso
 se enciende probando contra un proyecto de juguete y se olvida encendida contra
-uno real. La interfaz web sigue mostrando todo, porque ahí el que lee eres tú.
+uno real. La interfaz web muestra los payloads de aplicación almacenados porque
+allí quien lee es el usuario; los secretos de handshake de Postgres y AMQP ya no
+están en ninguna superficie porque se borraron antes de persistirlos.
 
 Comparar un nombre de campo solo funciona sobre un campo que tiene nombre, así
 que hay cuatro pasadas más que llegan donde eso no alcanza. Cada una corre en un
@@ -790,12 +875,18 @@ modo que un cuerpo capturado que casualmente lleve una clave `sql`, `detail` o
   árbol dibujado como texto no se escanea buscando esa línea: cada nodo informa
   en qué se convirtió su propia lectura y se sustituyen las cadenas exactas, así
   que quedan cubiertos todos los nodos a cualquier profundidad.
+- **La autenticación AMQP**, cuyo desafío y respuesta son cadenas de bytes
+  opacas y no campos con nombre. Sonda borra la respuesta SASL de
+  `connection.start-ok` y ambos lados de `connection.secure` antes de guardar.
+  Si una trama queda incompleta y podría contener una credencial, no conserva
+  ninguno de sus bytes sin procesar. El nombre del mecanismo seleccionado, como
+  `PLAIN`, sigue visible. El reenvío siempre usa los bytes originales.
 - **Una credencial que cambió, dentro de una comparación.** `diff_calls`
   direcciona el campo que cambió mediante una ruta, así que el nombre viaja como
   valor y las claves a su alrededor son `path`, `a` y `b`. Cuando esa ruta nombra
   una credencial, los dos lados de la comparación se borran.
 - **La segunda copia de una captura decodificada.** Una sesión de Postgres, un
-  WebSocket, un flujo de eventos y una llamada gRPC se sirven dos veces —
+  WebSocket, un flujo de eventos, una llamada gRPC y una unidad AMQP se sirven dos veces —
   decodificados, y byte a byte tal como cruzaron — y filtrar la primera copia no
   vale nada mientras la segunda está al lado. La copia literal se descarta allí
   donde la vista decodificada la reemplaza, lado por lado. Donde nada la
@@ -806,8 +897,9 @@ modo que un cuerpo capturado que casualmente lleve una clave `sql`, `detail` o
 
 Quedan dos huecos, ambos deliberados. Un campo protobuf decodificado **sin**
 esquema tiene un número y no un nombre, así que no hay nada que comparar y su
-valor vuelve en claro; dale al proyecto un descriptor set, o reflexión al
-servicio, y el campo recupera su nombre y se filtra como cualquier otro:
+valor vuelve en claro; entrega al proyecto un descriptor set, o habilita
+reflection en el servicio, y el campo recupera su nombre y se filtra como
+cualquier otro:
 `schema_status` dice cuál de los dos casos estás viendo. Y el mensaje de error de
 un servicio — un error de transporte, un estado gRPC — vuelve
 tal como se escribió: leer prosa como si fuera SQL la corta en el primer
@@ -998,6 +1090,84 @@ se resuelve igual.
 una transacción que ya no existen, y mandar el SQL de nuevo lo ejecutaría en
 otro lugar. Todas las superficies se niegan, incluida la propia API, así que un
 agente recibe la misma respuesta que el navegador.
+
+## AMQP 0-9-1
+
+Declara RabbitMQ como un target `amqp` y apunta el cliente a Sonda, conservando
+el usuario, la contraseña y el host virtual del propio cliente:
+
+```yaml
+  - name: events
+    listen: 127.0.0.1:9401
+    upstream: amqp://127.0.0.1:5672
+    protocol: amqp
+```
+
+```text
+AMQP_URL=amqp://app:change-me@127.0.0.1:9401/orders
+```
+
+El upstream configurado no debe contener credenciales. Sonda reenvía byte a
+byte el handshake del cliente y no necesita una segunda copia de la contraseña
+en la configuración.
+
+Usa `amqps://` cuando el salto hacia el broker use TLS. El TLS del listener es
+independiente:
+
+```yaml
+  - name: secure-events
+    listen: 127.0.0.1:9402
+    upstream: amqps://rabbitmq.internal:5671
+    protocol: amqp
+    tls: true
+```
+
+Aquí Sonda verifica el certificado del broker y el llamador usa
+`amqps://127.0.0.1:9402`. Igual que con HTTPS, el llamador debe confiar en la
+autoridad local de Sonda. `insecure_skip_verify: true` solo se acepta para este
+target `amqps://`, queda registrado en todas las superficies y no es un
+interruptor global.
+
+### Qué significa una captura
+
+AMQP es una sesión bidireccional y no un protocolo de petición y respuesta, por
+lo que Sonda guarda unidades útiles por dirección en vez de inventar pares:
+
+- `basic.publish`, `basic.return`, `basic.deliver` y `basic.get-ok` incluyen la
+  cabecera de contenido y las tramas de cuerpo de ese canal.
+- Los métodos de handshake, topología, confirmación y cierre quedan como
+  unidades independientes. Las tramas de heartbeat se reenvían, pero no se
+  almacenan.
+- El listado muestra el método AMQP y una ruta, cola, host virtual o canal que se
+  puede buscar. El texto del mensaje y las respuestas del broker también se
+  indexan.
+- Los errores `close` y `return` del broker con códigos de respuesta desde 300
+  aparecen como fallos en la API, el campo web, la terminal y
+  `recent_failures`.
+
+`GET /api/calls/{id}` entrega las tramas decodificadas bajo `amqp.sent` y
+`amqp.received`, además de `sent_incomplete` y `received_incomplete`. El
+inspector web y la TUI muestran esas mismas tramas. `get_call` por MCP devuelve
+la vista decodificada y elimina la copia sin procesar redundante;
+`search_calls` acepta `protocol: "amqp"` y los mismos filtros de método, ruta y
+texto que las demás capturas.
+
+### Credenciales y límites
+
+Lo que recibe el broker permanece intacto. En la copia almacenada por Sonda, los
+desafíos y respuestas SASL de `connection.start-ok`, `connection.secure` y
+`connection.secure-ok` se reemplazan por ceros, mientras se conserva el nombre
+del mecanismo seleccionado. Si la conexión termina a mitad de una trama que
+podría contener una credencial, Sonda registra el tamaño y el error, pero no
+guarda ninguno de esos bytes parciales.
+
+Una trama que supera el límite de 16 MiB del analizador de captura igual se
+reenvía, pero solo se guarda su tamaño y el error. `max_body_bytes` limita por
+separado cuántos bytes de una unidad válida llegan a SQLite; el reenvío sigue
+siendo completo. Estas capturas no se pueden reenviar, usar como stub ni someter
+a inyección de fallos: hacerlo exigiría recrear una conexión y un estado de canal
+que ya no existen. Sonda admite AMQP **0-9-1**, no AMQP 1.0, y no reconstruye
+transacciones del broker ni empareja publicaciones con entregas.
 
 ## TLS
 
@@ -1304,7 +1474,7 @@ targets:
   - name: admin-api
     listen: 127.0.0.1:9102
     upstream: http://127.0.0.1:3000
-    protocol: http     # http, grpc o postgres
+    protocol: http     # http, grpc, postgres o amqp
 
   - name: payments
     listen: 127.0.0.1:9103
@@ -1312,6 +1482,11 @@ targets:
     protocol: http
     tls: true                    # responder este puerto con certificado, para clientes que rechazan http://
     insecure_skip_verify: false  # por servicio, nunca global. Ver la sección TLS
+
+  - name: events
+    listen: 127.0.0.1:9401
+    upstream: amqp://127.0.0.1:5672  # amqps:// para un broker con TLS
+    protocol: amqp
 ```
 
 Después apunta a `127.0.0.1:9102` lo que sea que llame a `admin-api`. El mismo
@@ -1327,7 +1502,7 @@ en el host. Ver `sonda.docker.yaml`.
 | Método y ruta | Para qué |
 |---|---|
 | `GET /api/calls` | Lista las capturas, más recientes primero. Filtros: `target`, `method`, `path`, `status`, `protocol`, `grpc_status`, `failed`, `q`, `since`, `until`, `limit`, `before_id`. `failed=true` devuelve solo las fallidas, `failed=false` solo las que no fallaron, y omitirlo devuelve ambas. |
-| `GET /api/calls/{id}` | Una captura con cabeceras y cuerpos. |
+| `GET /api/calls/{id}` | Una captura con cabeceras y cuerpos, además de la vista decodificada específica del protocolo (`grpc`, `socket`, `stream`, `graphql`, `postgres` o `amqp`) cuando corresponde. |
 | `GET /api/targets` | Los targets configurados. |
 | `GET /api/schemas` | Por cada target gRPC: qué fuente de esquema resolvió, o por qué ninguna. |
 | `POST /api/calls/{id}/replay` | Reenvía la llamada, opcionalmente a otro canal. |
@@ -1474,16 +1649,16 @@ parece.
 | 16 | GraphQL: la operación detrás de cada POST idéntico, y sus errores contados como fallos | listo |
 | 17 | PostgreSQL: una captura por sentencia, colgada bajo la petición que la ejecutó, con las credenciales borradas antes de guardarlas | listo |
 | 18 | TLS: terminado para el cliente desde una autoridad local que Sonda nunca instala, hablado hacia el upstream, y registrado en cada captura como verificado o no | listo |
-| 19 | AMQP 0-9-1: el decodificador del protocolo, con las credenciales nombradas pero no decodificadas | decodificador listo, captura sin construir |
+| 19 | AMQP 0-9-1 y AMQPS: reenvío byte a byte, unidades de captura útiles, sanitización SASL, búsqueda y vistas decodificadas en API/MCP/web/TUI | listo |
 
 Kafka falta de esa tabla a propósito. Por qué, va abajo.
 
 ### Por qué falta Kafka
 
 **Hoy Sonda no tiene ningún listener de Kafka.** `protocol:` acepta `http`,
-`grpc` y `postgres`, y las tramas de Kafka que lleguen a un listener HTTP se
-leen como una petición malformada. Nada de esta sección se puede usar todavía:
-es la explicación de por qué falta la fila, no una receta.
+`grpc`, `postgres` y `amqp`; las tramas de Kafka que lleguen a cualquiera de
+esos listeners no se convierten en capturas Kafka. Nada de esta sección se puede
+usar todavía: es la explicación de por qué falta la fila, no una receta.
 
 Poner un proxy delante de un broker no funciona, y la razón no es el protocolo.
 Un cliente de Kafka usa su primera conexión solo para preguntar dónde están los
@@ -1522,6 +1697,13 @@ protocolo.
   llamador se le apunte a Sonda y que confíe en su autoridad. El tráfico que
   solo pasa de camino a otro sitio se reenvía, no se decodifica.
 - Los mensajes gRPC comprimidos no se descomprimen.
+- El soporte de AMQP cubre solo 0-9-1. Las capturas son unidades de protocolo
+  por dirección, no transacciones reconstruidas ni pares de publicación y
+  entrega, y no se pueden reenviar, usar como stub ni someter a inyección de
+  fallos.
+- Las tramas AMQP que superan el límite de 16 MiB del analizador de captura se
+  reenvían, pero solo se guarda su tamaño y el error. El límite normal de
+  almacenamiento `max_body_bytes` también se aplica a las unidades AMQP.
 - La cabecera `Host` se reescribe al upstream, como en cualquier reverse proxy.
 - Una captura truncada no se puede reenviar; la negativa es deliberada.
 - Los fragmentos de GraphQL no se resuelven: un `...Fields` de primer nivel no

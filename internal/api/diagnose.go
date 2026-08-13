@@ -254,7 +254,7 @@ func diagnose(svc store.Service, listener supervisor.Status, stats store.TargetS
 		d.Detail = fmt.Sprintf("%d connection(s) reached this port and none of them became a call. "+
 			"Something is talking to Sonda here and Sonda is not understanding it.", d.Connections)
 		d.CannotDistinguish = append(mismatch(svc),
-			"the client speaks a protocol this listener does not — Sonda proxies http, grpc and postgres and nothing else, "+
+			"the client speaks a protocol this listener does not — Sonda proxies http, grpc, postgres and amqp and nothing else, "+
 				"so a Kafka, Redis or plain TCP client is accepted here and never understood",
 			"the connection was opened and closed without a request, which is what a port scan or a dial-only health check looks like")
 		d.WhatToCheck = []string{
@@ -328,6 +328,10 @@ func expects(svc store.Service) string {
 	switch {
 	case svc.Protocol == config.ProtocolPostgres:
 		return "the PostgreSQL wire protocol, framed from the first byte, with no TLS in front of it"
+	case svc.Protocol == config.ProtocolAMQP && svc.TLS:
+		return "AMQP 0-9-1 over TLS, using a certificate Sonda mints itself"
+	case svc.Protocol == config.ProtocolAMQP:
+		return "the AMQP 0-9-1 wire protocol in plaintext, beginning with its AMQP protocol header"
 	case svc.TLS && svc.Protocol == config.ProtocolGRPC:
 		return "gRPC over HTTP/2 with TLS, using a certificate Sonda mints itself"
 	case svc.TLS:
@@ -423,6 +427,10 @@ func defaultPort(scheme string) string {
 		return "443"
 	case "postgres", "postgresql":
 		return "5432"
+	case "amqps":
+		return "5671"
+	case "amqp":
+		return "5672"
 	default:
 		return "80"
 	}

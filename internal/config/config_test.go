@@ -37,6 +37,57 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+func TestAMQPTargetSchemesAndTLS(t *testing.T) {
+	cases := []struct {
+		name     string
+		upstream string
+		tls      bool
+		insecure bool
+	}{
+		{name: "plaintext", upstream: "amqp://rabbit:5672"},
+		{name: "encrypted upstream", upstream: "amqps://rabbit:5671", insecure: true},
+		{name: "encrypted listener", upstream: "amqp://rabbit:5672", tls: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := "targets:\n  - name: rabbit\n    listen: 127.0.0.1:9101\n    protocol: amqp\n    upstream: " + tc.upstream
+			if tc.tls {
+				raw += "\n    tls: true"
+			}
+			if tc.insecure {
+				raw += "\n    insecure_skip_verify: true"
+			}
+			cfg, err := Parse([]byte(raw + "\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Targets[0].Protocol != ProtocolAMQP {
+				t.Errorf("protocol = %q", cfg.Targets[0].Protocol)
+			}
+		})
+	}
+}
+
+func TestAMQPRejectsHTTPUpstreams(t *testing.T) {
+	_, err := Parse([]byte(`
+targets:
+  - {name: rabbit, listen: 127.0.0.1:9101, upstream: "http://rabbit:5672", protocol: amqp}
+`))
+	if err == nil || !strings.Contains(err.Error(), "amqp:// or amqps://") {
+		t.Fatalf("error = %v, want the AMQP upstream schemes", err)
+	}
+}
+
+func TestAMQPUpstreamNeverStoresCredentials(t *testing.T) {
+	_, err := Parse([]byte(`
+targets:
+  - {name: rabbit, listen: 127.0.0.1:9101, upstream: "amqp://guest:hunter2@rabbit:5672", protocol: amqp}
+`))
+	if err == nil || !strings.Contains(err.Error(), "carries a user and password") {
+		t.Fatalf("error = %v, want the credential refusal", err)
+	}
+}
+
 // A file with no targets is an ordinary first run now, not an error: projects
 // live in the database and the interface fills them in.
 func TestAConfigWithNoTargetsIsValid(t *testing.T) {

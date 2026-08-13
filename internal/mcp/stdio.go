@@ -9,6 +9,13 @@ import (
 	"sync"
 )
 
+type stdioRequestKey struct{}
+
+func isStdioRequest(ctx context.Context) bool {
+	allowed, _ := ctx.Value(stdioRequestKey{}).(bool)
+	return allowed
+}
+
 // ServeStdio speaks MCP over a pipe, one JSON message per line.
 //
 // This is the transport most clients support first: the agent starts the
@@ -18,6 +25,11 @@ import (
 // came from. Logging goes to stderr, which the specification allows precisely
 // for this.
 func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) error {
+	// Filesystem-backed tool arguments are intentionally available only on
+	// this transport. The HTTP handler never sets this marker, even if someone
+	// accidentally constructed it from a stdio-capable Server.
+	ctx = context.WithValue(ctx, stdioRequestKey{}, true)
+
 	// A captured body quoted inside a tool result can be large, and the
 	// default 64 KB line limit would truncate the request that asked for it.
 	reader := bufio.NewReaderSize(in, 64<<10)
@@ -42,7 +54,7 @@ func (s *Server) ServeStdio(ctx context.Context, in io.Reader, out io.Writer) er
 			// three megabytes — four thirds of that once base64-encoded — did
 			// not fail, it killed the server, and the client saw Sonda die.
 			if err := write(failure(nil, codeInvalidRequest,
-				"that message is over the %d byte limit of the stdio transport and was dropped; a descriptor set this large has to go to a Sonda over HTTP instead, which `sonda mcp --sonda http://127.0.0.1:9000` already talks to",
+				"that message is over the %d byte limit of the stdio transport and was dropped; for upload_schemas, pass the local descriptor path instead of putting its base64 bytes in JSON",
 				maxMessage)); err != nil {
 				return err
 			}

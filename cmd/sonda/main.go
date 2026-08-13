@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/NicolasCondezaR/sonda/internal/api"
+	"github.com/NicolasCondezaR/sonda/internal/autostart"
 	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/fault"
 	"github.com/NicolasCondezaR/sonda/internal/mcp"
@@ -137,6 +138,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "autostart" {
+		if err := runAutostart(os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			slog.Error("sonda autostart stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(); err != nil {
 		slog.Error("sonda stopped", "error", err)
@@ -164,7 +172,7 @@ func runMCP(argv []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return mcp.New(remote, buildVersion()).ServeStdio(ctx, os.Stdin, os.Stdout)
+	return mcp.NewStdio(remote, buildVersion()).ServeStdio(ctx, os.Stdin, os.Stdout)
 }
 
 func run() error {
@@ -175,12 +183,19 @@ func run() error {
 	// binds 0.0.0.0 through this flag, which is correct there — the isolation is
 	// the container's job — and wrong on a laptop, where the default holds.
 	apiListen := flag.String("api-listen", "", "address for the API and the interface, overriding the configuration file")
+	logFile := flag.String("log-file", "", "append process logs to this file")
+	autostartControl := flag.String("autostart-control", "", "internal Windows autostart control id")
 	showVersion := flag.Bool("version", false, "print the build this binary came from and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version())
 		return nil
+	}
+	if *logFile != "" {
+		if err := configureLogFile(*logFile); err != nil {
+			return err
+		}
 	}
 
 	cfg, err := config.LoadOrDefaults(*configPath)
@@ -199,6 +214,20 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	controlledStop, closeControl, err := autostart.ListenForStop(*autostartControl, *configPath)
+	if err != nil {
+		return fmt.Errorf("autostart control: %w", err)
+	}
+	defer closeControl()
+	if controlledStop != nil {
+		go func() {
+			select {
+			case <-controlledStop:
+				stop()
+			case <-ctx.Done():
+			}
+		}()
+	}
 
 	if err := seedFromConfig(ctx, db, cfg, *configPath); err != nil {
 		return err

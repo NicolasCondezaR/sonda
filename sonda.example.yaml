@@ -91,3 +91,24 @@ targets:
   #   listen: 127.0.0.1:9301
   #   upstream: postgres://127.0.0.1:5432
   #   protocol: postgres
+
+  # RabbitMQ over AMQP 0-9-1. Point the client's URL at Sonda while keeping the
+  # client's own credentials and virtual host:
+  #
+  #   AMQP_URL=amqp://app:change-me@127.0.0.1:9401/orders
+  #
+  # The upstream carries no credentials. Sonda forwards the client's handshake
+  # unchanged, but blanks SASL challenges and responses in the stored copy.
+  # - name: events
+  #   listen: 127.0.0.1:9401
+  #   upstream: amqp://127.0.0.1:5672
+  #   protocol: amqp
+
+  # AMQPS on both hops. The broker certificate is verified by default. `tls:
+  # true` makes the caller use amqps://127.0.0.1:9402 and trust Sonda's local
+  # authority; it is independent of the upstream's amqps:// scheme.
+  # - name: secure-events
+  #   listen: 127.0.0.1:9402
+  #   upstream: amqps://rabbitmq.internal:5671
+  #   protocol: amqp
+  #   tls: true

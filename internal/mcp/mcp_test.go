@@ -478,7 +478,7 @@ func TestTheProtocolFilterOffersEveryProtocolSondaCaptures(t *testing.T) {
 		for _, p := range enum {
 			offered[p] = true
 		}
-		for _, want := range []string{"http", "grpc", "websocket"} {
+		for _, want := range []string{"http", "grpc", "websocket", "postgres", "amqp"} {
 			if !offered[want] {
 				t.Errorf("search_calls cannot filter for %q", want)
 			}

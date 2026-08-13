@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"github.com/NicolasCondezaR/sonda/internal/autostart"
 )
 
 // version() is what a user runs to find out what they downloaded, and the four
@@ -93,5 +97,92 @@ func TestVersionWithNoBuildInfoAtAll(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "sonda ") {
 		t.Errorf("got %q, want it to start with the binary name", got)
+	}
+}
+
+type fakeAutostartCLI struct {
+	command string
+	options autostart.InstallOptions
+	manage  autostart.ManageOptions
+	status  autostart.Status
+	err     error
+}
+
+func (f *fakeAutostartCLI) Install(_ context.Context, options autostart.InstallOptions) (autostart.Status, error) {
+	f.command, f.options = "install", options
+	return f.status, f.err
+}
+func (f *fakeAutostartCLI) Status(_ context.Context, options autostart.ManageOptions) (autostart.Status, error) {
+	f.command, f.manage = "status", options
+	return f.status, f.err
+}
+func (f *fakeAutostartCLI) Start(_ context.Context, options autostart.ManageOptions) (autostart.Status, error) {
+	f.command, f.manage = "start", options
+	return f.status, f.err
+}
+func (f *fakeAutostartCLI) Stop(_ context.Context, options autostart.ManageOptions) (autostart.Status, error) {
+	f.command, f.manage = "stop", options
+	return f.status, f.err
+}
+func (f *fakeAutostartCLI) Restart(_ context.Context, options autostart.ManageOptions) (autostart.Status, error) {
+	f.command, f.manage = "restart", options
+	return f.status, f.err
+}
+func (f *fakeAutostartCLI) Uninstall(_ context.Context, options autostart.ManageOptions) (autostart.Status, error) {
+	f.command, f.manage = "uninstall", options
+	return f.status, f.err
+}
+
+func TestAutostartCLICommands(t *testing.T) {
+	commands := []string{"status", "start", "stop", "restart", "uninstall"}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			service := &fakeAutostartCLI{status: autostart.Status{TaskName: "Sonda-test"}}
+			var stdout, stderr bytes.Buffer
+			if err := runAutostartWith(context.Background(), service, []string{command}, &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if service.command != command || !strings.Contains(stdout.String(), "task: Sonda-test") {
+				t.Fatalf("command=%q output=%q", service.command, stdout.String())
+			}
+		})
+	}
+}
+
+func TestAutostartInstallParsesSecurityOverrideExplicitly(t *testing.T) {
+	service := &fakeAutostartCLI{}
+	var stdout, stderr bytes.Buffer
+	err := runAutostartWith(context.Background(), service, []string{
+		"install", "-config", `C:\Users\Jane Doe\.sonda\sonda.yaml`, "-allow-non-loopback",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.command != "install" || service.options.ConfigPath == "" || !service.options.AllowNonLoopback {
+		t.Fatalf("command=%q options=%+v", service.command, service.options)
+	}
+}
+
+func TestAutostartLifecycleCommandsBindAnExplicitConfig(t *testing.T) {
+	service := &fakeAutostartCLI{status: autostart.Status{TaskName: "Sonda-test"}}
+	var stdout, stderr bytes.Buffer
+	want := `C:\Users\Jane Doe\.sonda\custom.yaml`
+	if err := runAutostartWith(context.Background(), service, []string{"stop", "-config", want}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if service.command != "stop" || service.manage.ConfigPath != want {
+		t.Fatalf("command=%q options=%+v", service.command, service.manage)
+	}
+}
+
+func TestAutostartCLIRejectsUnknownCommandsAndArguments(t *testing.T) {
+	tests := [][]string{{"unknown"}, {"status", "extra"}, {"install", "extra"}}
+	for _, argv := range tests {
+		t.Run(strings.Join(argv, "_"), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := runAutostartWith(context.Background(), &fakeAutostartCLI{}, argv, &stdout, &stderr); err == nil {
+				t.Fatalf("argv %v succeeded", argv)
+			}
+		})
 	}
 }

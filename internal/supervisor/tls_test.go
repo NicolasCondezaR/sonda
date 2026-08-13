@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -60,6 +61,38 @@ func TestATLSListenerServesTheSameHandler(t *testing.T) {
 	// reached — not that the request failed to get a reply.
 	if plain, _ := get(t, addr); plain == "encrypted" {
 		t.Error("a plaintext request reached the handler on a listener configured for TLS")
+	}
+}
+
+func TestATLSRawListenerHandsDecryptedBytesToServe(t *testing.T) {
+	cfg, roots := authority(t)
+	s := New()
+	defer s.StopAll()
+
+	addr := freePort(t)
+	s.Apply([]Desired{{Key: "rabbit", Listen: addr, TLS: cfg, Serve: func(c net.Conn) {
+		defer c.Close()
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(c, buf); err == nil && string(buf) == "ping" {
+			_, _ = io.WriteString(c, "pong")
+		}
+	}}})
+
+	conn, err := tls.Dial("tcp", addr, &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+		ServerName: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != "pong" {
+		t.Fatalf("raw TLS reply = %q, %v", got, err)
 	}
 }
 

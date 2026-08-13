@@ -13,3 +13,6 @@ sonda.yaml
 
 # Worktrees de agentes: copias de trabajo, nunca parte del repositorio.
 .claude/worktrees/
+
+# Registro de skills de la herramienta local, regenerado en cada maquina.
+.atl/

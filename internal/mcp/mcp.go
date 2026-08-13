@@ -92,14 +92,28 @@ func failure(id json.RawMessage, code int, format string, args ...any) *response
 // in memory was always the one that forgot — a Sonda restarted between
 // connecting and disconnecting could no longer undo its own edit.
 type Server struct {
-	api     apiCaller
-	version string
-	tools   []Tool
+	api                 apiCaller
+	version             string
+	tools               []Tool
+	readLocalSchemaFile func(string) ([]byte, error)
 }
 
 func New(api apiCaller, version string) *Server {
 	s := &Server{api: api, version: version}
-	s.tools = allTools()
+	s.tools = allTools(false)
+	return s
+}
+
+// NewStdio builds the local adapter launched by `sonda mcp`.
+//
+// It is deliberately separate from New: only this process may turn a local
+// descriptor path into bytes. The HTTP MCP endpoint uses New and therefore
+// has neither the tool schema nor the filesystem reader for that capability.
+// uploadSchemas also checks the request transport before invoking the reader,
+// so accidentally serving this value over HTTP still cannot read a path.
+func NewStdio(api apiCaller, version string) *Server {
+	s := &Server{api: api, version: version, readLocalSchemaFile: readLocalDescriptorSet}
+	s.tools = allTools(true)
 	return s
 }
 

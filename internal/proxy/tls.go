@@ -64,8 +64,8 @@ func clientConfig(t config.Target) *tls.Config {
 }
 
 // dialUpstream opens a raw connection to the service, encrypted when the
-// upstream was declared https://. It is for the paths that hijack the
-// connection and so never see the reverse proxy's transport.
+// upstream was declared https:// or amqps://. It is for the paths that never
+// see the reverse proxy's transport.
 func (p *Proxy) dialUpstream() (net.Conn, error) {
 	addr := upstreamAddr(p.target)
 	dialer := &net.Dialer{Timeout: upstreamDialTimeout}
@@ -89,8 +89,13 @@ func upstreamAddr(t config.Target) string {
 	if u.Port() != "" {
 		return u.Host
 	}
-	if u.Scheme == "https" {
+	switch u.Scheme {
+	case "https":
 		return net.JoinHostPort(u.Hostname(), "443")
+	case "amqps":
+		return net.JoinHostPort(u.Hostname(), "5671")
+	case "amqp":
+		return net.JoinHostPort(u.Hostname(), "5672")
 	}
 	return net.JoinHostPort(u.Hostname(), "80")
 }

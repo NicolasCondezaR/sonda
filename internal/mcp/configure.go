@@ -5,11 +5,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
-	// The one package outside the API these tools reach for. Two services given
+	"github.com/NicolasCondezaR/sonda/internal/config"
+	// Discovery is one supporting package outside the API these tools reach for.
+	// Two services given
 	// the same suggested port is a clash neither side can see — see FreeListen —
 	// and the answer has to be the same one discovery itself gives, or the
 	// preview and the thing that gets created disagree.
@@ -50,7 +55,24 @@ var writing = map[string]any{
 	"openWorldHint":   false,
 }
 
-func configureTools() []Tool {
+func configureTools(localSchemaFiles bool) []Tool {
+	uploadDescription := "Store a compiled protobuf descriptor set for a project, so gRPC messages come back with field names instead of numbered bytes. This is how a service that serves no reflection gets decoded, and that is the ordinary case: without it an agent can wire up a whole gRPC system and read nothing that crosses it. " +
+		"Build one with `buf build -o descriptors.binpb` or `protoc --include_imports --descriptor_set_out=descriptors.binpb`. " +
+		"One per project: uploading again replaces what was there. list_services says whether a project already has one; schema_status says whether it is the thing actually being used. "
+	uploadProperties := map[string]any{
+		"project":        prop("string", "Project name."),
+		"filename":       prop("string", "Name of the file, kept so every interface can say which descriptor set is loaded. With path, defaults to the path's base name."),
+		"content_base64": prop("string", "The descriptor set itself, base64-encoded. Use this for the remote HTTP MCP endpoint."),
+	}
+	uploadRequired := []string{"project", "filename", "content_base64"}
+	if localSchemaFiles {
+		uploadDescription += "When using the local stdio adapter (`sonda mcp`), prefer path: the adapter reads that file on the machine that launched it and sends the bytes to Sonda, so even a large descriptor never has to fit inside one JSON message. Pass exactly one of path or content_base64. The remote HTTP MCP endpoint cannot read paths."
+		uploadProperties["path"] = prop("string", "Local path to the compiled descriptor set. Available only through the stdio adapter; the remote HTTP MCP endpoint cannot read files.")
+		uploadRequired = []string{"project"}
+	} else {
+		uploadDescription += "Pass the file base64-encoded in content_base64; the remote HTTP MCP endpoint never reads a filesystem path."
+	}
+
 	return []Tool{
 		{
 			Name:  "connect_project",
@@ -83,14 +105,14 @@ func configureTools() []Tool {
 				"project":  prop("string", "Project name."),
 				"name":     prop("string", "Service name. An existing one is changed, a new one is added."),
 				"listen":   prop("string", "Address Sonda should listen on, like 127.0.0.1:9152. Required when adding; left out when changing, the current one is kept."),
-				"upstream": prop("string", "Where the real service is, like http://localhost:50052, https://api.example.com, or postgres://localhost:5432 for a database. Never include a user or a password: Sonda forwards the client's own handshake and refuses an upstream that carries credentials. Required when adding; left out when changing, the current one is kept."),
-				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "postgres"}, "description": "Defaults to http when adding. Use postgres for a database: it gets a raw listener rather than an HTTP one. Left out when changing a service, the current one is kept."},
+				"upstream": prop("string", "Where the real service is, like http://localhost:50052, https://api.example.com, postgres://localhost:5432 for a database, or amqp://localhost:5672 for RabbitMQ. Never include a user or a password: Sonda forwards the client's own handshake and refuses an upstream that carries credentials. Required when adding; left out when changing, the current one is kept."),
+				"protocol": map[string]any{"type": "string", "enum": []string{"http", "grpc", "postgres", "amqp"}, "description": "Defaults to http when adding. Postgres and AMQP get raw framed listeners rather than HTTP handlers. Left out when changing a service, the current one is kept."},
 				"reflection": prop("boolean",
 					"Ask this gRPC service for its own schema. Defaults to false when adding, the same as connect_project, because a service that does not serve reflection is the ordinary case — give the project a descriptor set with upload_schemas instead. "+
 						"Left out when changing a service, the current setting is kept."),
-				"tls": prop("boolean", "Make Sonda terminate TLS on this port: the caller is pointed at https://listen instead of http://. Not available for postgres, which negotiates encryption inside its own protocol. Left out when changing a service, the current setting is kept."),
+				"tls": prop("boolean", "Make Sonda terminate TLS on this port: HTTP callers use https:// and AMQP callers use amqps://. Not available for postgres, which negotiates encryption inside its own protocol. Left out when changing a service, the current setting is kept."),
 				"insecure_skip_verify": prop("boolean",
-					"Stop checking the upstream's certificate. Only for an https:// upstream, only for this one service, and never as a way to silence a certificate error you have not read. "+
+					"Stop checking the upstream's certificate. Only for an https:// or amqps:// upstream, only for this one service, and never as a way to silence a certificate error you have not read. "+
 						"Every capture taken through it is recorded as unverified and every interface shows the service as unverified, so this cannot be turned on quietly."),
 			}, "project", "name"),
 			Annotations: writing,
@@ -111,17 +133,10 @@ func configureTools() []Tool {
 		},
 
 		{
-			Name:  "upload_schemas",
-			Title: "Give a project its gRPC schemas",
-			Description: "Store a compiled protobuf descriptor set for a project, so gRPC messages come back with field names instead of numbered bytes. This is how a service that serves no reflection gets decoded, and that is the ordinary case: without it an agent can wire up a whole gRPC system and read nothing that crosses it. " +
-				"Build one with `buf build -o descriptors.binpb` or `protoc --include_imports --descriptor_set_out=descriptors.binpb`, and pass the file base64-encoded — it is binary and cannot travel as text. " +
-				"One per project: uploading again replaces what was there. list_services says whether a project already has one; schema_status says whether it is the thing actually being used. " +
-				"Over about three megabytes the encoded upload does not fit in one message on the stdio transport and is refused; point `sonda mcp` at a running Sonda over HTTP for a descriptor set that large.",
-			Schema: obj(map[string]any{
-				"project":        prop("string", "Project name."),
-				"filename":       prop("string", "Name of the file, kept so every interface can say which descriptor set is loaded."),
-				"content_base64": prop("string", "The descriptor set itself, base64-encoded."),
-			}, "project", "filename", "content_base64"),
+			Name:        "upload_schemas",
+			Title:       "Give a project its gRPC schemas",
+			Description: uploadDescription,
+			Schema:      obj(uploadProperties, uploadRequired...),
 			// It stores configuration. Ports are left exactly as they are: the
 			// schemas change how captured bytes are read, not what is listening.
 			Annotations: writing,
@@ -486,7 +501,13 @@ func configureService(ctx context.Context, s *Server, a args) (any, error) {
 // same explicit patch connect_project and disconnect_project hand back.
 func configuredService(project knownProject, svc knownService, existing *knownService, requested string) map[string]any {
 	address := svc.Listen
-	if svc.TLS {
+	if svc.Protocol == config.ProtocolAMQP {
+		scheme := "amqp://"
+		if svc.TLS {
+			scheme = "amqps://"
+		}
+		address = scheme + svc.Listen
+	} else if svc.TLS {
 		// A TLS listener answers nothing on http://, so the address handed over
 		// has to carry the scheme or it is one that will not work.
 		address = "https://" + svc.Listen
@@ -557,27 +578,79 @@ func removeService(ctx context.Context, s *Server, a args) (any, error) {
 	}, nil
 }
 
+// maxLocalDescriptorSet matches the API upload boundary. Reading one byte past
+// it lets the local adapter reject an oversized file instead of silently
+// truncating it before the API can validate the descriptor set.
+const maxLocalDescriptorSet = 32 << 20
+
 func uploadSchemas(ctx context.Context, s *Server, a args) (any, error) {
 	id, err := projectID(ctx, s, a.str("project"))
 	if err != nil {
 		return nil, err
 	}
 
-	// Line breaks in a long base64 string are how it usually arrives, and
-	// failing on them would look like a corrupt descriptor set.
-	raw, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(a.str("content_base64")), ""))
-	if err != nil {
-		return nil, fmt.Errorf("content_base64 is not base64: %v", err)
-	}
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("the descriptor set is empty — pass the bytes of a compiled descriptor set, base64-encoded")
+	hasPath, hasContent := a.has("path"), a.has("content_base64")
+	if hasPath && hasContent {
+		return nil, fmt.Errorf("pass exactly one schema source: path or content_base64, not both")
 	}
 
+	var raw []byte
 	filename := a.str("filename")
+	if hasPath {
+		path := a.str("path")
+		if path == "" {
+			return nil, fmt.Errorf("path is empty — pass the local descriptor set path")
+		}
+		// The reader is not sufficient on its own. The context marker is set
+		// only by ServeStdio, which makes the transport itself part of the
+		// security boundary: an HTTP handler built from a stdio-capable Server
+		// still cannot turn a request into an arbitrary disk read.
+		if !isStdioRequest(ctx) || s.readLocalSchemaFile == nil {
+			return nil, fmt.Errorf("path is available only through the local stdio adapter started as `sonda mcp`; the remote HTTP MCP endpoint cannot read files")
+		}
+		raw, err = s.readLocalSchemaFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("could not read descriptor set %q: %w", path, err)
+		}
+		if filename == "" {
+			filename = filepath.Base(path)
+		}
+	} else {
+		if !hasContent {
+			return nil, fmt.Errorf("pass the descriptor set as content_base64, or use path through the local stdio adapter")
+		}
+		// Line breaks in a long base64 string are how it usually arrives, and
+		// failing on them would look like a corrupt descriptor set.
+		raw, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(a.str("content_base64")), ""))
+		if err != nil {
+			return nil, fmt.Errorf("content_base64 is not base64: %v", err)
+		}
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("the descriptor set is empty — pass the bytes of a compiled descriptor set")
+	}
+
 	if filename == "" {
 		filename = "descriptors.binpb"
 	}
 	return s.post(ctx, fmt.Sprintf("/api/projects/%d/descriptor?name=%s", id, url.QueryEscape(filename)), raw)
+}
+
+func readLocalDescriptorSet(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(file, maxLocalDescriptorSet+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxLocalDescriptorSet {
+		return nil, fmt.Errorf("the file is larger than the %d MiB descriptor upload limit", maxLocalDescriptorSet>>20)
+	}
+	return raw, nil
 }
 
 func activateProject(ctx context.Context, s *Server, a args) (any, error) {

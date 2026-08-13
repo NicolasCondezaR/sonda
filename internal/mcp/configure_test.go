@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/NicolasCondezaR/sonda/internal/config"
 )
 
 // routedAPI answers differently per endpoint, which the configuration tools
@@ -563,6 +565,47 @@ func TestUploadSchemasSendsTheDecodedBytes(t *testing.T) {
 	if got := api.bodies[len(api.bodies)-1]; got != "sonda" {
 		t.Errorf("the endpoint received %q, want the decoded bytes", got)
 	}
+}
+
+func TestConfiguredAMQPServiceReturnsTheUsableListenerURL(t *testing.T) {
+	project := knownProject{Name: "messaging"}
+	for _, tc := range []struct {
+		name string
+		tls  bool
+		want string
+	}{
+		{name: "plaintext", want: "amqp://127.0.0.1:9155"},
+		{name: "TLS", tls: true, want: "amqps://127.0.0.1:9155"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := configuredService(project, knownService{
+				Name: "rabbit", Listen: "127.0.0.1:9155", Upstream: "amqp://rabbit:5672",
+				Protocol: config.ProtocolAMQP, TLS: tc.tls,
+			}, nil, "rabbit")
+			if out["listening_on"] != tc.want {
+				t.Errorf("listening_on = %v, want %s", out["listening_on"], tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigureServiceOffersAMQP(t *testing.T) {
+	s := New(&fakeAPI{}, "test")
+	tools := send(t, s, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`).
+		Result.(map[string]any)["tools"].([]map[string]any)
+	for _, tool := range tools {
+		if tool["name"] != "configure_service" {
+			continue
+		}
+		props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		for _, protocol := range props["protocol"].(map[string]any)["enum"].([]string) {
+			if protocol == "amqp" {
+				return
+			}
+		}
+		t.Fatal("configure_service does not offer amqp")
+	}
+	t.Fatal("configure_service is not listed")
 }
 
 func TestUploadSchemasRefusesSomethingThatIsNotBase64(t *testing.T) {

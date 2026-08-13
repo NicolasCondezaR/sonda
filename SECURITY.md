@@ -4,15 +4,17 @@
 
 Sonda stores the bytes that crossed the wire, and in a real system that means
 **bearer tokens, session cookies, API keys and personal data**, in a SQLite file
-with no encryption. Nothing is redacted on the way in, and that is deliberate: a
-capture that was altered is no longer what was sent, which would break both the
-fidelity the tool is built on and replay along with it.
+with no encryption. Captured application payloads are not redacted on the way
+in, and that is deliberate: a capture that was altered is no longer what was
+sent, which would break the fidelity the tool is built on.
 
-There is exactly one exception. A **PostgreSQL password is blanked in the tap**,
-before anything reaches the database — a statement cannot be replayed anyway, so
-nothing is lost by not keeping it, and the alternative is a live credential
-sitting in a plaintext file. Nothing else is touched, and no setting adds to the
-list.
+There are two protocol-handshake exceptions, applied only to the copy Sonda
+stores. **PostgreSQL passwords and AMQP SASL challenges and responses are
+blanked in the tap** before anything reaches SQLite. Neither kind of capture can
+be replayed faithfully without its original connection, and the alternative is
+a live credential sitting in a plaintext file. The mechanism name remains, and
+the upstream still receives the original bytes. Nothing else is touched, and no
+setting adds to the list.
 
 Two consequences follow, and neither is a bug report:
 
@@ -89,6 +91,46 @@ Concretely:
   nothing else; the boundary is the port mapping instead. Keep the host side on
   `127.0.0.1` — the `docker run` line in `README.md` and `compose.yaml` both do.
 
+## Windows autostart
+
+`sonda autostart install` registers a Task Scheduler entry for the current user,
+not a machine-wide service. It uses the user's interactive token at least
+privilege, stores no password, never requests elevation, and starts only when
+that user signs in. The task definition contains absolute paths to the launcher,
+configuration, working directory and log; it does not contain captured data or
+application credentials.
+
+Every lifecycle command derives the expected task from trusted local inputs:
+the current SID, the selected absolute configuration, the current launcher and
+working directory, and the recomputed control and health identities. A task at
+the deterministic name is neither replaced nor started, stopped, ended, or
+deleted when its identity, metadata, action, principal, trigger, or safety
+settings differ. Pass the original `-config PATH` to lifecycle commands after a
+custom-path installation.
+
+Installation refuses a non-loopback `api_listen` by default. Passing
+`-allow-non-loopback` is an explicit acknowledgement that the API described
+above will be reachable outside the workstation. This is not an authentication
+mechanism and does not make network exposure safe.
+
+The normal stop path uses a current-user named event tied to the task and
+configuration, then follows the same context cancellation that Ctrl+C uses, so
+buffered captures drain before SQLite closes. Only when graceful signaling
+fails, the task still matches the canonical definition, and that expected event
+still proves the managed process is active may Sonda ask Task Scheduler to end
+the exact task. This fallback is abrupt and is reported as such. It never kills
+processes by executable name or enumerates unrelated Sonda instances.
+
+The task launcher is a verified Scoop shim only when the running executable is
+that shim's exact `apps/sonda/current` target; an unrelated installed shim is
+never selected or executed as a compatibility probe. Portable and locally built
+binaries keep working only while their absolute path exists, and
+`status` reports a moved or missing launcher. After moving one, restore its old
+path or remove the task manually before reinstalling; Sonda does not treat a
+changed action as its own. Removing the task leaves `sonda.yaml`, `sonda.db`, the
+CA files and logs untouched; deleting or trusting those remains a separate user
+decision.
+
 ## What MCP redacts, and what it cannot
 
 The MCP server is the one place credentials are held back, because there the
@@ -96,7 +138,8 @@ answers leave the machine and land in whatever model an agent is driving.
 `Authorization`, `Cookie`, `password` and their various spellings come back as
 `[redacted by Sonda]`, in headers and inside bodies, and there is no setting to
 turn that off. The web interface still shows everything, because there the
-reader is the owner.
+reader is the owner, except for the Postgres and AMQP handshake secrets that
+were blanked before any surface could read them.
 
 **Every rule is chosen by position in Sonda's own answer, not by what a field is
 called inside a payload.** An answer has two kinds of field in it. Some are
@@ -185,7 +228,7 @@ What it reaches:
   any segment of that path names a credential, both sides are blanked; the path
   itself stays, because knowing *which* field changed is the answer.
 - **The verbatim copy of a decoded capture.** A Postgres session, a WebSocket,
-  an event stream and a gRPC call each carry the same bytes twice — decoded
+  an event stream, a gRPC call and an AMQP unit each carry the same bytes twice — decoded
   under their own view, and verbatim as what crossed. In the second copy the
   statement, the frame payload, the event and the protobuf field are all
   legible and everything above counts for nothing, and none of them can be
@@ -258,6 +301,16 @@ mistake is a production token in someone else's model.
 
 **If your captures hold something the rules above cannot see, do not point an
 agent at them.** Redaction is a floor, not a guarantee.
+
+## Local schema files over MCP
+
+`upload_schemas` can accept a local descriptor `path` only in the
+`sonda mcp` stdio adapter. That local process accepts up to 32 MiB and forwards
+the bytes to the existing descriptor upload API. The HTTP MCP endpoint does not
+advertise `path`, has no filesystem reader, and rejects the argument even if a
+stdio-capable server value were accidentally reused there. Remote clients must
+send `filename` and `content_base64`; no MCP request can ask the Sonda HTTP
+server to read an arbitrary path.
 
 ## Reporting a vulnerability
 

@@ -128,6 +128,9 @@ func (c Call) Fault() bool {
 func (c Call) Outcome() string {
 	switch {
 	case c.Error != "":
+		if c.Protocol == "amqp" {
+			return "AMQP ERROR"
+		}
 		return "TRANSPORT"
 	case c.GRPCStatusText != "":
 		return strings.ToUpper(c.GRPCStatusText)
@@ -137,7 +140,7 @@ func (c Call) Outcome() string {
 		return "GRAPHQL ERROR"
 	case c.PostgresErrors > 0:
 		return "SQL ERROR"
-	case c.Protocol == "postgres":
+	case c.Protocol == "postgres" || c.Protocol == "amqp":
 		// There is no status. Printing the zero would invent one, so the kind
 		// of row stands in: a statement, or the connection that ran none.
 		return c.Method
@@ -204,6 +207,41 @@ type CallDetail struct {
 	Stream   *StreamView   `json:"stream"`
 	GraphQL  *GraphQLView  `json:"graphql"`
 	Postgres *PostgresView `json:"postgres"`
+	AMQP     *AMQPView     `json:"amqp"`
+}
+
+type AMQPView struct {
+	Sent               []AMQPFrame `json:"sent"`
+	Received           []AMQPFrame `json:"received"`
+	SentIncomplete     bool        `json:"sent_incomplete"`
+	ReceivedIncomplete bool        `json:"received_incomplete"`
+}
+
+type AMQPFrame struct {
+	Type          string `json:"type"`
+	Kind          string `json:"kind"`
+	Channel       uint16 `json:"channel"`
+	Size          int64  `json:"size"`
+	Exchange      string `json:"exchange"`
+	RoutingKey    string `json:"routing_key"`
+	Queue         string `json:"queue"`
+	ConsumerTag   string `json:"consumer_tag"`
+	DeliveryTag   uint64 `json:"delivery_tag"`
+	MessageCount  uint32 `json:"message_count"`
+	ReplyCode     uint16 `json:"reply_code"`
+	ReplyText     string `json:"reply_text"`
+	Cause         string `json:"cause"`
+	Mechanisms    string `json:"mechanisms"`
+	Mechanism     string `json:"mechanism"`
+	VirtualHost   string `json:"virtual_host"`
+	Protocol      string `json:"protocol"`
+	BodySize      int64  `json:"body_size"`
+	ContentType   string `json:"content_type"`
+	DeliveryMode  uint8  `json:"delivery_mode"`
+	CorrelationID string `json:"correlation_id"`
+	ReplyTo       string `json:"reply_to"`
+	Text          string `json:"text"`
+	Note          string `json:"note"`
 }
 
 // PostgresView is one session read back as the protocol messages of both

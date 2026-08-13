@@ -55,6 +55,34 @@ func cleanedCall(t *testing.T, payload string, detail bool) string {
 	return cleanedFrom(t, "/api/calls/88", payload, detail)
 }
 
+func TestAMQPDecodedFramesStayVisibleAndReplaceTheRawCopy(t *testing.T) {
+	raw := base64.StdEncoding.EncodeToString([]byte("framed AMQP bytes with a secret-shaped payload"))
+	out := cleanedCall(t, `{
+	  "protocol":"amqp",
+	  "request":{"base64":"`+raw+`","size":47,"stored":47},
+	  "response":{"size":0,"stored":0},
+	  "amqp":{"sent":[{
+	    "type":"method","kind":"basic.publish","channel":1,
+	    "exchange":"orders","routing_key":"order.created"
+	  }],"received":[]}
+	}`, true)
+
+	for _, want := range []string{"basic.publish", "orders", "order.created"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the decoded AMQP view lost %q: %s", want, out)
+		}
+	}
+	var call struct {
+		Request rawMessage `json:"request"`
+	}
+	if err := json.Unmarshal([]byte(out), &call); err != nil {
+		t.Fatal(err)
+	}
+	if call.Request.Base64 != redacted {
+		t.Errorf("the raw AMQP stream remained beside its decoded view: %q", call.Request.Base64)
+	}
+}
+
 func TestCredentialsNeverLeave(t *testing.T) {
 	// Headers arrive from Go's http.Header as name to list of values.
 	payload := `{

@@ -35,13 +35,30 @@ func TestPointAtNamesTheVariableThatWasRead(t *testing.T) {
 		{
 			"and http keeps its own suffix",
 			store.Service{Name: "ms-rates", Protocol: "http", Listen: "127.0.0.1:9153"},
-			"MS_RATES_URL=127.0.0.1:9153",
+			"MS_RATES_URL=http://127.0.0.1:9153",
+		},
+		{
+			"non HTTP protocols keep their address form",
+			store.Service{Name: "orders-db", Protocol: "postgres", Listen: "127.0.0.1:9154", EnvKey: "ORDERS_DB_ADDR"},
+			"ORDERS_DB_ADDR=127.0.0.1:9154",
+		},
+		{
+			"AMQP carries its plaintext scheme",
+			store.Service{Name: "rabbit", Protocol: "amqp", Listen: "127.0.0.1:9155", EnvKey: "AMQP_URL"},
+			"AMQP_URL=amqp://127.0.0.1:9155",
+		},
+		{
+			"AMQP TLS carries its encrypted scheme",
+			store.Service{Name: "rabbit", Protocol: "amqp", Listen: "127.0.0.1:9156", EnvKey: "AMQP_URL", TLS: true},
+			"AMQP_URL=amqps://127.0.0.1:9156",
 		},
 	}
 
 	for _, c := range cases {
-		if got := pointAt(c.svc); got != c.want {
-			t.Errorf("%s: pointAt = %q, want %q", c.name, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			if got := pointAt(c.svc); got != c.want {
+				t.Errorf("pointAt = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
