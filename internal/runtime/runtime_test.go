@@ -631,7 +631,7 @@ func TestDeletingTheActiveProjectClosesItsPorts(t *testing.T) {
 	}
 }
 
-// A Postgres service is the only one that reaches the supervisor as a raw
+// Postgres is one service that reaches the supervisor as a raw
 // connection handler rather than an HTTP one. Reconcile choosing the wrong kind
 // would open a port that answers nothing, and nothing else in the stack can
 // catch it: the store validates the row and the supervisor serves whatever it
@@ -690,6 +690,57 @@ func TestAPostgresServiceGetsARawListener(t *testing.T) {
 	}
 	if call.Target != "orders-db" {
 		t.Errorf("target = %q", call.Target)
+	}
+}
+
+func TestAnAMQPServiceGetsARawListenerAndCapturesTheProtocolHeader(t *testing.T) {
+	db := openStore(t)
+	header := []byte{'A', 'M', 'Q', 'P', 0, 0, 9, 1}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		got := make([]byte, len(header))
+		if _, err := io.ReadFull(conn, got); err == nil {
+			_, _ = conn.Write(got)
+		}
+	}()
+
+	listen := freePort(t)
+	id := project(t, db, "messaging", svc{
+		name: "rabbit", listen: listen, upstream: "amqp://" + ln.Addr().String(), protocol: config.ProtocolAMQP,
+	})
+	activate(t, db, id)
+
+	rec := newRecorder()
+	rt := New(db, rec, 1<<20)
+	defer rt.Stop()
+	reconcile(t, rt)
+
+	conn, err := net.DialTimeout("tcp", listen, 2*time.Second)
+	if err != nil {
+		t.Fatalf("nothing is listening on the AMQP port: %v", err)
+	}
+	if _, err := conn.Write(header); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(header))
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != string(header) {
+		t.Fatalf("AMQP header reply = %x, %v", got, err)
+	}
+	conn.Close()
+
+	call := rec.wait(t)
+	if call.Protocol != config.ProtocolAMQP || call.Method != "protocol_header" || call.Target != "rabbit" {
+		t.Errorf("capture = protocol %q method %q target %q", call.Protocol, call.Method, call.Target)
 	}
 }
 

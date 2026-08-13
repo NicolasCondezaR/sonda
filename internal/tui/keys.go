@@ -80,6 +80,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "postgres":
 				m.status = "a statement cannot be replayed — it belongs to a connection that is gone"
 				return m, nil
+			case "amqp":
+				m.status = "an AMQP unit cannot be replayed — its connection and channel are gone"
+				return m, nil
 			}
 		}
 

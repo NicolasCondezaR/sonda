@@ -361,7 +361,7 @@ func TestReplayRefusesAConversation(t *testing.T) {
 
 	handler := New(db, noDrops{}, emptyRuntime(t, db)).Handler()
 
-	for _, protocol := range []string{"postgres", "websocket"} {
+	for _, protocol := range []string{"postgres", "websocket", "amqp"} {
 		id, err := db.Insert(context.Background(), &store.Call{
 			Target: "db", Protocol: protocol, Method: "SESSION", Path: "orders",
 			ClientAddr: "127.0.0.1:1", StartedAt: time.Now().UTC(),

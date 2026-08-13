@@ -1509,9 +1509,11 @@ redaction off** — which is the next exercise.
 
 ## 18. Credentials do not leave over MCP
 
-The web interface shows everything, because there the reader is you. MCP answers
-leave the machine, so they are filtered. The test bed puts a credential in each
-of the three places that filtering has to reach.
+The web interface shows the stored application payloads used here, because
+there the reader is you. MCP answers leave the machine, so they are filtered.
+Postgres and AMQP handshake secrets are absent from both because Sonda blanks
+them before persistence. The test bed puts a credential in each of the three
+places that MCP filtering has to reach.
 
 **Set it up**
 
@@ -1667,8 +1669,9 @@ oldest capture Sonda holds, and starting clean throws that baseline away.
 Stated because a walkthrough that quietly skips something is worse than one that
 says what it skipped.
 
-- **AMQP.** Phase 19 is a wire decoder with no capture behind it yet. There is
-  nothing to point a client at.
+- **AMQP.** Sonda captures AMQP 0-9-1, but this test bed does not include a
+  RabbitMQ broker or an AMQP exercise. The focused proxy tests use a deterministic
+  wire-level broker instead of presenting that as RabbitMQ compatibility proof.
 - **Kafka.** Deliberately absent from Sonda; the repository's README explains
   why, and it is not about the protocol.
 - **An upstream that speaks TLS.** `storefront-tls` exercises the half where the

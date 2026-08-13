@@ -80,11 +80,16 @@ func FromEnv(r io.Reader) ([]Found, error) {
 			continue
 		}
 		scheme, host, port := addr[1], addr[2], addr[3]
+		protocol := protocolFor(key)
 		// Anything else — grpc://, tcp:// — is a transport Sonda speaks over
 		// plaintext HTTP, and inventing https from an unknown scheme would be a
 		// guess. Nothing here ever reads a key that could carry a credential,
 		// and a scheme is not one.
-		if scheme != "https" {
+		if protocol == "amqp" {
+			if scheme != "amqps" {
+				scheme = "amqp"
+			}
+		} else if scheme != "https" {
 			scheme = "http"
 		}
 
@@ -102,7 +107,7 @@ func FromEnv(r io.Reader) ([]Found, error) {
 		out = append(out, Found{
 			Name:     name,
 			Upstream: scheme + "://" + host + ":" + port,
-			Protocol: protocolFor(key),
+			Protocol: protocol,
 			Listen:   FreeListen(suggestListen(port), taken),
 			Source:   fmt.Sprintf("línea %d: %s", line, key),
 			Key:      key,
@@ -126,7 +131,7 @@ func looksLikeService(key string) bool {
 		return false
 	}
 	for _, noise := range []string{
-		"DATABASE", "POSTGRES", "MYSQL", "MONGO", "REDIS", "AMQP", "RABBIT",
+		"DATABASE", "POSTGRES", "MYSQL", "MONGO", "REDIS",
 		"KAFKA", "ELASTIC", "S3", "SMTP", "SENTRY", "OTEL", "JAEGER",
 		"FRONTEND", "PUBLIC", "CALLBACK", "REDIRECT", "WEBHOOK",
 	} {
@@ -150,6 +155,9 @@ func serviceName(key string) string {
 }
 
 func protocolFor(key string) string {
+	if strings.Contains(key, "AMQP") || strings.Contains(key, "RABBIT") {
+		return "amqp"
+	}
 	if strings.Contains(key, "GRPC") {
 		return "grpc"
 	}

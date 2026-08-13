@@ -29,3 +29,23 @@ func TestTheInterfaceCanWorkBothRuntimeSwitches(t *testing.T) {
 		}
 	}
 }
+
+func TestTheInterfaceExposesAMQPConfigurationAndDecodedFrames(t *testing.T) {
+	source, err := assets.ReadFile("static/sonda.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(source)
+	for _, want := range []string{
+		`["grpc", "http", "postgres", "amqp"]`,
+		`call.amqp.sent`,
+		`call.amqp.received`,
+		`function renderAMQP`,
+		`amqp://127.0.0.1:5672`,
+		`call.protocol === "amqp"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the web surface does not expose %s", want)
+		}
+	}
+}

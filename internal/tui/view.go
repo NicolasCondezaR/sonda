@@ -266,10 +266,10 @@ func (m Model) renderInspector() string {
 	if d.Protocol == "grpc" {
 		meta = append(meta, "gRPC")
 	}
-	if d.Protocol == "postgres" {
-		// A statement has no HTTP status. "HTTP 0" would be a reading of
+	if d.Protocol == "postgres" || d.Protocol == "amqp" {
+		// Raw protocol captures have no HTTP status. "HTTP 0" would be a reading of
 		// something that was never measured.
-		meta = append(meta, "POSTGRES")
+		meta = append(meta, strings.ToUpper(d.Protocol))
 	} else {
 		meta = append(meta, fmt.Sprintf("HTTP %d", d.Status))
 	}
@@ -353,6 +353,9 @@ func (m Model) renderInspector() string {
 	case d.Postgres != nil:
 		lines = append(lines, m.renderPostgres("SENT", d.Postgres.Sent, d.Postgres.SentIncomplete)...)
 		lines = append(lines, m.renderPostgres("RECEIVED", d.Postgres.Received, d.Postgres.ReceivedIncomplete)...)
+	case d.AMQP != nil:
+		lines = append(lines, m.renderAMQP("SENT", d.AMQP.Sent, d.AMQP.SentIncomplete)...)
+		lines = append(lines, m.renderAMQP("RECEIVED", d.AMQP.Received, d.AMQP.ReceivedIncomplete)...)
 	case d.Stream != nil:
 		lines = append(lines, m.renderEvents(d.Stream)...)
 	case d.GRPC != nil:
@@ -597,6 +600,70 @@ func (m Model) renderPostgres(title string, msgs []PGMessage, incomplete bool) [
 
 // pgValue renders a bind parameter. A NULL and an empty string are different on
 // the wire and different in a WHERE clause, so they read differently here.
+func (m Model) renderAMQP(title string, frames []AMQPFrame, incomplete bool) []string {
+	lines := []string{"", styleLabel.Render(" "+title) +
+		styleFaint.Render(fmt.Sprintf("   %d frame(s)", len(frames)))}
+	if len(frames) == 0 {
+		return append(lines, styleFaint.Render("  nothing in this direction"))
+	}
+
+	for _, frame := range frames {
+		head := fmt.Sprintf("  %s  ch %d  %d B", strings.ToUpper(frame.Kind), frame.Channel, frame.Size)
+		lines = append(lines, styleFaint.Render(head))
+		if frame.Exchange != "" || frame.RoutingKey != "" {
+			exchange := orDefault(frame.Exchange, "(default)")
+			if frame.RoutingKey != "" {
+				exchange += " → " + frame.RoutingKey
+			}
+			lines = append(lines, styleDim.Render("   route: "+truncate(exchange, m.width-11)))
+		}
+		for _, fact := range []struct{ name, value string }{
+			{"queue", frame.Queue}, {"consumer", frame.ConsumerTag},
+			{"mechanisms", frame.Mechanisms}, {"mechanism", frame.Mechanism},
+			{"virtual host", frame.VirtualHost}, {"content type", frame.ContentType},
+			{"correlation id", frame.CorrelationID}, {"reply to", frame.ReplyTo},
+			{"protocol", frame.Protocol},
+		} {
+			if fact.value != "" {
+				lines = append(lines, styleDim.Render("   "+fact.name+": "+truncate(fact.value, m.width-len(fact.name)-6)))
+			}
+		}
+		if frame.DeliveryTag != 0 {
+			lines = append(lines, styleDim.Render(fmt.Sprintf("   delivery tag: %d", frame.DeliveryTag)))
+		}
+		if frame.MessageCount != 0 {
+			lines = append(lines, styleDim.Render(fmt.Sprintf("   message count: %d", frame.MessageCount)))
+		}
+		if frame.BodySize != 0 {
+			lines = append(lines, styleDim.Render(fmt.Sprintf("   body size: %d B", frame.BodySize)))
+		}
+		if frame.ReplyCode != 0 {
+			text := fmt.Sprintf("   %d", frame.ReplyCode)
+			if frame.ReplyText != "" {
+				text += " — " + frame.ReplyText
+			}
+			if frame.Cause != "" {
+				text += " (on " + frame.Cause + ")"
+			}
+			style := styleDim
+			if frame.ReplyCode >= 300 {
+				style = styleFault
+			}
+			lines = append(lines, style.Render(truncate(text, m.width-2)))
+		}
+		if frame.Text != "" {
+			lines = append(lines, indent(frame.Text, "   ", m.width-4)...)
+		}
+		if frame.Note != "" {
+			lines = append(lines, styleFaint.Render("   "+truncate(frame.Note, m.width-4)))
+		}
+	}
+	if incomplete {
+		lines = append(lines, styleFaint.Render("  bytes remain after the last whole frame — the capture was cut short"))
+	}
+	return lines
+}
+
 func pgValue(v PGValue) string {
 	switch {
 	case v.Null:

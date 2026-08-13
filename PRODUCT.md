@@ -4,7 +4,8 @@
 
 ## Platform
 
-web
+Local developer tool: embedded web interface, terminal client, HTTP API and MCP
+server, backed by the same Go capture service and SQLite store.
 
 ## Users
 
@@ -28,21 +29,22 @@ built this understands distributed systems.
 ## Product Purpose
 
 Replace log-reading as the way to debug traffic between local services. Sonda
-sits in front of a service, forwards every call untouched, and makes the request
-and response inspectable: HTTP with JSON, and gRPC with protobuf decoded to
-field names.
+sits in front of a service or broker, forwards traffic without changing the
+bytes delivered, and makes the exchange inspectable: HTTP and GraphQL, gRPC,
+WebSocket and server-sent events, PostgreSQL statements, and AMQP 0-9-1 units.
 
 Success is that the developer stops opening several container log streams to
 reconstruct one interaction, and instead sees the interaction itself.
 
 ## Positioning
 
-For HTTP, `mitmproxy` already does this well. For gRPC nothing does: `grpcurl`
-and `grpcui` *make* calls, they do not observe the ones services make to each
-other. Sonda's specific claim is capturing gRPC traffic it did not originate —
-deframing the messages, preserving the trailers where the real status lives, and
-decoding protobuf through reflection, a descriptor set, or failing both, the
-wire format itself.
+For HTTP, `mitmproxy` already does this well. Sonda is positioned as a local
+multi-protocol service-traffic instrument: it observes traffic it did not
+originate, preserves protocol-specific failure signals, and presents the same
+captures through the API, web interface, terminal and MCP. For gRPC it deframes
+messages, preserves trailers and decodes protobuf through reflection, a
+descriptor set or, failing both, the wire format itself. PostgreSQL and AMQP use
+raw framed listeners rather than pretending to be HTTP.
 
 ## Operating Context
 
@@ -63,12 +65,18 @@ wire format itself.
 
 Confirmed and working:
 
-- Explicit per-port proxying of HTTP/1.1 and gRPC over cleartext HTTP/2.
-- Byte-exact forwarding. Bodies are stored as they crossed the wire; decoding is
-  a view computed at display time.
+- Explicit per-port proxying of HTTP/1.1, gRPC over HTTP/2, PostgreSQL and AMQP
+  0-9-1. WebSocket and server-sent events are captured through HTTP.
+- HTTPS and AMQPS listener termination through a generated local authority;
+  HTTPS, TLS gRPC and AMQPS upstreams are verified by default.
+- Byte-exact forwarding. Decoding is a view computed at display time. Stored
+  Postgres credentials and AMQP SASL challenge/response bytes are deliberately
+  blanked without changing what the upstream receives.
 - Full-text search across paths and text payloads, plus filters by target,
   method, HTTP status, protocol, gRPC status, and failure.
-- Every message of a streaming call is captured, both directions.
+- Every message of a gRPC stream, WebSocket conversation or server-sent event
+  stream is captured. AMQP content methods group method, header and body frames
+  into direction-specific units.
 - Schema resolution by reflection, descriptor set, or a labelled structural view
   of the wire format.
 - Retention by age and count; large bodies truncated in storage only, with the
@@ -77,31 +85,35 @@ Confirmed and working:
 
 Constraints future work must respect:
 
-- Cleartext only. A TLS upstream is forwarded but cannot be inspected.
 - Compressed gRPC messages are reported as compressed, not decoded.
-- No WebSocket or SSE capture.
+- PostgreSQL TLS negotiation is forwarded, but traffic after the negotiation is
+  opaque; `tls: true` is not supported for a PostgreSQL listener.
+- AMQP support is 0-9-1, not 1.0. Captures are not reconstructed transactions,
+  cannot be replayed, stubbed or fault-injected, and frames above the 16 MiB
+  capture parser limit retain metadata rather than raw frame bytes.
+- Kafka and arbitrary TCP protocols have no listener or decoder.
 - Single binary, no frontend toolchain. The UI ships embedded in the Go binary.
 - Zero authentication. It binds to localhost and observes one developer's own
   machine.
 
 Terminology, fixed by the code and the API: **target** (a configured service),
-**call** (one captured request/response exchange), **message** (one gRPC frame
-within a call).
-
-Undecided: whether replay and diff (planned) operate against the original
-upstream only, or against an arbitrary one.
+**call** (the historical API row for one captured exchange or protocol unit),
+and **message** (one framed message within a capture). Replay and structural diff
+are implemented for compatible request/response captures; replay targets a
+configured channel and is deliberately refused for connection-bound captures
+such as PostgreSQL, WebSocket and AMQP.
 
 ## Brand Commitments
 
-Name: Sonda — provisional, chosen by the author, not yet final. Spanish for a
-vantage point, which is the whole idea. No logo, no colors, no typography have
-been committed. The API and all code, comments and documentation are in English;
-the author is a Chilean Spanish speaker and payloads routinely contain Spanish
-text, sometimes badly encoded.
+Name and identity: **Sonda**. The interface is a logic analyzer for service
+traffic, with the committed color, typography and component system recorded in
+`DESIGN.md`. The API, code and English documentation are in English; a maintained
+Spanish README provides the public translation. Payloads routinely contain
+non-English text, sometimes badly encoded.
 
 ## Evidence on Hand
 
-- A working implementation with 390 passing tests across 22 packages.
+- A working implementation with package, integration and end-to-end coverage.
 - Two toy upstreams that produce real capturable traffic on first run:
   `examples/echo` (HTTP: success, slow, failure, echo) and
   `examples/grpcdemo` (gRPC: unary, server streaming, client streaming, and a
@@ -115,6 +127,9 @@ text, sometimes badly encoded.
   ~430 µs through a bare proxy and ~540 µs through Sonda: most of what a user
   pays is the price of proxying at all, not of capturing. A measurement with
   its conditions, never a specification.
+- AMQP forwarding and capture are exercised end to end against a deterministic
+  wire-level test broker. This proves the proxy boundary and sanitization but is
+  not presented as a RabbitMQ compatibility suite.
 
 No users, no testimonials, no deployment. None may be invented.
 

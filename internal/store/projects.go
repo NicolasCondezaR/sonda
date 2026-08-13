@@ -407,7 +407,7 @@ func ValidateService(svc Service, siblings []Service) error {
 		return errors.New("the service needs a name")
 	}
 	if !config.SupportedProtocol(svc.Protocol) {
-		return fmt.Errorf("protocol %q is not supported, use http, grpc or postgres", svc.Protocol)
+		return fmt.Errorf("protocol %q is not supported, use http, grpc, postgres or amqp", svc.Protocol)
 	}
 	if _, _, err := splitHostPort(svc.Listen); err != nil {
 		return fmt.Errorf("listen address %q: %w", svc.Listen, err)

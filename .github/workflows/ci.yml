@@ -37,6 +37,22 @@ jobs:
       - name: Build
         run: go build ./...
 
+  windows-autostart:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Unit tests exercise the complete task XML and lifecycle through fakes.
+      # They deliberately leave SONDA_AUTOSTART_INTEGRATION unset, so CI never
+      # registers or runs a task on the hosted worker.
+      - name: Test Windows autostart contract without installing a task
+        run: go test -count=1 ./cmd/sonda ./internal/autostart
+
   protos:
     runs-on: ubuntu-latest
     steps:

@@ -116,14 +116,14 @@ function clockTime(iso) {
 }
 
 function outcome(call) {
-  if (call.error) return "TRANSPORT";
+  if (call.error) return call.protocol === "amqp" ? "AMQP ERROR" : "TRANSPORT";
   if (call.grpc_status_text) return call.grpc_status_text.toUpperCase();
   /* "200" here would be the truth about the transport and a lie about the call. */
   if (call.graphql_errors > 0) return "GRAPHQL ERROR";
   if (call.postgres_errors > 0) return "SQL ERROR";
   /* There is no status on a statement. Printing the zero would invent one, so
    * the kind of row stands in: a statement, or the connection that ran none. */
-  if (call.protocol === "postgres") return call.method;
+  if (call.protocol === "postgres" || call.protocol === "amqp") return call.method;
   return String(call.status);
 }
 
@@ -211,6 +211,7 @@ function renderRail() {
       (stubbed ? " channel__swatch--stub" : ""));
     row.append(swatch, el("span", "channel__name", target.name));
     if (target.protocol === "grpc") row.appendChild(el("span", "channel__proto", "gRPC"));
+    if (target.protocol === "amqp") row.appendChild(el("span", "channel__proto", "AMQP"));
     // Stubbing is a mode the service is in, not a property of one call, so it
     // is engraved on the channel rather than repeated on every event.
     if (stubbed) {
@@ -228,7 +229,8 @@ function renderRail() {
      * where a reader picks which service to look at. */
     if (target.tls) {
       row.appendChild(el("span", "channel__stub", "TLS"));
-      row.title += " — Sonda terminates TLS on this port; point the caller at https://" + target.listen;
+      const scheme = target.protocol === "amqp" ? "amqps://" : "https://";
+      row.title += " — Sonda terminates TLS on this port; point the caller at " + scheme + target.listen;
     }
     if (target.insecure_skip_verify) {
       row.appendChild(el("span", "channel__stub channel__stub--broken", "NO VERIFY"));
@@ -712,9 +714,9 @@ function renderInspector(call) {
     el("span", null, call.target),
     el("span", null, (call.protocol || "http").toUpperCase()),
   );
-  /* A Postgres statement has no HTTP status. "HTTP 0" would be a reading of
+  /* Raw protocol captures have no HTTP status. "HTTP 0" would be a reading of
    * something that was never measured. */
-  if (call.protocol !== "postgres") {
+  if (call.protocol !== "postgres" && call.protocol !== "amqp") {
     meta.appendChild(el("span", null, "HTTP " + call.status));
   }
   meta.append(
@@ -797,6 +799,9 @@ function renderInspector(call) {
   } else if (call.postgres) {
     out.appendChild(renderPostgres("SENT", call.postgres.sent, call.postgres.sent_incomplete));
     out.appendChild(renderPostgres("RECEIVED", call.postgres.received, call.postgres.received_incomplete));
+  } else if (call.amqp) {
+    out.appendChild(renderAMQP("SENT", call.amqp.sent, call.amqp.sent_incomplete));
+    out.appendChild(renderAMQP("RECEIVED", call.amqp.received, call.amqp.received_incomplete));
   } else if (call.stream) {
     out.appendChild(renderEvents(call.stream));
   } else if (call.grpc) {
@@ -984,6 +989,10 @@ function renderActions(call) {
   }
   if (call.protocol === "postgres") {
     bar.appendChild(el("span", "note", "A statement cannot be replayed: it belongs to a connection and a transaction that are gone."));
+    return bar;
+  }
+  if (call.protocol === "amqp") {
+    bar.appendChild(el("span", "note", "An AMQP unit cannot be replayed: it belongs to a multiplexed connection and channel that are gone."));
     return bar;
   }
 
@@ -1378,6 +1387,55 @@ function renderPostgres(title, messages, incomplete) {
   if (incomplete) {
     s.body.appendChild(el("p", "note",
       "Bytes remain after the last whole message — the capture was cut short by the body cap, or the session was still open."));
+  }
+  return s.wrap;
+}
+
+function renderAMQP(title, frames, incomplete) {
+  const items = frames || [];
+  const s = section(title, items.length === 1 ? "1 frame" : items.length + " frames");
+  if (!items.length) {
+    s.body.appendChild(el("p", "note", "Nothing in this direction."));
+    return s.wrap;
+  }
+
+  for (const frame of items) {
+    const block = el("div", "msg");
+    const head = el("div", "msg__head");
+    head.appendChild(el("span", "label", (frame.kind || frame.type || "frame").toUpperCase()));
+    head.appendChild(el("span", "note", "channel " + frame.channel + " · " + bytes(frame.size || 0)));
+    block.appendChild(head);
+
+    const facts = [];
+    if (frame.exchange || frame.routing_key) {
+      facts.push(["route", (frame.exchange || "(default)") + (frame.routing_key ? " → " + frame.routing_key : "")]);
+    }
+    for (const [name, value] of [
+      ["queue", frame.queue], ["consumer", frame.consumer_tag],
+      ["delivery tag", frame.delivery_tag], ["message count", frame.message_count],
+      ["body size", frame.body_size ? bytes(frame.body_size) : ""],
+      ["content type", frame.content_type], ["delivery mode", frame.delivery_mode],
+      ["correlation id", frame.correlation_id], ["reply to", frame.reply_to],
+      ["mechanisms", frame.mechanisms], ["mechanism", frame.mechanism],
+      ["virtual host", frame.virtual_host], ["protocol", frame.protocol],
+    ]) {
+      if (value !== undefined && value !== null && value !== "") facts.push([name, String(value)]);
+    }
+    if (facts.length) block.appendChild(kv(facts));
+
+    if (frame.reply_code) {
+      block.appendChild(el("p", frame.reply_code >= 300 ? "note note--fault" : "note",
+        frame.reply_code + (frame.reply_text ? " — " + frame.reply_text : "") +
+        (frame.cause ? " (on " + frame.cause + ")" : "")));
+    }
+    if (frame.text) block.appendChild(el("pre", "payload", pretty(frame.text)));
+    if (frame.note) block.appendChild(el("p", "note", frame.note));
+    s.body.appendChild(block);
+  }
+
+  if (incomplete) {
+    s.body.appendChild(el("p", "note",
+      "Bytes remain after the last whole frame — the capture was truncated or ended mid-frame."));
   }
   return s.wrap;
 }
@@ -1964,7 +2022,7 @@ function renderServiceForm(project) {
   const protoWrap = el("div", "form__field");
   protoWrap.appendChild(el("span", "label", "PROTOCOL"));
   const protocol = document.createElement("select");
-  for (const value of ["grpc", "http", "postgres"]) {
+  for (const value of ["grpc", "http", "postgres", "amqp"]) {
     const option = document.createElement("option");
     option.value = option.textContent = value;
     protocol.appendChild(option);
@@ -1997,9 +2055,9 @@ function renderServiceForm(project) {
    * them into one "use TLS" would make turning on encryption also turn off the
    * check that gives it any value. */
   const terminate = checkbox(`tls-${project.id}`,
-    "answer this port with TLS, so the caller can use https://");
+    "answer this port with TLS, so the caller can use https:// or amqps://");
   const skipVerify = checkbox(`noverify-${project.id}`,
-    "do not check the upstream's certificate (only for https:// upstreams)");
+    "do not check the upstream's certificate (only for https:// or amqps:// upstreams)");
 
   const skipHint = el("p", "note note--fault", "");
   skipVerify.addEventListener("change", () => {
@@ -2017,10 +2075,12 @@ function renderServiceForm(project) {
    * a credential here would only be a password written into the capture file. */
   protocol.addEventListener("change", () => {
     const pg = protocol.value === "postgres";
-    upstream.placeholder = pg ? "postgres://127.0.0.1:5432" : "http://127.0.0.1:50052";
+    const amqp = protocol.value === "amqp";
+    upstream.placeholder = pg ? "postgres://127.0.0.1:5432" :
+      (amqp ? "amqp://127.0.0.1:5672" : "http://127.0.0.1:50052");
     upstreamHint.textContent = pg
       ? "No user and no password: the client's own handshake is forwarded untouched. A database negotiates encryption inside its own protocol, so Sonda cannot terminate TLS in front of it."
-      : "";
+      : (amqp ? "No user and no password in the upstream URL: the client's AMQP handshake is forwarded untouched, and SASL responses are blanked before capture." : "");
     /* Offering a switch Sonda will refuse to save is worse than not offering
      * it: the refusal arrives after the form has been filled in. */
     terminate.disabled = pg;

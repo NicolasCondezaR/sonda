@@ -19,6 +19,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/NicolasCondezaR/sonda/internal/amqpwire"
 	"github.com/NicolasCondezaR/sonda/internal/config"
 	"github.com/NicolasCondezaR/sonda/internal/graphql"
 	"github.com/NicolasCondezaR/sonda/internal/pgwire"
@@ -344,6 +345,8 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 	// three places is a reading that disagrees with itself.
 	describeGraphQL(c)
 	postgresText := describePostgres(c)
+	amqpText := describeAMQP(c)
+	extraText := strings.TrimSpace(postgresText + " " + amqpText)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -378,7 +381,7 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO calls_fts (rowid, text) VALUES (?, ?)`, id, indexText(c, postgresText),
+		`INSERT INTO calls_fts (rowid, text) VALUES (?, ?)`, id, indexText(c, extraText),
 	); err != nil {
 		return 0, fmt.Errorf("index call: %w", err)
 	}
@@ -404,7 +407,11 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		add("target = ?", f.Target)
 	}
 	if f.Method != "" {
-		add("method = ?", strings.ToUpper(f.Method))
+		// HTTP verbs and Postgres row kinds are uppercase, while decoded wire
+		// methods such as AMQP's basic.publish are conventionally lowercase.
+		// Filtering case-insensitively keeps one API without rewriting either
+		// protocol's native name.
+		add("LOWER(method) = LOWER(?)", f.Method)
 	}
 	if f.Path != "" {
 		add("path LIKE ?", "%"+escapeLike(f.Path)+"%")
@@ -998,6 +1005,47 @@ func postgresIndexText(msgs []pgwire.Message) string {
 		for _, p := range m.Params {
 			write(p.Text)
 		}
+	}
+	return b.String()
+}
+
+// describeAMQP projects the decoded, credential-safe frame fields into full
+// text search. AMQP streams contain NULs and length prefixes, so the generic
+// body index correctly rejects them as binary; without this projection a
+// routing key, queue, broker reply or text message could never be found.
+func describeAMQP(c *Call) string {
+	if c.Protocol != config.ProtocolAMQP {
+		return ""
+	}
+	sent, _ := amqpwire.Deframe(c.Request.Body, true)
+	received, _ := amqpwire.Deframe(c.Response.Body, false)
+	frames := append(sent, received...)
+
+	var b strings.Builder
+	write := func(value string) {
+		if value == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(value)
+	}
+	for _, frame := range frames {
+		write(frame.Kind)
+		write(frame.Exchange)
+		write(frame.RoutingKey)
+		write(frame.Queue)
+		write(frame.ConsumerTag)
+		write(frame.ReplyText)
+		write(frame.Cause)
+		write(frame.Mechanisms)
+		write(frame.Mechanism)
+		write(frame.VirtualHost)
+		write(frame.ContentType)
+		write(frame.CorrelationID)
+		write(frame.ReplyTo)
+		write(frame.Text)
 	}
 	return b.String()
 }

@@ -200,12 +200,13 @@ type callJSON struct {
 	ResponseTrailers http.Header `json:"response_trailers,omitempty"`
 	GRPC             *grpcView   `json:"grpc,omitempty"`
 
-	// Socket, Stream, GraphQL and Postgres are the same idea as GRPC: what a
+	// Socket, Stream, GraphQL, Postgres and AMQP are the same idea as GRPC: what a
 	// body means, read back out of the stored bytes when someone looks.
 	Socket   *socketView   `json:"socket,omitempty"`
 	Stream   *streamView   `json:"stream,omitempty"`
 	GraphQL  *graphqlView  `json:"graphql,omitempty"`
 	Postgres *postgresView `json:"postgres,omitempty"`
+	AMQP     *amqpView     `json:"amqp,omitempty"`
 }
 
 func (s *Server) listCalls(w http.ResponseWriter, r *http.Request) {
@@ -313,6 +314,9 @@ func (s *Server) getCall(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.Protocol == config.ProtocolPostgres {
 		out.Postgres = buildPostgresView(c)
+	}
+	if c.Protocol == config.ProtocolAMQP {
+		out.AMQP = buildAMQPView(c)
 	}
 	if isEventStream(c) {
 		out.Stream = buildStreamView(c)

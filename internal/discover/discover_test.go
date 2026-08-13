@@ -50,6 +50,19 @@ export ADMIN_HTTP_URL="http://127.0.0.1:3000"
 	}
 }
 
+func TestFromEnvReadsRabbitMQAsAMQP(t *testing.T) {
+	found, err := FromEnv(strings.NewReader("RABBITMQ_URL=amqps://rabbit.internal:5671\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("found %v, want RabbitMQ", names(found))
+	}
+	if found[0].Protocol != "amqp" || found[0].Upstream != "amqps://rabbit.internal:5671" {
+		t.Errorf("RabbitMQ = %+v", found[0])
+	}
+}
+
 // A list with a database connection string in it is worse than a list missing
 // a service: the first gets saved and proxied, the second gets noticed.
 func TestFromEnvIgnoresWhatIsNotAService(t *testing.T) {

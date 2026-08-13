@@ -63,7 +63,7 @@ type ctxKey struct{}
 func New(target config.Target, maxBody int64, recorder Recorder, stubs Stubs, faults Faults) *Proxy {
 	p := &Proxy{target: target, maxBody: maxBody, recorder: recorder, stubs: stubs, faults: faults}
 	upstream := target.UpstreamURL()
-	p.upstreamTLS = upstream.Scheme == "https"
+	p.upstreamTLS = upstream.Scheme == "https" || upstream.Scheme == "amqps"
 
 	p.reverse = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {

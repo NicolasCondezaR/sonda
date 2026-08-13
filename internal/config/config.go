@@ -53,10 +53,10 @@ type Target struct {
 	// explicit `reflection: false` still turns it off.
 	Reflection *bool `yaml:"reflection"`
 
-	// TLS makes Sonda terminate the client's encryption itself: the caller is
-	// pointed at https://sonda-port instead of http://, and Sonda answers with a
-	// certificate it mints for whatever name was asked for. It says nothing
-	// about the upstream, which keeps whatever scheme it was declared with.
+	// TLS makes Sonda terminate the client's encryption itself: an HTTP caller
+	// uses https:// and an AMQP caller amqps://. Sonda answers with a certificate
+	// it mints for whatever name was asked for. It says nothing about the
+	// upstream, which keeps whatever scheme it was declared with.
 	TLS bool `yaml:"tls"`
 
 	// InsecureSkipVerify stops Sonda checking the upstream's certificate. It is
@@ -87,6 +87,12 @@ const (
 	// because calling a database "http://" would be the tool lying in its own
 	// configuration file.
 	ProtocolPostgres = "postgres"
+
+	// ProtocolAMQP is RabbitMQ's AMQP 0-9-1 wire protocol. Like Postgres it
+	// needs a raw listener, but unlike Postgres TLS is established before the
+	// protocol header, so both listener termination and an amqps:// upstream are
+	// meaningful.
+	ProtocolAMQP = "amqp"
 
 	defaultAPIListen    = "127.0.0.1:9000"
 	defaultDatabase     = "sonda.db"
@@ -241,8 +247,8 @@ func (c *Config) validateTargets() error {
 		listens[t.Listen] = true
 
 		if !SupportedProtocol(t.Protocol) {
-			return fmt.Errorf("%s (%s): protocol %q is not supported, use %q, %q or %q",
-				where, t.Name, t.Protocol, ProtocolHTTP, ProtocolGRPC, ProtocolPostgres)
+			return fmt.Errorf("%s (%s): protocol %q is not supported, use %q, %q, %q or %q",
+				where, t.Name, t.Protocol, ProtocolHTTP, ProtocolGRPC, ProtocolPostgres, ProtocolAMQP)
 		}
 
 		if t.Protocol != ProtocolGRPC && (t.DescriptorSet != "" || t.Reflection != nil) {
@@ -286,10 +292,10 @@ func ValidateTLS(protocol, upstreamScheme string, terminate, insecure bool) erro
 		// sends. Accepting the flag and ignoring it would be worse.
 		return fmt.Errorf("tls is not available for a %s target: a database negotiates encryption inside its own protocol, not before it", ProtocolPostgres)
 	}
-	if insecure && upstreamScheme != "https" {
+	if insecure && upstreamScheme != "https" && upstreamScheme != "amqps" {
 		// Silently accepting it would leave a target flagged as unverified in
 		// every interface while nothing was ever verified or skipped.
-		return fmt.Errorf("insecure_skip_verify only means something when the upstream is https://, and this one is %s://", upstreamScheme)
+		return fmt.Errorf("insecure_skip_verify only means something when the upstream is https:// or amqps://, and this one is %s://", upstreamScheme)
 	}
 	return nil
 }
@@ -305,30 +311,39 @@ func (t Target) UpstreamURL() *url.URL {
 // and two copies of "what may a service be" is how one of them ends up
 // accepting something the other refuses to run.
 func SupportedProtocol(p string) bool {
-	return p == ProtocolHTTP || p == ProtocolGRPC || p == ProtocolPostgres
+	return p == ProtocolHTTP || p == ProtocolGRPC || p == ProtocolPostgres || p == ProtocolAMQP
 }
 
 // UpstreamSchemeOK reports whether a scheme names the transport the target
 // declared. Postgres is kept separate rather than folded into http:// because
 // the scheme is the one place a reader can see what a service actually is.
 func UpstreamSchemeOK(protocol, scheme string) bool {
-	if protocol == ProtocolPostgres {
+	switch protocol {
+	case ProtocolPostgres:
 		return scheme == "postgres" || scheme == "postgresql"
+	case ProtocolAMQP:
+		return scheme == "amqp" || scheme == "amqps"
 	}
 	return scheme == "http" || scheme == "https"
 }
 
 // UpstreamPrefix is the shape to suggest when the scheme was wrong.
 func UpstreamPrefix(protocol string) string {
-	if protocol == ProtocolPostgres {
+	switch protocol {
+	case ProtocolPostgres:
 		return "postgres://"
+	case ProtocolAMQP:
+		return "amqp://"
 	}
 	return "http://"
 }
 
 func upstreamHint(protocol string) string {
-	if protocol == ProtocolPostgres {
+	switch protocol {
+	case ProtocolPostgres:
 		return "postgres://"
+	case ProtocolAMQP:
+		return "amqp:// or amqps://"
 	}
 	return "http:// or https://"
 }

@@ -774,6 +774,8 @@ func redactPostgres(v any) {
 var decodedViews = []struct{ view, messages, side string }{
 	{"postgres", "sent", "request"},
 	{"postgres", "received", "response"},
+	{"amqp", "sent", "request"},
+	{"amqp", "received", "response"},
 	{"socket", "sent", "request"},
 	{"socket", "received", "response"},
 	{"stream", "events", "response"},

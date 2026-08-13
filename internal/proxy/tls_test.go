@@ -218,4 +218,10 @@ func TestTheTransportMatchesTheUpstreamScheme(t *testing.T) {
 	if got := upstreamAddr(config.Target{Upstream: "https://api.example.com:8443"}); got != "api.example.com:8443" {
 		t.Errorf("an explicit port was rewritten to %s", got)
 	}
+	if got := upstreamAddr(config.Target{Upstream: "amqp://rabbit.example.com"}); got != "rabbit.example.com:5672" {
+		t.Errorf("amqp with no port dials %s", got)
+	}
+	if got := upstreamAddr(config.Target{Upstream: "amqps://rabbit.example.com"}); got != "rabbit.example.com:5671" {
+		t.Errorf("amqps with no port dials %s", got)
+	}
 }

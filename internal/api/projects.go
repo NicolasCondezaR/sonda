@@ -133,6 +133,21 @@ func pointAt(svc store.Service) string {
 			name += "_URL"
 		}
 	}
+	// HTTP and AMQP callers need a base URL, not only a socket address. A value such as
+	// 127.0.0.1:9191 is parsed as a path by URL-aware clients, so handing it
+	// over made the otherwise correct proxy address unusable. Other protocols
+	// keep their address form: gRPC clients commonly take host:port, and a
+	// Postgres address is not an HTTP URL.
+	if svc.Protocol == "http" && !svc.TLS {
+		return name + "=http://" + svc.Listen
+	}
+	if svc.Protocol == "amqp" {
+		scheme := "amqp://"
+		if svc.TLS {
+			scheme = "amqps://"
+		}
+		return name + "=" + scheme + svc.Listen
+	}
 	// A TLS listener answers nothing on http://, so the line handed over has to
 	// carry the scheme or it is an address that will not work.
 	if svc.TLS {

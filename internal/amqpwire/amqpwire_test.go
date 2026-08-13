@@ -1,11 +1,107 @@
 package amqpwire
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestBlankCredentialsKeepsTheMechanismAndNotTheSecret(t *testing.T) {
+	secret := []byte("\x00guest\x00hunter2")
+	original := method(0, 10, 11,
+		emptyTable(),
+		shortstr("PLAIN"),
+		longstr(string(secret)),
+		shortstr("en_US"),
+	)
+
+	blanked := BlankCredentials(original)
+	if bytes.Equal(blanked, original) {
+		t.Fatal("the stored copy still contains the SASL response")
+	}
+	if !bytes.Contains(original, secret) {
+		t.Fatal("the test frame did not contain the credential")
+	}
+	if bytes.Contains(blanked, []byte("guest")) || bytes.Contains(blanked, []byte("hunter2")) {
+		t.Fatalf("the blanked capture leaked the credential: %x", blanked)
+	}
+	if !bytes.Contains(blanked, []byte("PLAIN")) {
+		t.Error("blanking the response also erased the named authentication mechanism")
+	}
+	if !bytes.Contains(original, secret) {
+		t.Error("blanking the capture mutated the bytes that still have to be forwarded")
+	}
+
+	frames, rest := Deframe(blanked, true)
+	if rest != 0 || len(frames) != 1 || frames[0].Mechanism != "PLAIN" {
+		t.Fatalf("the blanked frame no longer decodes: frames=%+v remainder=%d", frames, rest)
+	}
+}
+
+func TestBlankCredentialsWithholdsSecureChallengeAndResponse(t *testing.T) {
+	original := cat(
+		method(0, 10, 20, longstr("challenge-bytes")),
+		method(0, 10, 21, longstr("response-bytes")),
+	)
+	blanked := BlankCredentials(original)
+	for _, secret := range [][]byte{[]byte("challenge-bytes"), []byte("response-bytes")} {
+		if bytes.Contains(blanked, secret) {
+			t.Errorf("the blanked stream leaked %q", secret)
+		}
+		if !bytes.Contains(original, secret) {
+			t.Errorf("blanking mutated the source and erased %q", secret)
+		}
+	}
+	frames, rest := Deframe(blanked, true)
+	if rest != 0 || len(frames) != 2 {
+		t.Fatalf("the blanked stream no longer frames: %d frames, %d remainder", len(frames), rest)
+	}
+}
+
+func TestBlankCredentialsFailsClosedOnMalformedSASLLengths(t *testing.T) {
+	secret := []byte("malformed-length-secret-marker")
+	malformedLong := func(value []byte) []byte {
+		out := binary.BigEndian.AppendUint32(nil, uint32(len(value)+64))
+		return append(out, value...)
+	}
+	tests := []struct {
+		name     string
+		methodID uint16
+		args     [][]byte
+	}{
+		{
+			name:     "start-ok response",
+			methodID: 11,
+			args:     [][]byte{emptyTable(), shortstr("PLAIN"), malformedLong(secret), shortstr("en_US")},
+		},
+		{name: "secure challenge", methodID: 20, args: [][]byte{malformedLong(secret)}},
+		{name: "secure-ok response", methodID: 21, args: [][]byte{malformedLong(secret)}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := method(0, 10, tt.methodID, tt.args...)
+			forwarded := append([]byte(nil), original...)
+
+			blanked := BlankCredentials(original)
+
+			if bytes.Contains(blanked, secret) {
+				t.Fatalf("the fail-closed copy leaked the marker: %x", blanked)
+			}
+			if !bytes.Equal(original, forwarded) {
+				t.Fatal("sanitizing the stored copy mutated the buffer that must be forwarded")
+			}
+			// Keep the outer frame and method identity so a safe capture can still
+			// say which exchange was withheld.
+			const methodEnd = frameHeaderSize + 4
+			if !bytes.Equal(blanked[:methodEnd], original[:methodEnd]) {
+				t.Fatalf("fail-closed blanking erased the frame or method identity: %x", blanked)
+			}
+		})
+	}
+}
 
 // The helpers below put bytes on the wire the way a client library does, so the
 // tests prove the decoder against the format rather than against itself.

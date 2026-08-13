@@ -1530,9 +1530,12 @@ ejercicio siguiente.
 
 ## 18. Las credenciales no salen por MCP
 
-La interfaz web muestra todo, porque ahí quien lee eres tú. Las respuestas de MCP
-salen de la máquina, así que se filtran. El banco de pruebas pone una credencial
-en cada uno de los tres lugares a los que ese filtrado tiene que llegar.
+La interfaz web muestra los payloads de aplicación almacenados que se usan aquí,
+porque allí quien lee es el usuario. Las respuestas de MCP salen de la máquina,
+así que se filtran. Los secretos del handshake de Postgres y AMQP no aparecen en
+ninguna de las dos porque Sonda los borra antes de persistirlos. El banco de
+pruebas pone una credencial en cada uno de los tres lugares a los que debe llegar
+el filtrado de MCP.
 
 **Prepáralo**
 
@@ -1692,8 +1695,10 @@ referencia a la basura.
 Se dice porque un recorrido que se salta algo calladamente es peor que uno que
 dice qué se saltó.
 
-- **AMQP.** La fase 19 es un decodificador de protocolo sin captura detrás
-  todavía. No hay nada a lo que apuntar un cliente.
+- **AMQP.** Sonda captura AMQP 0-9-1, pero este banco de pruebas no incluye un
+  broker RabbitMQ ni un ejercicio AMQP. Las pruebas enfocadas del proxy usan un
+  broker determinista a nivel de protocolo, sin presentarlo como prueba de
+  compatibilidad con RabbitMQ.
 - **Kafka.** Deliberadamente ausente de Sonda; el README del repositorio explica
   por qué, y no es por el protocolo.
 - **Un upstream que habla TLS.** `storefront-tls` ejercita la mitad donde el
