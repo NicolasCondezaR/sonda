@@ -38,7 +38,7 @@ func TestTheInspectorNamesTheRuleInForce(t *testing.T) {
 	m := sampleModel(t, 120, 30)
 	m.broken = map[string]string{"orders": "+2000ms, one call in 3"}
 	m.detail = &CallDetail{Call: Call{
-		ID: 500, Target: "orders", Protocol: "grpc", Method: "POST",
+		ID: newID(), Target: "orders", Protocol: "grpc", Method: "POST",
 		Path: "/demo.v1.Orders/Get", Status: 200,
 	}}
 

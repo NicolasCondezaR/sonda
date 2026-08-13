@@ -192,6 +192,25 @@ a.switch__key { display: inline-block; text-decoration: none; }
   white-space: nowrap;
 }
 
+/* The cursor reading. It is a measurement and the tally beside it is not, so
+   this one gets the readout role and full ink while the tally stays meta and
+   dim. It leaves the document when no cursor is placed: a bar that always
+   holds a dash trains the eye to skip the spot where the number appears. */
+.calipers {
+  flex: none;
+  font-size: 13px;
+  color: var(--ink);
+  white-space: nowrap;
+  padding-right: var(--base);
+}
+
+.calipers__hint {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  color: var(--ink-faint);
+}
+
 .readout__fault { color: var(--fault); }
 
 /* A rule in force, said in the colour failure owns. It is the second place
@@ -392,6 +411,44 @@ a.switch__key { display: inline-block; text-decoration: none; }
   position: absolute;
   inset: 0;
   will-change: transform;
+}
+
+/* A cursor spans every channel, because time is the one axis they share. It is
+   one layer over the whole stack rather than a rule per lane: a lane's track
+   stops short of that lane's bottom border, so per-lane rules would come out as
+   a dashed line with a 1px gap at every channel boundary. A cursor on a bench
+   instrument is continuous.
+   No new colour, per the system: ink, hairline, the same vocabulary the
+   selected-event outline already uses. The letter engraves at the top. */
+.calipers-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: calc(var(--lane-h) * var(--lane-count, 0));
+  pointer-events: none;
+  will-change: transform;
+}
+
+.caliper {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink);
+}
+
+.caliper__letter {
+  position: absolute;
+  top: 0;
+  left: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  line-height: 1;
+  color: var(--ink);
+  background: var(--field);
+  padding: 1px 2px;
 }
 
 /* An event: a short filled rect in the channel colour, width proportional to

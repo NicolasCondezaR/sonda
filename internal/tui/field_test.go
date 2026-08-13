@@ -55,11 +55,26 @@ func TestBucketRejectsWhatIsOutsideTheWindow(t *testing.T) {
 
 // nextID hands out ids the way the store does: from one upwards. Zero is the
 // "nothing selected" sentinel, so a sample call must never land on it.
+//
+// Every sample call in this package takes its id from here, and none writes one
+// by hand. Two did, both `ID: 500`, and the counter climbs across a whole
+// package run: once it crossed 500 a generated call collided with them, two
+// calls on different channels shared an id, and selectedCall() returned
+// whichever came first in the slice. It surfaced as
+// TestArrowKeysSelectAlongAChannel selecting a call on the wrong channel — a
+// failure that pointed at the selection code, which was correct, and that
+// appeared only because an unrelated test was added ahead of it. Uniqueness is
+// the helper's promise to make, not something each call site can be trusted to
+// avoid breaking.
 var nextID int64
 
-func call(target string, started time.Time, fault bool) Call {
+func newID() int64 {
 	nextID++
-	c := Call{ID: nextID, Target: target, Status: 200, started: started}
+	return nextID
+}
+
+func call(target string, started time.Time, fault bool) Call {
+	c := Call{ID: newID(), Target: target, Status: 200, started: started}
 	if fault {
 		c.Status = 503
 	}
@@ -144,7 +159,7 @@ func TestDivisionColumnsStayInsideTheLane(t *testing.T) {
 // being a measurement grid.
 func TestAxisLabelsAreRoundFigures(t *testing.T) {
 	for _, w := range windows {
-		labels := axisLabels(120, w.Span, w.Divisions)
+		labels := axisLabels(120, w.Span, w.Divisions, noCursors)
 		plain := stripANSI(labels)
 		if !strings.Contains(plain, "NOW") {
 			t.Errorf("window %s: the axis has no NOW", w.Label)
@@ -162,7 +177,7 @@ func TestAxisLabelsAreRoundFigures(t *testing.T) {
 
 func TestAxisLabelsFitTheWidth(t *testing.T) {
 	for _, width := range []int{20, 60, 200} {
-		plain := stripANSI(axisLabels(width, 5*time.Minute, 5))
+		plain := stripANSI(axisLabels(width, 5*time.Minute, 5, noCursors))
 		if len([]rune(plain)) != width {
 			t.Errorf("width %d: the axis is %d characters wide", width, len([]rune(plain)))
 		}
@@ -171,7 +186,7 @@ func TestAxisLabelsFitTheWidth(t *testing.T) {
 
 func TestRenderLaneIsOneCellPerColumn(t *testing.T) {
 	cells := LaneCells(nil, time.Now(), time.Minute, 40)
-	plain := stripANSI(renderLane(cells, channelColor(0), divisionColumns(40, 4), -1))
+	plain := stripANSI(renderLane(cells, channelColor(0), divisionColumns(40, 4), -1, noCursors))
 	if len([]rune(plain)) != 40 {
 		t.Errorf("a 40-column lane rendered %d characters", len([]rune(plain)))
 	}
@@ -217,6 +232,82 @@ func TestAStubbedCellIsADifferentShape(t *testing.T) {
 	for _, c := range cases {
 		if got := Mark(c.cell); got != c.want {
 			t.Errorf("%s: mark = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// noCursors is the field with neither cursor placed, which is how it renders
+// until someone asks for a measurement.
+var noCursors = [2]int{-1, -1}
+
+// A cursor is drawn over the trace, not instead of it. One terminal cell holds
+// one glyph, so a cursor that replaced the mark would hide a call in the exact
+// column being measured — and hiding a call is the one thing this field cannot
+// do.
+func TestACursorDoesNotHideTheCallItIsMeasuring(t *testing.T) {
+	cells := make([]Cell, 12)
+	cells[4] = Cell{Calls: 1}
+	cells[9] = Cell{Calls: 1, Faults: 1}
+
+	plain := stripANSI(renderLane(cells, channelColor(0), nil, -1, [2]int{4, 9}))
+	runes := []rune(plain)
+
+	if got := string(runes[4]); got != markCall {
+		t.Errorf("cell 4 under cursor A = %q, want the call mark %q", got, markCall)
+	}
+	if got := string(runes[9]); got != markFault {
+		t.Errorf("cell 9 under cursor B = %q, want the fault mark %q", got, markFault)
+	}
+}
+
+// On an empty cell the cursor is the hairline itself, so the column is visibly
+// crossed even where no call landed on it.
+func TestACursorOnAnEmptyCellDrawsTheHairline(t *testing.T) {
+	plain := stripANSI(renderLane(make([]Cell, 8), channelColor(0), nil, -1, [2]int{3, -1}))
+	runes := []rune(plain)
+
+	if got := string(runes[3]); got != gridV {
+		t.Errorf("empty cell under a cursor = %q, want %q", got, gridV)
+	}
+	if got := string(runes[2]); got != markEmpty {
+		t.Errorf("cell 2 has no cursor on it and reads %q, want %q", got, markEmpty)
+	}
+}
+
+// The letters engrave on the ruler, and the row has to stay exactly as wide as
+// the field: the rail and every lane are aligned to it, and one extra cell walks
+// every channel off its own traffic.
+func TestTheCursorLettersLandOnTheAxisWithoutWideningIt(t *testing.T) {
+	const width = 60
+	plain := stripANSI(axisLabels(width, 5*time.Minute, 5, [2]int{10, 40}))
+
+	if got := len([]rune(plain)); got != width {
+		t.Fatalf("axis is %d cells wide, want %d", got, width)
+	}
+	if got := string([]rune(plain)[10]); got != "A" {
+		t.Errorf("column 10 of the ruler = %q, want A", got)
+	}
+	if got := string([]rune(plain)[40]); got != "B" {
+		t.Errorf("column 40 of the ruler = %q, want B", got)
+	}
+}
+
+// Both clients read the same captures, so they have to print the same number.
+// The cases are the web client's duration() step for step.
+func TestHumanMillisMatchesTheWebClientsFormatting(t *testing.T) {
+	for _, c := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{342 * time.Millisecond, "342ms"},
+		{1201 * time.Millisecond, "1.20s"},
+		{time.Second, "1.00s"},
+		{999 * time.Millisecond, "999ms"},
+		{500 * time.Microsecond, "0.50ms"},
+		{0, "0.00ms"},
+	} {
+		if got := humanMillis(c.in); got != c.want {
+			t.Errorf("humanMillis(%v) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

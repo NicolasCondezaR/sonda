@@ -221,12 +221,27 @@ es la pregunta cuando hablan quince servicios y uno se rompió.
   borde derecho es ahora. Una llamada es una marca cuyo ancho es su duración; y
   **un fallo es una forma distinta** —una barra de alto completo— para que
   sobreviva a un canal rojo, a un lector daltónico y a una mirada de reojo.
+- **Cursores.** Dos, `A` y `B`, como los rotula el instrumento al que esto se
+  parece. Selecciona una llamada y presiona `a` o `b` —o haz clic en el
+  control— y una línea de un píxel cruza todos los canales en el lugar que esa
+  llamada ocupa en el tiempo; con los dos puestos, la barra lee el intervalo
+  entre ellos. La misma tecla lo levanta.
 - **Inspector.** La llamada seleccionada, decodificada, indicando de dónde salió
   el esquema.
 
 Arranca filtrada a fallos, porque ese es el motivo por el que la abriste. `ALL`
 cambia al campo completo. Dejar el puntero sobre el campo **congela el trazo**,
 para que una marca deje de deslizarse mientras le apuntas; al salir, se reanuda.
+
+Un cursor se ancla a una **llamada**, no a una posición en pantalla. El campo es
+una ventana que se desplaza sola, así que un cursor parado en una x mediría la
+conversión pixel→tiempo de la vista y no el tráfico: cada intervalo que lee es
+la diferencia entre dos timestamps grabados, y sigue siendo el mismo número
+cuando cambias la ventana. La lectura es de inicio a inicio —la duración de
+cada llamada ya está en pantalla como el ancho de su marca— y la flecha dice
+cuál de los dos cursores es el más temprano, así que nunca hay un intervalo
+negativo que interpretar. Un cursor cuya llamada se sale de la ventana se
+levanta, en vez de quedar apuntando a nada.
 
 `FIND` busca en rutas y en el texto de los payloads, incluidos los que Sonda
 solo tiene como bytes. `/` enfoca el buscador y `Escape` cierra el inspector.
@@ -451,6 +466,7 @@ iguales. Dos cosas necesitaron otra expresión:
 | `home` o `g` | saltar a la llamada más antigua del canal |
 | `end` o `G` | saltar a la más reciente |
 | `enter` | leer la llamada seleccionada |
+| `a` / `b` | poner un cursor de medición sobre la llamada seleccionada, o levantarlo; con los dos puestos la barra lee el intervalo entre ellos |
 | `esc` | cerrar lo que esté abierto: inspector, diff, árbol o contrato |
 | `t` | ver la petición completa a la que perteneció, como árbol |
 | `c` | si este endpoint cambió de forma desde que funcionaba |
@@ -1729,8 +1745,9 @@ protocolo.
   dirección y retomar el enmarcado en el segundo mensaje de arranque. Por eso
   `tls: true` se rechaza en un target postgres en vez de aceptarse e
   ignorarse.
-- La interfaz no tiene cursores ni trigger, dos dispositivos que un instrumento
-  real sí tiene, y el siguiente alcance evidente.
+- La interfaz tiene cursores pero no trigger. Un trigger —armar el campo y
+  dejar que capture cuando cruce una condición dada— es el único dispositivo
+  que un instrumento real tiene y este todavía no.
 - No se inyecta un id de traza propio. Las peticiones que traen uno se agrupan
   con exactitud; el resto se agrupa por anidamiento y el árbol avisa de que lo
   infirió.

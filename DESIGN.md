@@ -215,6 +215,32 @@ with the note attached, visibly weaker than measured values.
 what is true — armed, and how many calls were captured with none flagged. An
 empty state here is a health reading, not an absence.
 
+**Cursor.** Two, `A` and `B`, as the instrument this reads as labels them. Each
+is a hairline crossing **every** channel — time is the one axis they share — with
+its letter engraved on the ruler, and the span between them reads in the
+measurement bar. No new colour: `ink` and one pixel, the vocabulary the selected
+event's outline already uses.
+
+Three rules the component carries, each of them a consequence of the system
+rather than a preference:
+
+- **A cursor pins to a call, never to a position.** The field slides on its own,
+  so a cursor parked at an x would measure the view's pixel-to-time scale instead
+  of the traffic. Every span it reads is the difference of two recorded
+  timestamps, which is the only kind of number Fidelity permits here.
+- **It draws over the trace, never instead of it.** In the terminal, where a cell
+  holds one glyph, the mark keeps its shape and colour and the cursor is an
+  underline; only an empty cell becomes the hairline itself. Hiding a call in the
+  column being measured is the one thing this field cannot do.
+- **It lifts rather than lie.** A cursor whose call leaves the window is dropped,
+  because a letter with nothing under it claims a measurement against something
+  the field is no longer holding.
+
+The reading is start to start, and the arrow says which cursor is earlier — a
+negative span would be a number the reader has to interpret before it means
+anything. Nothing is placed when neither cursor is down: a bar that always holds
+a dash trains the eye to skip the spot where the number appears.
+
 ## Do's and Don'ts
 
 **Do** keep the field advancing on its own. The trace moving is the instrument's

@@ -218,11 +218,24 @@ is the question when fifteen services are talking and one of them broke.
   edge is now. A call is a mark whose width is its duration; **a fault is a
   different shape** — a full-height bar — so it survives a red channel, a
   colour-blind reader and a glance from across the room.
+- **Cursors.** Two of them, `A` and `B`, the way the instrument this reads as
+  labels them. Select a call and press `a` or `b` — or click the control — and a
+  hairline crosses every channel at that call's place in time; with both down the
+  bar reads the span between them. Pressing the same key again lifts it.
 - **Inspector.** The selected call, decoded, with its schema source named.
 
 It opens filtered to faults, because that is why you opened it. `ALL` switches
 to the whole field. Resting the pointer in the field **holds the trace** so a
 mark stops sliding while you aim at it; move away and it resumes.
+
+A cursor pins to a **call**, not to a position on screen. The field is a window
+sliding on its own, so a cursor parked at an x would measure the view's
+pixel-to-time scale rather than the traffic: every span it reads is the
+difference between two recorded timestamps, and it stays the same number when
+you change the sweep. The reading is start to start — each call's own duration is
+already on screen as the width of its mark — and the arrow says which cursor is
+earlier, so there is never a negative span to interpret. A cursor whose call
+scrolls out of the window is lifted rather than left pointing at nothing.
 
 `FIND` searches paths and payload text, including payloads Sonda only has as
 bytes. `/` focuses it, `Escape` closes the inspector.
@@ -444,6 +457,7 @@ needed a different expression:
 | `home` or `g` | jump to the oldest call on the channel |
 | `end` or `G` | jump to the newest |
 | `enter` | read the selected call |
+| `a` / `b` | place a measurement cursor on the selected call, or lift it; with both down the bar reads the span between them |
 | `esc` | close whatever is open: inspector, diff, tree or contract |
 | `t` | show the whole request it belonged to, as a tree |
 | `c` | has this endpoint changed shape since it used to work |
@@ -1668,8 +1682,9 @@ left to build is a `kafka` protocol with a raw listener and a decoder beside
   each direction, and pick the framing back up at the second startup message.
   `tls: true` is therefore refused on a postgres target rather than accepted
   and ignored.
-- The interface has no cursors and no trigger — two devices a real instrument
-  has, and the obvious next reach.
+- The interface has cursors but no trigger. A trigger — arm the field and let it
+  capture when a named condition crosses — is the one device a real instrument
+  has that this one still does not.
 - No trace id of its own is injected. Requests that carry one are grouped
   exactly; the rest are grouped by nesting and the tree says it inferred them.
 
