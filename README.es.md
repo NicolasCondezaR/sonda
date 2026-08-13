@@ -709,7 +709,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
 | `trace_call` | Todas las llamadas que fueron parte de la misma petición, como árbol |
 | `list_services` | Qué se está observando, en qué puertos, si está escuchando — y qué está respondiendo desde grabaciones o roto a propósito en este momento |
-| `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada |
+| `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada. Cuando un servicio no resolvió nada, también nombra los servicios afectados y el comando que compila un descriptor set para ellos |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica. `failed` tiene los mismos tres estados |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
 | `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella. Se puede volver a ejecutar |

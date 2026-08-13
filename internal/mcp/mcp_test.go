@@ -487,3 +487,58 @@ func TestTheProtocolFilterOffersEveryProtocolSondaCaptures(t *testing.T) {
 	}
 	t.Fatal("search_calls is not listed")
 }
+
+// An agent calls schema_status exactly when field names are missing, so that
+// answer is where the command that fixes it belongs. Reporting source: "" per
+// service and stopping there is a diagnosis handed to whoever already knows
+// the incantation — and the ordinary case is a system serving no reflection
+// anywhere, where every service is unresolved for one reason and one command
+// covers all of them.
+func TestSchemaStatusNamesTheCommandWhenNoSchemaResolved(t *testing.T) {
+	s := New(&fakeAPI{body: `{"schemas":[
+		{"target":"ms-auth","source":"","reflection":false},
+		{"target":"ms-rates","source":"","reflection":false},
+		{"target":"ms-land","source":"reflection","reflection":true}
+	]}`}, "test")
+
+	text, isError := callTool(t, s, "schema_status", `{}`)
+	if isError {
+		t.Fatalf("schema_status reported an error: %s", text)
+	}
+	for _, want := range []string{"ms-auth", "ms-rates", "buf build", "upload_schemas", "path"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the fix does not mention %q:\n%s", want, text)
+		}
+	}
+	// The one service that resolved is not a problem to fix. Listing it would
+	// send an agent to rebuild a descriptor set that is already working.
+	if strings.Contains(text, "ms-land") {
+		var body map[string]any
+		if err := json.Unmarshal([]byte(text), &body); err == nil {
+			if fix, ok := body["fix"].(map[string]any); ok {
+				for _, name := range fix["unresolved"].([]any) {
+					if name == "ms-land" {
+						t.Error("a service whose schema resolved is listed as unresolved")
+					}
+				}
+			}
+		}
+	}
+}
+
+// The counterpart: nothing to fix means no fix. A tool that always suggests
+// rebuilding the descriptor set trains the reader to skip the suggestion, and
+// then it is not there on the day it matters.
+func TestSchemaStatusSaysNothingToFixWhenEverythingResolved(t *testing.T) {
+	s := New(&fakeAPI{body: `{"schemas":[
+		{"target":"ms-auth","source":"descriptor_set","reflection":false}
+	]}`}, "test")
+
+	text, isError := callTool(t, s, "schema_status", `{}`)
+	if isError {
+		t.Fatalf("schema_status reported an error: %s", text)
+	}
+	if strings.Contains(text, "buf build") {
+		t.Errorf("a resolved schema still got the fix:\n%s", text)
+	}
+}

@@ -693,7 +693,7 @@ that is already running, so it is still the same data:
 | `diff_calls` | "This one worked and this one did not — what changed?" |
 | `trace_call` | Every call that was part of the same request, as a tree |
 | `list_services` | What is being observed, on which ports, whether it is listening — and what is stubbed or being broken right now |
-| `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing |
+| `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing. When a service resolved nothing it also names the services affected and the command that compiles a descriptor set for them |
 | `wait_for_call` | Blocks until matching traffic appears. Trigger something, then verify it. `failed` takes the same three states |
 | `replay_call` | Send a capture again. Marked destructive, so clients ask first |
 | `connect_project` | Set Sonda up to watch a whole system, and hand back the edit that makes traffic flow through it. Safe to run again |
