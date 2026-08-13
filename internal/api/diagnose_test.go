@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,15 +23,28 @@ import (
 // supervisor would prove that the report reads a struct, which is not the thing
 // that has to be right.
 
+// handedOut remembers every port this process has already given away. The probe
+// listener closes before the address is returned, so the OS may hand the same
+// port to the next call — and a test that asks for two ports and gets one twice
+// fails on something that is not the code under test. See the longer note on
+// the copy of this helper in internal/runtime, where CI hit it.
+var handedOut sync.Map
+
 func freePort(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 50; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		ln.Close()
+		if _, seen := handedOut.LoadOrStore(addr, true); !seen {
+			return addr
+		}
 	}
-	addr := ln.Addr().String()
-	ln.Close()
-	return addr
+	t.Fatal("no unused ephemeral port after 50 tries")
+	return ""
 }
 
 // withServices brings up a real project with real listeners and returns the

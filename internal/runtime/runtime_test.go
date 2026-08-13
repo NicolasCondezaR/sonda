@@ -33,15 +33,32 @@ func openStore(t *testing.T) *store.Store {
 	return db
 }
 
+// handedOut remembers every port this process has already given away.
+//
+// The probe listener is closed before the address is returned, so the port is
+// free again and the OS is entitled to hand the very same one to the next call.
+// TestConcurrentReconcilesLeaveEveryStoredServiceListening asks for
+// forty-eight in a row and CI hit the collision: two services arrived at the
+// store on one port, Sonda's own validation refused the duplicate exactly as it
+// should, and the test failed on a product rule that was working correctly.
+// Uniqueness is the helper's promise to make, not the OS's.
+var handedOut sync.Map
+
 func freePort(t *testing.T) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 50; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		ln.Close()
+		if _, seen := handedOut.LoadOrStore(addr, true); !seen {
+			return addr
+		}
 	}
-	addr := ln.Addr().String()
-	ln.Close()
-	return addr
+	t.Fatal("no unused ephemeral port after 50 tries")
+	return ""
 }
 
 // upstream answers with a fixed body, so a test can tell *which* service a port
