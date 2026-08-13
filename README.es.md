@@ -841,6 +841,35 @@ para HTTP —o `https://` con TLS en el listener—, mientras que AMQP devuelve
 `host:port` —con TLS en el listener pasa a `https://host:port`—, y Postgres
 conserva `host:port` para insertarlo en el DSN del propio llamador.
 
+### Qué le cuesta una respuesta a un agente
+
+Todo lo que un agente lee sale de su contexto, así que una respuesta que se
+repite es un costo real que no compra nada. Hay dos topes para eso, y los dos
+aplican **solo a MCP**: la web y la terminal dibujan todos los servicios y todos
+los frames sin costo para nadie, y una capacidad que se comporta distinto según
+el cliente es una que nadie puede razonar.
+
+- **Las lecturas iguales se dicen una vez.** `diagnose_silence` sobre un proyecto
+  de veintidós servicios en silencio devolvía veintidós copias del mismo párrafo,
+  distintas solo en la dirección incrustada en cada frase: unos 6.900 tokens, con
+  el 96% en las entradas por servicio. Ahora agrupa los servicios cuya lectura es
+  idéntica, dice las frases compartidas una sola vez con `{listen}`, `{point_at}`,
+  `{expects}` y `{upstream}` representando el campo de cada miembro, y sube a
+  `same_for_all` los hechos en los que todos coincidieron. El mismo informe son
+  unos 2.100 tokens. **No se pierde nada**: cada frase original se puede
+  reconstruir con los marcadores y los campos que van al lado, y una lectura que
+  de verdad difiere —dos servicios capturando cantidades distintas de llamadas—
+  queda separada en vez de plegarse con la del vecino.
+- **Los textos y las listas largas dicen qué dejaron fuera.** Un texto de más de
+  2.000 caracteres se corta, y una lista de más de 24 entradas conserva los dos
+  extremos con un marcador en el medio que dice cuántas faltan. Los dos extremos,
+  no las primeras 24: el desenlace de un stream está al final, así que quedarse
+  con la cabeza dejaría fuera justo lo que se está depurando. `detail: true` en
+  `get_call` devuelve todo, completo.
+
+Ninguno de los dos topes es un resumen. Un resumen decide por el lector qué
+servicios importan, y el lector es el que está depurando.
+
 ### Qué no está en MCP, a propósito
 
 - **Borrar un proyecto.** `remove_service` cubre el servicio que hay que sacar, y

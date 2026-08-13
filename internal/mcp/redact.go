@@ -106,6 +106,17 @@ func isSensitiveParam(key string) bool {
 // actually needs the whole thing.
 const maxString = 2000
 
+// maxItems bounds how many entries of one list a reply carries. maxString caps
+// each message; nothing capped how many there were, so a socket conversation of
+// four hundred frames or a stream of two hundred messages still arrived whole —
+// each entry short, the sum enormous.
+//
+// The kept entries are the first and last halves rather than the first maxItems.
+// A stream's outcome is at its end: the terminal status, the close code, the
+// error frame. Keeping only the head would systematically drop the part being
+// debugged, which is worse than a longer answer.
+const maxItems = 24
+
 // Redaction is decided by *position* in Sonda's own answer, never by
 // pattern-matching a key name or a string shape inside arbitrary content.
 //
@@ -368,7 +379,7 @@ func shorten(v any) any {
 		for i, val := range t {
 			t[i] = shorten(val)
 		}
-		return t
+		return clip(t)
 	case string:
 		return truncate(t)
 	default:
@@ -400,6 +411,28 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:maxString] + fmt.Sprintf("… [%d more characters, ask for detail]", len(s)-maxString)
+}
+
+// clip bounds a long list, keeping both ends and saying what it left out — the
+// same bargain truncate makes with a long string.
+//
+// The marker is an element of the list rather than a note somewhere else,
+// because a reader walking the entries has to meet it in the place the entries
+// were removed from. It says how many are missing, so the count is never
+// something the reader has to work out from a total elsewhere.
+func clip(list []any) []any {
+	if len(list) <= maxItems {
+		return list
+	}
+	head := maxItems / 2
+	tail := maxItems - head
+	dropped := len(list) - maxItems
+
+	out := make([]any, 0, maxItems+1)
+	out = append(out, list[:head]...)
+	out = append(out, fmt.Sprintf("… [%d of %d entries omitted from the middle, ask for detail]", dropped, len(list)))
+	out = append(out, list[len(list)-tail:]...)
+	return out
 }
 
 // redactedLike keeps the shape of what it replaces. Headers arrive as
