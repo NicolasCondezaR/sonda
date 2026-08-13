@@ -361,12 +361,51 @@ func schemaStatus(ctx context.Context, s *Server, _ args) (any, error) {
 	if !ok {
 		return out, nil
 	}
-	if list, _ := body["schemas"].([]any); len(list) == 0 {
+	list, _ := body["schemas"].([]any)
+	if len(list) == 0 {
 		body["note"] = "Nothing to report, which is not the same as nothing working. " +
 			"This reads only the project whose ports are open: if activate_project has not been called yet, that is the cause; otherwise the active project has no grpc service in it. " +
 			"list_services says which project is active and what is in it."
+		return body, nil
+	}
+	if unresolved := unresolvedTargets(list); len(unresolved) > 0 {
+		body["fix"] = map[string]any{
+			"unresolved": unresolved,
+			"steps": []string{
+				"Compile the whole proto tree to one descriptor set: `buf build <proto dir> -o descriptors.binpb`, or `protoc --include_imports --descriptor_set_out=descriptors.binpb <files>`. A buf.yaml scoped to one module does not scope this: buf build takes the directory you hand it, so a repository whose lint config covers a single module still compiles every service from its proto root.",
+				"Load it with upload_schemas. Through the stdio adapter pass path and let it read the file; a real descriptor set is hundreds of kilobytes, and base64 of that spends more of your context than the answer is worth.",
+			},
+			"then": "Call schema_status again. A service that stays unresolved after a descriptor set loads is not covered by it — check that you compiled from the proto root and not from one service's directory.",
+		}
 	}
 	return body, nil
+}
+
+// unresolvedTargets names the gRPC services whose field names Sonda cannot
+// produce, which is the whole reason an agent calls schema_status.
+//
+// Reporting the per-service source and stopping there answers "what happened"
+// and leaves "so what do I run" to whoever already knows — and the ordinary
+// case is a system serving no reflection anywhere, where every service is
+// unresolved for the same single reason and the fix is one command.
+func unresolvedTargets(list []any) []string {
+	var out []string
+	for _, item := range list {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		// An empty source is SourceNone: neither reflection nor a descriptor
+		// set produced anything. An error alongside a source is a resolution
+		// that worked and then went stale, which this does not second-guess.
+		if source, _ := entry["source"].(string); source != "" {
+			continue
+		}
+		if name, _ := entry["target"].(string); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // listServices answers with the configuration and the two runtime switches at
