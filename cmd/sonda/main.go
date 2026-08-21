@@ -31,6 +31,7 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
 	"github.com/NicolasCondezaR/sonda/internal/stub"
+	"github.com/NicolasCondezaR/sonda/internal/trigger"
 	"github.com/NicolasCondezaR/sonda/internal/web"
 )
 
@@ -234,17 +235,17 @@ func run() error {
 	}
 
 	recorder := store.NewRecorder(db, cfg.BufferSize)
-	stubs, faults := stub.New(db), fault.New()
+	stubs, faults, armed := stub.New(db), fault.New(), trigger.New()
 	// The certificate authority lives beside the database, because the two are
 	// equally dangerous and are copied, backed up and deleted together.
 	rt := runtime.New(db, recorder, cfg.MaxBodyBytes).
 		WithStubs(stubs).WithFaults(faults).WithCADir(filepath.Dir(cfg.Database))
-	apiServer := api.New(db, recorder, rt).WithStubs(stubs).WithFaults(faults)
+	apiServer := api.New(db, recorder, rt).WithStubs(stubs).WithFaults(faults).WithTrigger(armed)
 
 	// Wire the live view before anything starts reading from the recorder.
 	// Registering the hook once Run is already going is a data race on the
 	// field it writes, and the one place it would surface is under load.
-	recorder.OnStored(apiServer.Hub().Publish)
+	recorder.OnStored(apiServer.OnStored)
 
 	if err := rt.Reconcile(ctx); err != nil {
 		return err

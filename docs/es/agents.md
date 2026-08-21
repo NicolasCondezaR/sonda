@@ -48,6 +48,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `list_services` | Qué se está observando, en qué puertos, si está escuchando — y qué está respondiendo desde grabaciones o roto a propósito en este momento |
 | `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada. Cuando un servicio no resolvió nada, también nombra los servicios afectados y el comando que compila un descriptor set para ellos |
 | `wait_for_call` | Bloquea hasta que aparezca tráfico que calce. Dispara algo y verifica. `failed` tiene los mismos tres estados |
+| `arm_trigger` | "Avísame cuando esto vuelva a pasar" — arma una condición que sobrevive a la sesión, a diferencia de wait_for_call que bloquea dos minutos como mucho. Lo que atrapó se lee con `list_services` |
 | `replay_call` | Reenvía una captura. Marcada como destructiva, el cliente pregunta antes |
 | `connect_project` | Configura Sonda para observar un sistema entero, y devuelve la edición que hace pasar el tráfico por ella. Se puede volver a ejecutar |
 | `configure_service` | Agrega un servicio, o cambia uno que ya está — el nombre es la identidad, así que llamarla de nuevo mueve el puerto. Una modificación conserva todo lo que no se le pasó |

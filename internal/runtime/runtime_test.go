@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,11 +67,35 @@ func freePort(t *testing.T) string {
 // happily when two services are wired to each other's upstream.
 func upstream(t *testing.T, body string) string {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// Bound through freePort rather than through httptest's own allocator.
+	// httptest picks an ephemeral port the handedOut set knows nothing about,
+	// and that is exactly how CI produced a service whose listen address and
+	// upstream were the same port: freePort handed one out and closed it, and
+	// the OS gave that same port back to httptest a moment later. Sonda then
+	// refused the service, correctly, for a collision the test had created.
+	// Every port in this package comes from one allocator or the promise in
+	// the note above is only half kept.
+	ln, err := net.Listen("tcp", freePort(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, body)
 	}))
+	srv.Listener.Close()
+	srv.Listener = ln
+	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// The collision CI hit is invisible until it happens, so this is the cheapest
+// thing that fails when the two allocators drift apart again.
+func TestEveryPortInThisPackageComesFromOneAllocator(t *testing.T) {
+	addr := strings.TrimPrefix(upstream(t, "hola"), "http://")
+	if _, known := handedOut.Load(addr); !known {
+		t.Fatalf("upstream bound %s outside freePort, so a later service can be handed the same port", addr)
+	}
 }
 
 type svc struct {

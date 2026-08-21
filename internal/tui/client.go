@@ -429,6 +429,29 @@ func (c *Client) Faults(ctx context.Context) (map[string]string, error) {
 	return out.Faults, err
 }
 
+// Trigger reads the armed condition, for the same reason Faults does and with
+// the same restraint: this client shows the switches somebody left on, it does
+// not throw them. A trigger is armed from the interface or by an agent, and the
+// terminal is often the window left open while it fires.
+func (c *Client) Trigger(ctx context.Context) (*TriggerState, error) {
+	var out TriggerState
+	if err := c.get(ctx, "/api/trigger", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type TriggerState struct {
+	Armed    bool   `json:"armed"`
+	Describe string `json:"describe"`
+	Count    int    `json:"count"`
+	Fired    *struct {
+		CallID int64  `json:"call_id"`
+		Target string `json:"target"`
+		Path   string `json:"path"`
+	} `json:"fired"`
+}
+
 func (c *Client) Stats(ctx context.Context) (Stats, error) {
 	var out Stats
 	err := c.get(ctx, "/api/stats", &out)

@@ -174,3 +174,26 @@ func TestShowFrame(t *testing.T) {
 	}
 	t.Log("\n" + sampleModel(t, 120, 30).View())
 }
+
+// The terminal reads the armed switches without arming them, the same restraint
+// it already shows with injected faults — and for the same reason: this is the
+// window left open while something fires.
+func TestTheBarSaysWhenATriggerIsArmedOrHasFired(t *testing.T) {
+	m := sampleModel(t, 200, 40)
+
+	m.armed = &TriggerState{Armed: true, Describe: "ms-rates, failed (fires once)"}
+	if bar := m.renderBar(); !strings.Contains(bar, "ARMED") || !strings.Contains(bar, "ms-rates") {
+		t.Errorf("an armed trigger is invisible in the bar:\n%s", bar)
+	}
+
+	fired := &TriggerState{Count: 1}
+	fired.Fired = &struct {
+		CallID int64  `json:"call_id"`
+		Target string `json:"target"`
+		Path   string `json:"path"`
+	}{CallID: 42, Target: "ms-rates"}
+	m.armed = fired
+	if bar := m.renderBar(); !strings.Contains(bar, "TRIGGERED") || !strings.Contains(bar, "42") {
+		t.Errorf("a trigger that already fired is invisible in the bar:\n%s", bar)
+	}
+}

@@ -17,7 +17,17 @@ import (
 // be able to stall persistence, so its buffer fills and its events are dropped.
 type Hub struct {
 	mu      sync.Mutex
-	clients map[chan []byte]struct{}
+	clients map[chan event]struct{}
+}
+
+// event is one server-sent event: its name and its payload. The name travels
+// with the payload rather than being assumed at the far end, because the feed
+// carries more than captures now — a trigger firing is not a call, and a client
+// that had to guess from the shape of the JSON would guess wrong the first time
+// a third kind of event appeared.
+type event struct {
+	name string
+	data []byte
 }
 
 // clientBuffer is generous enough to absorb a burst while a tab repaints, and
@@ -25,7 +35,7 @@ type Hub struct {
 const clientBuffer = 256
 
 func NewHub() *Hub {
-	return &Hub{clients: map[chan []byte]struct{}{}}
+	return &Hub{clients: map[chan event]struct{}{}}
 }
 
 // Publish encodes one call and hands it to every current subscriber.
@@ -39,26 +49,40 @@ func (h *Hub) Publish(c *store.Call) {
 	if err != nil {
 		return
 	}
+	h.send(event{name: "call", data: payload})
+}
 
+// PublishNamed carries anything that is not a capture. It keeps the same rule
+// as Publish: a client that has stopped reading loses the event rather than
+// holding up the goroutine that persists.
+func (h *Hub) PublishNamed(name string, body any) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
+	h.send(event{name: name, data: payload})
+}
+
+func (h *Hub) send(e event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for client := range h.clients {
 		select {
-		case client <- payload:
+		case client <- e:
 		default:
 		}
 	}
 }
 
-func (h *Hub) subscribe() chan []byte {
-	client := make(chan []byte, clientBuffer)
+func (h *Hub) subscribe() chan event {
+	client := make(chan event, clientBuffer)
 	h.mu.Lock()
 	h.clients[client] = struct{}{}
 	h.mu.Unlock()
 	return client
 }
 
-func (h *Hub) unsubscribe(client chan []byte) {
+func (h *Hub) unsubscribe(client chan event) {
 	h.mu.Lock()
 	delete(h.clients, client)
 	h.mu.Unlock()

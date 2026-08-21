@@ -363,6 +363,30 @@ func readTools() []Tool {
 		},
 
 		{
+			Name:  "arm_trigger",
+			Title: "Arm a condition and come back to it",
+			Description: "Arm a condition now and read later which call crossed it. This is the one to reach for when the failure happens while nobody is watching: wait_for_call blocks for at most two minutes, an armed trigger outlives the session. " +
+				"By default it fires once and disarms itself, keeping that moment readable — set mode to normal to leave it armed and counting. " +
+				"It never matches backwards: only calls captured after it was armed can fire it. It is not persisted, so a restart disarms it. " +
+				"Read what it caught with list_services, which reports it beside the other armed switches. Pass clear to disarm.",
+			Schema: obj(map[string]any{
+				"service":  prop("string", "Only calls to this service."),
+				"method":   prop("string", "Only calls with this method."),
+				"path":     prop("string", "Only calls whose path contains this."),
+				"protocol": prop("string", "Only calls on this protocol: http, grpc, postgres, amqp, websocket."),
+				"status":   prop("integer", "Only calls answering with this HTTP status."),
+				"failed":   prop("boolean", "true fires only on a failure, GraphQL errors under HTTP 200 included; false fires only on a call that did not fail, which is how you wait for a fix to land; leave it out and either fires it."),
+				"mode":     prop("string", "single (default) disarms itself when it fires and keeps that moment; normal stays armed and counts."),
+				"clear":    prop("boolean", "Disarm whatever is armed and keep nothing."),
+			}),
+			// Not read-only, because it arms something; not destructive either,
+			// because what it arms only watches. A trigger is the one switch in
+			// here that changes nothing about the traffic.
+			Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "openWorldHint": false},
+			Run:         armTrigger,
+		},
+
+		{
 			Name:  "replay_call",
 			Title: "Replay a call",
 			Description: "Send a captured call again, byte for byte, to the service it originally went to. Reproduces a bug without redoing whatever produced it. " +
@@ -475,6 +499,13 @@ func listServices(ctx context.Context, s *Server, _ args) (any, error) {
 	}
 	projects["stubbed"] = switchState(ctx, s, "/api/stub", "stubbed")
 	projects["faults"] = switchState(ctx, s, "/api/faults", "faults")
+	// The third armed switch, read here for the same reason as the other two:
+	// so it cannot be left armed without anyone noticing.
+	if armed, err := s.get(ctx, "/api/trigger", false); err == nil {
+		projects["trigger"] = armed
+	} else {
+		projects["trigger"] = map[string]any{"unknown": err.Error()}
+	}
 	return projects, nil
 }
 
@@ -589,4 +620,32 @@ func setFlag(q url.Values, key string, a args, arg string) {
 	if a.has(arg) {
 		q.Set(key, strconv.FormatBool(a.boolean(arg)))
 	}
+}
+
+func armTrigger(ctx context.Context, s *Server, a args) (any, error) {
+	if a.boolean("clear") {
+		return s.post(ctx, "/api/trigger", []byte(`{"clear":true}`))
+	}
+
+	condition := map[string]any{}
+	for _, key := range []string{"service", "method", "path", "protocol", "mode"} {
+		if value := a.str(key); value != "" {
+			condition[key] = value
+		}
+	}
+	if a.has("status") {
+		condition["status"] = a.num("status", 0)
+	}
+	// has() rather than boolean(): failed is a tri-state here, and an absent
+	// flag has to stay absent. Sending false would arm a trigger that waits for
+	// a call that works, which is the opposite of what was asked.
+	if a.has("failed") {
+		condition["failed"] = a.boolean("failed")
+	}
+
+	body, err := json.Marshal(condition)
+	if err != nil {
+		return nil, err
+	}
+	return s.post(ctx, "/api/trigger", body)
 }

@@ -132,3 +132,67 @@ En la interfaz es una sección del inspector, en el terminal es `c`, y para un
 agente es `contract_drift`. Es lo único en Sonda que no toca el proxy: solo lee
 lo que ya estaba guardado.
 
+
+## El trigger
+
+Los cursores miden lo que ya alcanzaste a capturar. No hacen nada por la falla
+que ocurre dos veces por hora mientras estás mirando otra cosa, que es
+justamente para la que uno abre un depurador. Nombra la condición, anda a hacer
+otra cosa, y vuelve al momento en que disparó.
+
+```
+POST /api/trigger   {"service":"ms-rates","failed":true}
+GET  /api/trigger
+POST /api/trigger   {"clear":true}
+```
+
+En la interfaz, abre la llamada que se acaba de romper y presiona **TRIGGER ON
+THIS**: arma sobre las fallas de ese servicio, porque todos los campos que un
+formulario te preguntaría ya están en pantalla. Un agente llama a `arm_trigger`
+y lee lo que atrapó con `list_services`, al lado de los otros interruptores
+armados. El cliente de terminal muestra el trigger armado y su disparo en la
+barra de estado, pero no arma ninguno — la misma contención que ya tiene con los
+fallos inyectados.
+
+### Qué puede esperar
+
+`service`, `method`, `path` (como subcadena, igual que el buscador),
+`protocol`, `status` y `failed`, que tiene tres estados: `true` solo fallas,
+incluidos los errores de GraphQL bajo HTTP 200; `false` solo llamadas que no
+fallaron, que es como se espera a que aterrice un arreglo en vez de a la próxima
+rotura; y ausente, que dispara con cualquiera de las dos.
+
+Una condición vacía se rechaza en vez de armarse: dispararía con la próxima
+llamada fuera cual fuera, que es indistinguible de un error en el emparejado.
+
+### Dos modos, y un momento
+
+`single`, el de por defecto, se desarma al disparar y conserva ese momento
+legible. Eso es lo que hace usable "avísame cuando esto vuelva a pasar": la
+respuesta sigue ahí cuando vuelves. `normal` se queda armado y cuenta cada
+cruce, más ruidoso a propósito y útil mientras acotas algo.
+
+No hay historial de cada disparo. El campo ya muestra las llamadas, y una
+segunda lista de ellas sería un segundo registro que mantener honesto.
+
+### Qué hace al disparar, y qué no va a hacer
+
+Registra: el momento, la llamada que cruzó y la condición. Todo lo demás es una
+consecuencia que aplica cada superficie. La web congela el campo y selecciona la
+llamada. La terminal lo dice en la barra. Un agente lo lee la próxima vez que
+mire.
+
+**Un trigger nunca le quita la vista a quien está leyendo.** Si el campo ya está
+congelado a mano, el trigger registra y avisa, pero no mueve nada.
+
+### Tres cosas que conviene saber antes de confiar en él
+
+- **Nunca coincide hacia atrás.** Solo pueden dispararlo las llamadas capturadas
+  después de armarse, con precisión de nanosegundo. Un trigger que alcanzara
+  hacia atrás respondería con algo que ya había pasado.
+- **No se persiste.** Un reinicio lo desarma, igual que los stubs y los fallos
+  inyectados. Un instrumento que volviera de un reinicio todavía armado
+  dispararía sobre algo que ya nadie estaba esperando.
+- **Hay un trigger, no uno por servicio.** Los fallos y los stubs se arman por
+  servicio porque actúan sobre un servicio; un trigger actúa sobre el
+  instrumento.

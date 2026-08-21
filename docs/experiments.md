@@ -131,3 +131,68 @@ In the interface it is a section of the inspector, in the terminal it is `c`,
 and for an agent it is `contract_drift`. This is the one thing in Sonda that
 never touches the proxy: it only reads what was already stored.
 
+
+## The trigger
+
+Cursors measure what you already caught. They do nothing for the failure that
+happens twice an hour while you are looking somewhere else, which is the one
+people open a debugger for. Name the condition, walk away, and come back to the
+moment it fired.
+
+```
+POST /api/trigger   {"service":"ms-rates","failed":true}
+GET  /api/trigger
+POST /api/trigger   {"clear":true}
+```
+
+In the interface, open the call that just broke and press **TRIGGER ON THIS**:
+it arms on failures from that service, because every field a form would have
+asked for is already on screen. An agent calls `arm_trigger` and reads what it
+caught from `list_services`, beside the other armed switches. The terminal
+client shows an armed trigger and its firing in the status bar but does not arm
+one — the same restraint it already shows with injected faults.
+
+### What it can wait for
+
+`service`, `method`, `path` (a substring, the way the search field works),
+`protocol`, `status`, and `failed` — which takes three states: `true` only
+failures, GraphQL errors under HTTP 200 included; `false` only calls that did
+not fail, which is how you wait for a fix to land rather than for the next
+break; and absent, which fires on either.
+
+A condition with nothing in it is refused rather than armed. It would fire on
+the next call whatever it was, which is indistinguishable from a bug in the
+matching.
+
+### Two modes, and one moment
+
+`single`, the default, disarms itself when it fires and keeps that moment
+readable. That is what makes "tell me when this happens again" usable: the
+answer is still there when you come back to it. `normal` stays armed and counts
+every crossing, which is noisier by design and useful while narrowing something
+down.
+
+There is no history of every firing. The field already shows the calls, and a
+second list of them would be a second record to keep honest.
+
+### What firing does, and what it will not do
+
+It records: the moment, the call that crossed, and the condition. Everything
+else is a consequence each surface applies. The web holds the field and selects
+the call. The terminal says so in the bar. An agent reads it whenever it next
+looks.
+
+**A trigger never takes the view from someone who is reading it.** If the field
+is already held by hand, the trigger records and says so but does not move
+anything.
+
+### Three things to know before you rely on it
+
+- **It never matches backwards.** Only calls captured after it was armed can
+  fire it, to the nanosecond. A trigger that reached back would answer with
+  something that had already happened.
+- **It is not persisted.** A restart disarms it, the same as stubs and injected
+  faults. An instrument that came back from a restart still armed would fire on
+  something nobody was waiting for any more.
+- **There is one trigger, not one per service.** Faults and stubs are armed per
+  service because they act on a service; a trigger acts on the instrument.

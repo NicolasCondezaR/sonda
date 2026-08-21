@@ -123,6 +123,7 @@ preguntar qué cruzó el cable de verdad en vez de pedirte que pegues logs:
 recent_failures      qué acaba de romperse
 diff_calls           esta funcionó y esta no — qué cambió
 diff_flows           dos corridas completas alineadas, y dónde se separaron
+arm_trigger          atrapa la próxima llamada que cruce una condición, dentro de horas
 wait_for_call        dispara algo y después verifica qué salió por el cable
 trace_call           el árbol de llamadas que provocó una petición
 ```
@@ -148,13 +149,16 @@ La captura es el piso. Sobre los bytes grabados:
   conexiones cortadas.
 - **[Deriva de contratos](docs/es/experiments.md#deriva-de-contratos)** — qué
   empezó a mandar un servicio que su esquema nunca prometió.
+- **[El trigger](docs/es/experiments.md#el-trigger)** — arma una condición y anda
+  a hacer otra cosa; vuelve al momento en que disparó. Nunca coincide hacia
+  atrás, y nunca le quita la vista a quien ya está leyendo.
 
 ## Estado
 
-Fase 19 completa: captura, decodificación, almacenamiento, búsqueda, la API de
+Fase 20 completa: captura, decodificación, almacenamiento, búsqueda, la API de
 consulta, la interfaz web, replay, diff estructural, un cliente de terminal,
 gestión de proyectos, árboles de llamadas, modo stub, inyección de fallos,
-deriva de contratos, el servidor MCP, TLS y AMQP 0-9-1 funcionan, y todo el
+deriva de contratos, el servidor MCP, TLS, AMQP 0-9-1, el diff de flujos y el trigger funcionan, y todo el
 conjunto corre con `docker compose up`. Ver la
 [hoja de ruta](docs/es/roadmap.md).
 
