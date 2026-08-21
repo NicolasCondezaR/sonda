@@ -122,6 +122,7 @@ preguntar qué cruzó el cable de verdad en vez de pedirte que pegues logs:
 ```
 recent_failures      qué acaba de romperse
 diff_calls           esta funcionó y esta no — qué cambió
+diff_flows           dos corridas completas alineadas, y dónde se separaron
 wait_for_call        dispara algo y después verifica qué salió por el cable
 trace_call           el árbol de llamadas que provocó una petición
 ```
@@ -138,6 +139,9 @@ La captura es el piso. Sobre los bytes grabados:
 
 - **[Replay y diff](docs/es/replay.md)** — reenviar una llamada guardada, o
   comparar dos de forma estructural para ver qué difiere realmente.
+- **[Comparar dos corridas](docs/es/replay.md#comparar-dos-corridas)** — alinear
+  un flujo que funcionó con uno que no, y nombrar la primera llamada donde se
+  separaron. Los ids en las rutas no impiden que dos corridas emparejen.
 - **[Modo stub](docs/es/experiments.md#modo-stub)** — responder por un servicio
   desde sus propias grabaciones en vez de llamarlo.
 - **[Romper a propósito](docs/es/experiments.md)** — latencia, estados forzados,

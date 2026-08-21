@@ -49,3 +49,29 @@ func TestTheInterfaceExposesAMQPConfigurationAndDecodedFrames(t *testing.T) {
 		}
 	}
 }
+
+// A capability is not finished until it exists on every surface, and the flow
+// comparison is the one most likely to be left behind: it is reachable from an
+// agent through one MCP call, which makes it easy to believe it shipped.
+func TestTheInterfaceCanCompareTwoRuns(t *testing.T) {
+	source, err := assets.ReadFile("static/sonda.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(source)
+
+	for _, want := range []string{
+		`fetch("api/flowdiff?a="`,
+		// Holding a run is the only way to reach the comparison from here.
+		"HOLD RUN",
+		// The three ways the answer can mislead have to be on screen, not only
+		// in the payload.
+		"same_entry",
+		"d.certain",
+		"d.unmatched > d.matched",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the interface never does %s, so comparing two runs lives on other surfaces only", want)
+		}
+	}
+}

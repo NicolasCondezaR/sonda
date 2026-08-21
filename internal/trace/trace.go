@@ -29,10 +29,17 @@ import (
 // store.Summary: the arranging is pure, and a package that can be tested
 // without a database gets tested properly.
 type Call struct {
-	ID       int64         `json:"id"`
-	Target   string        `json:"target"`
-	Method   string        `json:"method,omitempty"`
-	Path     string        `json:"path,omitempty"`
+	ID       int64  `json:"id"`
+	Target   string `json:"target"`
+	Protocol string `json:"protocol,omitempty"`
+	Method   string `json:"method,omitempty"`
+	Path     string `json:"path,omitempty"`
+
+	// Op is the operation a protocol names for itself when its path does not:
+	// the GraphQL operation, since every one of those is a POST to the same
+	// endpoint. Empty for the protocols whose path already says which call
+	// this is.
+	Op       string        `json:"op,omitempty"`
 	Status   int           `json:"status"`
 	Started  time.Time     `json:"started_at"`
 	Duration time.Duration `json:"-"`

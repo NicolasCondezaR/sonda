@@ -956,6 +956,16 @@ a.switch__key { display: inline-block; text-decoration: none; }
 
 .tree__mark { margin-right: var(--tight); }
 
+/* The verdict column of a flow comparison sits where the duration does in a
+   tree, for the same reason: a reader scans down one edge, not across rows. */
+.tree__verdict {
+  color: var(--ink-faint);
+  white-space: nowrap;
+  padding-left: var(--tight);
+}
+
+.tree__row--fault .tree__verdict { color: var(--fault); }
+
 /* Third place the same hatch appears, and deliberately the same: the rail says
    which channel is stubbed, the field says which events were, and the tree says
    which branch of this request never reached its service. */

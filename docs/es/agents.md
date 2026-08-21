@@ -43,6 +43,7 @@ Con `sonda mcp --api http://127.0.0.1:9000` lo apuntas a otra parte.
 | `search_calls` | Por servicio, método, ruta, estado o texto en los cuerpos. `failed` tiene tres estados: true para las fallidas, false para las que funcionaron, ausente para ambas |
 | `get_call` | Una llamada completa, decodificada |
 | `diff_calls` | "Esta funcionó y esta no, ¿qué cambió?" |
+| `diff_flows` | "Ayer funcionaba y hoy no" — dos corridas completas alineadas, y la primera llamada donde se separaron |
 | `trace_call` | Todas las llamadas que fueron parte de la misma petición, como árbol |
 | `list_services` | Qué se está observando, en qué puertos, si está escuchando — y qué está respondiendo desde grabaciones o roto a propósito en este momento |
 | `schema_status` | De dónde salieron los nombres de campo de cada servicio gRPC: reflection, el descriptor set, o nada. Cuando un servicio no resolvió nada, también nombra los servicios afectados y el comando que compila un descriptor set para ellos |

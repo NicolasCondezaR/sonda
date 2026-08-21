@@ -484,6 +484,30 @@ func (c *Client) Diff(ctx context.Context, a, b int64) (*Diff, error) {
 	return &out, nil
 }
 
+// FlowDiff compares two runs of the same flow, seeded by one call from each.
+//
+// Like Trace, it takes the drawing the API already made rather than building a
+// second one here: the terminal, the browser and an agent then read the same
+// comparison, and there is one renderer to keep honest instead of three.
+func (c *Client) FlowDiff(ctx context.Context, a, b int64) (*FlowDiff, error) {
+	var out FlowDiff
+	path := fmt.Sprintf("/api/flowdiff?a=%d&b=%d&bodies=none", a, b)
+	if err := c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+type FlowDiff struct {
+	Rendered  string `json:"rendered"`
+	Matched   int    `json:"matched"`
+	OnlyInA   int    `json:"only_in_a"`
+	OnlyInB   int    `json:"only_in_b"`
+	Unmatched int    `json:"unmatched"`
+	Certain   bool   `json:"certain"`
+	SameEntry bool   `json:"same_entry"`
+}
+
 // Trace asks for the whole request a call belonged to.
 //
 // The API already returns the tree drawn as text, and the terminal takes it as

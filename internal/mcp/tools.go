@@ -247,6 +247,34 @@ func readTools() []Tool {
 		},
 
 		{
+			Name:  "diff_flows",
+			Title: "Compare two runs of the same flow",
+			Description: "Compare two whole requests — every call each of them set off — and report where they parted ways. Answers \"this worked yesterday and today it does not\", which comparing two single calls cannot: the call that changed is usually several hops down, or is a call that stopped being made at all. " +
+				"Give it one call id from each run; the rest of both trees is found for you. The answer names the first divergence, lists what changed per aligned call, and lists the calls that exist in only one of the runs. " +
+				"Calls are aligned by service, protocol, method and the shape of the path, so ids in the path do not stop two runs matching. Check unmatched before believing the rest: a high count means the paths did not align, not that everything changed. " +
+				"certain is false when either run was grouped by timing instead of a real trace id, and same_entry is false when the two seeds were not even the same call.",
+			Schema: obj(map[string]any{
+				"a":         prop("integer", "Any call from the first run, usually the one that worked."),
+				"b":         prop("integer", "Any call from the second run, usually the one that failed."),
+				"normalize": prop("string", "How hard to look at a path segment before treating it as a value: strict (default), loose, or off. Use loose when ids in paths are unusual and nothing aligns; off when the routes carry no ids at all."),
+				"bodies":    prop("string", "Which payloads to compare: first (default, the divergence and its direct children), all, or none. all is expensive on a wide flow and fills your context with JSON."),
+			}, "a", "b"),
+			Annotations: readOnly,
+			Run: func(ctx context.Context, s *Server, a args) (any, error) {
+				x, y := a.num("a", 0), a.num("b", 0)
+				if x <= 0 || y <= 0 {
+					return nil, fmt.Errorf("both a and b are required and must be call ids, one from each run")
+				}
+				q := url.Values{}
+				q.Set("a", strconv.Itoa(x))
+				q.Set("b", strconv.Itoa(y))
+				setIf(q, "normalize", a.str("normalize"))
+				setIf(q, "bodies", a.str("bodies"))
+				return s.get(ctx, "/api/flowdiff?"+q.Encode(), false)
+			},
+		},
+
+		{
 			Name:  "list_services",
 			Title: "Services being observed",
 			Description: "Which services Sonda is proxying right now, on which ports, and whether each one is actually listening. Also reports which project is active. Ask this first if you are unsure whether the traffic you expect is even being captured. " +

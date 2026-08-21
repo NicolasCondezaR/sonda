@@ -39,6 +39,10 @@ const state = {
   // difference between two recorded times.
   cursors: { a: null, b: null },
   detail: null,             // the call currently in the inspector
+  // flowPin holds the run kept for comparison. Comparing two runs needs two of
+  // them and the second is usually found minutes after the first, so the hold
+  // outlives the search — a modal picker would not.
+  flowPin: null,
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
   stubbed: new Set(),        // services answering from recordings, not the wire
   broken: new Map(),         // service -> the rule Sonda is applying to it
@@ -1135,7 +1139,40 @@ function renderActions(call) {
     bar.appendChild(diff);
     bar.appendChild(el("span", "actions__note", "replay of #" + call.replay_of));
   }
+
+  bar.appendChild(flowControl(call, bar));
   return bar;
+}
+
+// flowControl holds one run and then compares the next one against it. Two
+// clicks rather than a picker, because the run you want to compare against was
+// usually captured long before you knew you would want it.
+function flowControl(call, bar) {
+  if (state.flowPin === null || state.flowPin === call.id) {
+    const hold = el("button", "switch__key switch__key--lone",
+      state.flowPin === call.id ? "RUN HELD" : "HOLD RUN");
+    hold.type = "button";
+    hold.addEventListener("click", () => {
+      state.flowPin = state.flowPin === call.id ? null : call.id;
+      const note = el("span", "actions__note", state.flowPin
+        ? "run #" + call.id + " held — open a call from the other run to compare"
+        : "run released");
+      for (const stale of bar.querySelectorAll(".actions__note--flow")) stale.remove();
+      note.classList.add("actions__note--flow");
+      bar.appendChild(note);
+      hold.textContent = state.flowPin ? "RUN HELD" : "HOLD RUN";
+    });
+    return hold;
+  }
+
+  const compare = el("button", "switch__key switch__key--lone", "DIFF FLOW vs #" + state.flowPin);
+  compare.type = "button";
+  compare.addEventListener("click", () => {
+    const pinned = state.flowPin;
+    state.flowPin = null;
+    runFlowDiff(pinned, call.id);
+  });
+  return compare;
 }
 
 async function runReplay(call, button, bar) {
@@ -1200,6 +1237,93 @@ async function runDiff(aID, bID) {
     dom.diffBody.replaceChildren(
       el("div", "insp-sec__body note note--fault", "Could not compare: " + err.message));
   }
+}
+
+async function runFlowDiff(aID, bID) {
+  dom.diffBody.hidden = false;
+  dom.diffBody.replaceChildren(el("div", "insp-sec__body insp-sec__body--loading", "Comparing the two runs"));
+
+  try {
+    const res = await fetch("api/flowdiff?a=" + aID + "&b=" + bID);
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || ("flowdiff " + res.status));
+    renderFlowDiff(out, aID, bID);
+  } catch (err) {
+    dom.diffBody.replaceChildren(
+      el("div", "insp-sec__body note note--fault", "Could not compare the runs: " + err.message));
+  }
+}
+
+function renderFlowDiff(d, aID, bID) {
+  const out = document.createDocumentFragment();
+
+  const head = section("FLOW DIFF  #" + aID + " to #" + bID,
+    d.matched + " matched" + (d.unmatched ? " · " + d.unmatched + " unpaired" : ""));
+
+  // The three ways this comparison can be misleading, said before the tree
+  // rather than left to be worked out from it.
+  if (!d.same_entry) {
+    head.body.appendChild(el("p", "note note--fault",
+      "These two runs do not start from the same call, so the comparison below is probably meaningless."));
+  }
+  if (!d.certain) {
+    head.body.appendChild(el("p", "note",
+      "at least one run was grouped by timing, not by a trace id — the shapes are inferred"));
+  }
+  if (d.unmatched > d.matched && d.matched > 0) {
+    head.body.appendChild(el("p", "note",
+      "More calls went unpaired than paired. That is usually the path matching, not the code: the ids in these paths are not being recognised."));
+  }
+
+  if (d.divergence && d.divergence.length) {
+    head.body.appendChild(kv([["first divergence", d.divergence.join("  →  ")]]));
+  } else {
+    head.body.appendChild(el("p", "diff__same", "Both runs did the same things with the same outcomes."));
+  }
+  out.appendChild(head.wrap);
+
+  const flow = section("ALIGNED CALLS");
+  const list = el("div", "tree");
+  drawPair(list, d.root, "", true, true);
+  flow.body.appendChild(list);
+  out.appendChild(flow.wrap);
+
+  for (const body of d.bodies || []) {
+    const b = section("PAYLOAD  " + body.signature, "#" + body.a + " to #" + body.b);
+    b.body.appendChild(renderSideDiff("REQUEST", body.request));
+    b.body.appendChild(renderSideDiff("RESPONSE", body.response));
+    out.appendChild(b.wrap);
+  }
+
+  dom.diffBody.replaceChildren(out);
+  dom.diffBody.scrollTop = 0;
+}
+
+function drawPair(list, pair, prefix, last, root) {
+  const gone = pair.only_in === "a";
+  const fresh = pair.only_in === "b";
+  const changed = (pair.changes || []).length > 0;
+
+  const row = el("div", "tree__row" +
+    (gone || changed ? " tree__row--fault" : "") +
+    (pair.inferred ? " tree__row--guess" : ""));
+
+  const left = el("span");
+  left.appendChild(el("span", "tree__pipe", prefix + (root ? "" : last ? "└─ " : "├─ ")));
+  left.appendChild(el("span", "tree__name", pair.signature));
+  row.appendChild(left);
+
+  let verdict = "same";
+  if (gone) verdict = "only in a — no longer called";
+  else if (fresh) verdict = "only in b — new call";
+  else if (changed) verdict = pair.changes.map((c) => c.field + ": " + c.a + " → " + c.b).join(", ");
+  row.appendChild(el("span", "tree__verdict", verdict));
+
+  list.appendChild(row);
+
+  const indent = prefix + (root ? "" : last ? "   " : "│  ");
+  const kids = pair.children || [];
+  kids.forEach((child, i) => drawPair(list, child, indent, i === kids.length - 1, false));
 }
 
 function renderDiff(d) {

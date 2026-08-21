@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -111,6 +113,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadDiff(*call.ReplayOf, call.ID)
 
+	case "x":
+		// Two presses, because comparing two runs needs two of them and the
+		// second is usually found minutes after the first. The first press
+		// remembers this run; the next one on a different call compares them.
+		call, ok := m.selectedCall()
+		if !ok {
+			return m.withError(errNoSelection), nil
+		}
+		if m.flowPin == nil || *m.flowPin == call.ID {
+			id := call.ID
+			m.flowPin = &id
+			m.status = fmt.Sprintf("run #%d held — pick a call from the other run and press f again", id)
+			m.statusErr = false
+			return m, nil
+		}
+		pinned := *m.flowPin
+		m.flowPin = nil
+		m.status = "comparing the two runs…"
+		m.statusErr = false
+		return m, m.loadFlowDiff(pinned, call.ID)
+
 	case "c":
 		call, ok := m.selectedCall()
 		if !ok {
@@ -137,7 +160,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadDiagnosis(true)
 
 	case "esc":
-		m.detail, m.diff, m.trace, m.drift, m.status = nil, nil, nil, nil, ""
+		m.detail, m.diff, m.trace, m.drift, m.flow, m.status = nil, nil, nil, nil, nil, ""
 		return m, nil
 	}
 
