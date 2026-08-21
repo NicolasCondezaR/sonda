@@ -17,6 +17,8 @@
 package trace
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -50,6 +52,13 @@ type Call struct {
 	// played back. The tree is exactly where someone asks why one branch is
 	// suspiciously fast, so it has to answer there and not only in the detail.
 	Stubbed bool `json:"stubbed,omitempty"`
+
+	// TraceIDInjected says this call's TraceID came from Sonda, not from
+	// whatever the client sent. The grouping is exactly as real either way —
+	// Build does not care who wrote the header — but a reader deciding how much
+	// to trust a client's own instrumentation needs to know which id it is
+	// actually looking at.
+	TraceIDInjected bool `json:"trace_id_injected,omitempty"`
 	// Detail is the gRPC status, the transport error, whatever explains a
 	// failure in one line.
 	Detail string `json:"detail,omitempty"`
@@ -139,6 +148,49 @@ func ID(h http.Header) string {
 		}
 	}
 	return ""
+}
+
+// InjectedHeader is the header Inject writes. It is the first name ID reads
+// above, deliberately — not a header of Sonda's own the way the replay marker
+// is, because a name nothing has ever heard of propagates nowhere. Many
+// services already echo X-Request-Id onto their own outbound calls without
+// knowing why, as a correlation habit, and that existing behaviour is what
+// lets an id Sonda wrote on one hop keep working past it.
+const InjectedHeader = "X-Request-Id"
+
+// Inject writes a trace id onto headers that carry none, and returns the id
+// either way — the one already there if there was one, so a caller never has
+// to ask ID again to find out which id this request now carries.
+//
+// This is the one place forwarding is not byte exact, and it exists because
+// the alternative is worse: a flow of a hundred calls with no way to tell one
+// occurrence from the next, forever guessed at by timing instead. An id
+// already present, however it is spelled, is never touched — a client's own
+// correlation always outranks a guess that it needs one from Sonda.
+//
+// The value is prefixed so a person reading raw traffic — a log, a tcpdump —
+// can tell at a glance that this one came from the debugger and not from
+// whatever the client actually sent.
+func Inject(h http.Header) (id string, injected bool) {
+	if existing := ID(h); existing != "" {
+		return existing, false
+	}
+	id = "sonda-" + randomID()
+	h.Set(InjectedHeader, id)
+	return id, true
+}
+
+func randomID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand failing here means the machine has bigger problems than a
+		// debugging proxy. This id only has to be unlikely to collide with
+		// itself in the next few minutes, not unguessable, so the clock is an
+		// acceptable fallback and refusing to forward the request over it
+		// would not be.
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 // Build arranges calls into trees, newest request first.
@@ -313,6 +365,9 @@ func renderNode(b *strings.Builder, n *Node, prefix string, last, root bool) {
 	flags := ""
 	if n.Call.Stubbed {
 		flags = "  [from recording]"
+	}
+	if n.Call.TraceIDInjected {
+		flags += "  [trace id from Sonda]"
 	}
 	if n.Ambiguous {
 		flags += "  [could belong to another call]"

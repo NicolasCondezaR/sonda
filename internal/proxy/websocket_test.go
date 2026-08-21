@@ -315,3 +315,23 @@ func TestAPlainRequestIsNotTreatedAsASocket(t *testing.T) {
 		}
 	}
 }
+
+// The same exception as the HTTP path, and the same function: a handshake
+// with no trace id gets one before it is forwarded, so the socket it opens is
+// still groupable with whatever else caused it.
+func TestASocketWithNoTraceIDGetsOne(t *testing.T) {
+	front, rec := socketProxy(t, echoSocket(t))
+	conn, br := dialThrough(t, strings.TrimPrefix(front.URL, "http://"))
+	conn.Write(clientFrame(wsframe.OpClose, nil))
+	io.ReadAll(br)
+	conn.Close()
+	waitForCapture(t, rec)
+
+	call := rec.last()
+	if call.TraceID == "" {
+		t.Fatal("the captured socket still has no trace id")
+	}
+	if !call.TraceIDInjected {
+		t.Error("a trace id Sonda wrote onto the handshake was not marked as injected")
+	}
+}

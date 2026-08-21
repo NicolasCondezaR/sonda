@@ -100,3 +100,16 @@ func TestTheInterfaceCanArmAndReadTheTrigger(t *testing.T) {
 		}
 	}
 }
+
+// A trace id Sonda wrote is invisible in JSON alone if the tree that draws it
+// never mentions the field — the same silent gap stub_of once left in the
+// detail view, per the store's own Summary() comment.
+func TestTheTreeMarksATraceIDThatCameFromSonda(t *testing.T) {
+	source, err := assets.ReadFile("static/sonda.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "c.trace_id_injected") {
+		t.Error("the interface never reads trace_id_injected, so a synthetic trace id looks exactly like a real one")
+	}
+}

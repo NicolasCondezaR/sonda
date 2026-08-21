@@ -103,9 +103,10 @@ func toTraceCall(c store.Summary) trace.Call {
 		ID: c.ID, Target: c.Target, Protocol: c.Protocol,
 		Method: c.Method, Path: c.Path, Op: c.GraphQLOp,
 		Status: c.Status, Started: c.StartedAt, Duration: c.Duration,
-		TraceID: c.TraceID,
-		Failed:  summaryFailed(c),
-		Stubbed: c.StubOf != nil,
+		TraceID:         c.TraceID,
+		TraceIDInjected: c.TraceIDInjected,
+		Failed:          summaryFailed(c),
+		Stubbed:         c.StubOf != nil,
 	}
 
 	// What to say about a failure, most specific first. For gRPC and GraphQL

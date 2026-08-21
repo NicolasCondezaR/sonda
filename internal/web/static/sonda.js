@@ -1124,6 +1124,7 @@ function drawNode(list, node, prefix, last, root, currentID) {
   if (c.failed) left.appendChild(el("span", "tree__mark", "█"));
   left.appendChild(el("span", "tree__name", c.target + (c.path ? " " + c.path : "")));
   if (c.stubbed) left.appendChild(el("span", "note", "  from recording"));
+  if (c.trace_id_injected) left.appendChild(el("span", "note", "  trace id from Sonda"));
   if (node.ambiguous) left.appendChild(el("span", "note", "  may belong elsewhere"));
 
   row.append(left, el("span", "tree__dur", duration(c.duration_ms)));

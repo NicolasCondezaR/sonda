@@ -118,6 +118,30 @@ irrelevante todo lo de abajo. `certain` es falso cuando alguna de las corridas s
 agrupó por tiempo en vez de por un trace id real — una diferencia entre dos
 adivinanzas no es la misma afirmación que una diferencia entre dos hechos.
 
+### De dónde sale un trace id
+
+Que `certain` sea verdadero no siempre significa que el cliente se instrumentó
+solo. Una petición sin trace id propio deja todo lo que causa sin poder
+agruparse salvo adivinando por tiempo — así que Sonda escribe uno, como
+`X-Request-Id`, antes de reenviar la petición. Es el único lugar donde el
+reenvío no es exacto byte a byte, y existe por la misma razón que agrupar por
+tiempo es el último recurso: un flujo sin forma de distinguir una ocurrencia de
+la siguiente es peor depuración, no una captura más fiel.
+
+La excepción es angosta a propósito. Un id que ya esté presente, como sea que
+esté escrito, nunca se toca — la correlación propia de un cliente siempre le
+gana a una adivinanza de que necesita una de Sonda. Y toda llamada cuyo
+`trace_id` escribió Sonda lleva `trace_id_injected: true`, en la API, en el
+árbol (`[trace id from Sonda]`), y en la interfaz, para que nunca se confunda
+con algo que mandó el cliente.
+
+Que agrupe algo más allá de la única llamada donde Sonda lo escribió depende del
+cliente: un id solo correlaciona más saltos si lo que lo recibe reenvía
+`X-Request-Id` en sus propias llamadas salientes, como ya hacen muchos
+servicios para sus propios logs. Cuando no lo hace, esa llamada sola de todos
+modos consigue un id real en vez de ninguno, y el resto del árbol vuelve a
+agruparse por tiempo como siempre lo hizo.
+
 ### Qué se compara y qué no
 
 Por par alineado: el estado, si falló, el detalle del fallo, y si un lado se

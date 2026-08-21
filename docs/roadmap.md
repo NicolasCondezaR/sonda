@@ -24,6 +24,7 @@
 | 18 | TLS: terminated for the client from a local authority Sonda never installs, spoken to the upstream, and recorded on every capture as verified or not | done |
 | 19 | AMQP 0-9-1 and AMQPS: byte-exact relay, useful capture units, SASL sanitization, search and decoded API/MCP/web/TUI views | done |
 | 20 | Flow diff and the trigger: two runs aligned to the call where they parted ways, and a condition armed to catch what happens while nobody is watching | done |
+| 21 | A trace id of Sonda's own, written onto a request that arrived with none, so what it caused is grouped exactly instead of guessed at — marked in every capture that carries one, so it is never mistaken for a client's own instrumentation | done |
 
 Kafka is deliberately absent from that table. Why is below.
 
@@ -97,6 +98,4 @@ left to build is a `kafka` protocol with a raw listener and a decoder beside
   each direction, and pick the framing back up at the second startup message.
   `tls: true` is therefore refused on a postgres target rather than accepted
   and ignored.
-- No trace id of its own is injected. Requests that carry one are grouped
-  exactly; the rest are grouped by nesting and the tree says it inferred them.
 

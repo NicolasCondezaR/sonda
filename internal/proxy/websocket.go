@@ -99,15 +99,21 @@ func (p *Proxy) serveWebSocket(w http.ResponseWriter, r *http.Request, started t
 		return false
 	}
 
+	// Same exception as the HTTP path, for the same reason: a handshake with
+	// no trace id leaves the socket ungroupable with whatever else the same
+	// request caused. Written before the header is cloned for the capture and
+	// before the handshake is cloned for forwarding, so both carry it.
+	traceID, traceIDInjected := trace.Inject(r.Header)
 	call := &store.Call{
-		Target:     p.target.Name,
-		Protocol:   config.ProtocolWebSocket,
-		Method:     r.Method,
-		Path:       r.URL.RequestURI(),
-		ClientAddr: r.RemoteAddr,
-		StartedAt:  started,
-		TraceID:    trace.ID(r.Header),
-		Request:    store.Message{Headers: r.Header.Clone()},
+		Target:          p.target.Name,
+		Protocol:        config.ProtocolWebSocket,
+		Method:          r.Method,
+		Path:            r.URL.RequestURI(),
+		ClientAddr:      r.RemoteAddr,
+		StartedAt:       started,
+		TraceID:         traceID,
+		TraceIDInjected: traceIDInjected,
+		Request:         store.Message{Headers: r.Header.Clone()},
 	}
 	p.markTLS(call, r, true)
 

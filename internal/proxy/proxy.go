@@ -4,6 +4,12 @@
 // Forwarding fidelity comes first. Sonda is a debugger: if it alters what the
 // upstream receives or what the client sees, every conclusion drawn from it is
 // worthless. Capture is a side effect of the copy, never a step in it.
+//
+// There is one deliberate exception. A request with no trace id of its own
+// leaves everything it causes ungroupable except by guessing from timing, so a
+// request missing one gets a header added before it is forwarded — see
+// trace.Inject. It is additive, never overwrites a client's own id, and is
+// marked in the capture so nobody mistakes it for something the client sent.
 package proxy
 
 import (
@@ -160,6 +166,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	replayOf := replayedFrom(r.Header)
+	// A request with no trace id of its own leaves every call it causes to be
+	// grouped by timing alone, guessed rather than known. Writing one here,
+	// before the headers are cloned for the capture and before the request is
+	// forwarded, means the same id lands in both: what is recorded is exactly
+	// what crossed. See trace.Inject for why this is the one place forwarding
+	// is not byte exact, and what protects it from being one anywhere else.
+	traceID, traceIDInjected := trace.Inject(r.Header)
 	requestHeaders := r.Header.Clone()
 	r.Body = ex.request.wrap(r.Body)
 	r = r.WithContext(context.WithValue(r.Context(), ctxKey{}, ex))
@@ -180,9 +193,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Duration:   time.Since(started),
 		Error:      errorText(ex.err),
 		ReplayOf:   replayOf,
-		// Read from the request, never invented. An id Sonda made up would
-		// group calls by nothing while looking just as authoritative.
-		TraceID: trace.ID(requestHeaders),
+		// Read from the request whenever it carried one; only ever invented
+		// when it did not, and marked when that happens — see the Inject call
+		// above.
+		TraceID:         traceID,
+		TraceIDInjected: traceIDInjected,
 		Request: store.Message{
 			Headers:   requestHeaders,
 			Body:      ex.request.bytes(),

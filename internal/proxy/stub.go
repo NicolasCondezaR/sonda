@@ -121,10 +121,11 @@ func (p *Proxy) recordStub(r *http.Request, body []byte, from *store.Call, statu
 			Body:    body,
 			Size:    int64(len(body)),
 		},
-		// Read here for the same reason a forwarded call reads it: without it a
-		// stubbed call drops out of the tree of the very request it belongs to,
-		// and the one service that was answered from a recording becomes the
-		// one that looks like it was never called.
+		// Read, never injected — for the same reason a forwarded call reads it,
+		// so a stubbed call does not drop out of the tree of the request it
+		// belongs to. Not Inject, though: the answer came out of the database
+		// rather than an upstream, so there is no forwarded request for a
+		// written header to reach.
 		TraceID: trace.ID(r.Header),
 	}
 	// Not forwarded: the answer came out of the database, so the upstream's

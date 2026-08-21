@@ -400,3 +400,60 @@ func TestAGraphQLErrorIsAFaultInSQL(t *testing.T) {
 		t.Errorf("the rail counted %+v, so the rail and the field disagree", stats.ByTarget)
 	}
 }
+
+// The comment on Summary() names exactly this failure mode: stub_of once
+// reached the listing and never reached the detail, because it was wired into
+// only one of the two SELECT statements. TraceIDInjected touches Insert, List,
+// Get and Summary — four places to miss it in — so all four are asserted here
+// rather than trusting that adding a struct field was enough.
+func TestTraceIDInjectedSurvivesEverySurface(t *testing.T) {
+	s := newStore(t)
+	call := sampleCall("gateway", "GET", "/orders", 200, nil)
+	call.TraceID = "sonda-abc123"
+	call.TraceIDInjected = true
+
+	id, err := s.Insert(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TraceIDInjected {
+		t.Error("Get did not report the trace id as injected")
+	}
+
+	listed, err := s.List(context.Background(), Filter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || !listed[0].TraceIDInjected {
+		t.Errorf("List did not carry the flag through to the summary: %+v", listed)
+	}
+
+	if summary := got.Summary(); !summary.TraceIDInjected {
+		t.Error("Call.Summary() dropped the flag on the way to the listing shape")
+	}
+}
+
+// A trace id the client actually sent must never be reported as Sonda's own —
+// that would tell a reader to distrust instrumentation that was real.
+func TestAClientsOwnTraceIDIsNeverReportedAsInjected(t *testing.T) {
+	s := newStore(t)
+	call := sampleCall("gateway", "GET", "/orders", 200, nil)
+	call.TraceID = "client-sent-this"
+
+	id, err := s.Insert(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TraceIDInjected {
+		t.Error("a real client trace id was reported as injected")
+	}
+}

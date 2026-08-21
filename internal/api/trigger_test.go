@@ -42,11 +42,19 @@ func armedServer(t *testing.T) (http.Handler, *store.Store, *Server) {
 
 // crossed pushes one capture through the same hook the recorder calls, which is
 // the only path a trigger can fire from.
-func crossed(t *testing.T, s *Server, target string, status int) *store.Call {
+//
+// startedAt is a parameter rather than time.Now(): arming happens in-process,
+// one function call before this one, and on a clock coarse enough — this
+// machine included — two calls that close together can read back the exact
+// same instant. The trigger is right to refuse that as "not after arming"; the
+// fix belongs here, in giving the test a real gap, not in loosening what
+// "after" means for everyone who arms one for real, where a network round trip
+// to the actual upstream always provides one.
+func crossed(t *testing.T, s *Server, target string, status int, startedAt time.Time) *store.Call {
 	t.Helper()
 	call := &store.Call{
 		Target: target, Protocol: "http", Method: "GET", Path: "/rates/CL",
-		Status: status, ClientAddr: "127.0.0.1:1", StartedAt: time.Now().UTC(),
+		Status: status, ClientAddr: "127.0.0.1:1", StartedAt: startedAt,
 		Duration: 5 * time.Millisecond,
 		Request:  store.Message{Headers: http.Header{}},
 		Response: store.Message{Headers: http.Header{}},
@@ -57,6 +65,7 @@ func crossed(t *testing.T, s *Server, target string, status int) *store.Call {
 
 func TestArmingAndFiring(t *testing.T) {
 	h, _, server := armedServer(t)
+	base := time.Now().UTC()
 
 	code, armed := post(t, h, "/api/trigger", `{"service":"ms-rates","failed":true}`)
 	if code != http.StatusOK {
@@ -66,12 +75,12 @@ func TestArmingAndFiring(t *testing.T) {
 		t.Fatalf("the trigger did not report itself armed: %v", armed)
 	}
 
-	crossed(t, server, "ms-rates", 200)
+	crossed(t, server, "ms-rates", 200, base.Add(time.Second))
 	if _, state := get(t, h, "/api/trigger"); state["fired"] != nil {
 		t.Fatal("a call that did not fail fired a trigger armed on failures")
 	}
 
-	crossed(t, server, "ms-rates", 503)
+	crossed(t, server, "ms-rates", 503, base.Add(2*time.Second))
 	_, state := get(t, h, "/api/trigger")
 	if state["fired"] == nil {
 		t.Fatal("the failure never fired the trigger")
@@ -85,8 +94,9 @@ func TestArmingAndFiring(t *testing.T) {
 
 func TestClearingTheTrigger(t *testing.T) {
 	h, _, server := armedServer(t)
+	base := time.Now().UTC()
 	post(t, h, "/api/trigger", `{"service":"ms-rates"}`)
-	crossed(t, server, "ms-rates", 500)
+	crossed(t, server, "ms-rates", 500, base.Add(time.Second))
 
 	code, cleared := post(t, h, "/api/trigger", `{"clear":true}`)
 	if code != http.StatusOK {
