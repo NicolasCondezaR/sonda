@@ -22,6 +22,7 @@ import (
 	"github.com/NicolasCondezaR/sonda/internal/runtime"
 	"github.com/NicolasCondezaR/sonda/internal/store"
 	"github.com/NicolasCondezaR/sonda/internal/stub"
+	"github.com/NicolasCondezaR/sonda/internal/trigger"
 )
 
 type Dropper interface {
@@ -40,6 +41,9 @@ type Server struct {
 
 	// faults is nil the same way, and a nil one reports no rules.
 	faults *fault.Registry
+
+	// trigger is nil the same way, and a nil one reports nothing armed.
+	trigger *trigger.Registry
 }
 
 // WithStubs gives the server control of which services answer from recordings.
@@ -47,6 +51,9 @@ func (s *Server) WithStubs(r *stub.Registry) *Server { s.stubs = r; return s }
 
 // WithFaults gives the server control of which services are broken on purpose.
 func (s *Server) WithFaults(r *fault.Registry) *Server { s.faults = r; return s }
+
+// WithTrigger gives the server the one armed condition.
+func (s *Server) WithTrigger(r *trigger.Registry) *Server { s.trigger = r; return s }
 
 func New(s *store.Store, dropped Dropper, rt *runtime.Runtime) *Server {
 	return &Server{store: s, dropped: dropped, rt: rt, hub: NewHub()}
@@ -92,6 +99,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/stub", s.setStub)
 	mux.HandleFunc("GET /api/faults", s.faultState)
 	mux.HandleFunc("POST /api/faults", s.setFault)
+	mux.HandleFunc("GET /api/trigger", s.triggerState)
+	mux.HandleFunc("POST /api/trigger", s.setTrigger)
 	mux.HandleFunc("GET /api/drift", s.driftForEndpoint)
 
 	mux.HandleFunc("GET /api/projects", s.listProjects)

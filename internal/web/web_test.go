@@ -75,3 +75,28 @@ func TestTheInterfaceCanCompareTwoRuns(t *testing.T) {
 		}
 	}
 }
+
+// The trigger is armed from here and nowhere else in the interface: the
+// terminal client reads the armed switches without arming them, the same way it
+// already treats injected faults. If this control disappears, the only way left
+// to arm one is an agent.
+func TestTheInterfaceCanArmAndReadTheTrigger(t *testing.T) {
+	source, err := assets.ReadFile("static/sonda.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(source)
+
+	for _, want := range []string{
+		`call("POST", "api/trigger"`,
+		`fetch("api/trigger")`,
+		// A firing arrives as its own named event, not as a call.
+		`addEventListener("trigger"`,
+		// And it must never take the view from someone already holding it.
+		"if (state.held) return;",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the interface never does %s, so the trigger is half wired here", want)
+		}
+	}
+}

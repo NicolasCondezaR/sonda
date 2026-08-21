@@ -120,6 +120,7 @@ crossed the wire instead of asking you to paste logs:
 recent_failures      what just broke
 diff_calls           this one worked and this one did not — what changed
 diff_flows           two whole runs aligned, and where they parted ways
+arm_trigger          catch the next call that crosses a condition, hours from now
 wait_for_call        trigger something, then verify what went over the wire
 trace_call           the tree of calls one request caused
 ```
@@ -144,13 +145,16 @@ Capture is the floor. On top of the recorded bytes:
   — latency, forced statuses, cut connections.
 - **[Contract drift](docs/experiments.md#contract-drift)** — what a service
   started sending that its schema never promised.
+- **[The trigger](docs/experiments.md#the-trigger)** — arm a condition and walk
+  away; come back to the moment it fired. It never matches backwards, and it
+  never takes the view from someone already reading it.
 
 ## Status
 
-Phase 19 complete: capture, decoding, storage, search, the query API, the web
+Phase 20 complete: capture, decoding, storage, search, the query API, the web
 interface, replay, structural diff, a terminal client, project management,
 request trees, stub mode, fault injection, contract drift, the MCP server, TLS,
-and AMQP 0-9-1 all work, and the whole thing runs from `docker compose up`. See
+AMQP 0-9-1, flow diff and the trigger all work, and the whole thing runs from `docker compose up`. See
 the [Roadmap](docs/roadmap.md).
 
 ## Contributing

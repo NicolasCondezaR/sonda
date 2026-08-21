@@ -94,6 +94,22 @@ func (m Model) renderBar() string {
 		keep++
 	}
 
+	// A trigger sits beside the broken rules and is kept for the same reason:
+	// it is a switch somebody left armed, and this window is often the one left
+	// open while it fires. Fired outranks armed — a moment already caught is
+	// news, and a condition still waiting is only context.
+	if t := m.armed; t != nil {
+		switch {
+		case t.Fired != nil:
+			pieces = append(pieces, styleFault.Render(
+				fmt.Sprintf("TRIGGERED · #%d %s", t.Fired.CallID, t.Fired.Target)))
+			keep++
+		case t.Armed:
+			pieces = append(pieces, styleLabel.Render("ARMED · "+t.Describe))
+			keep++
+		}
+	}
+
 	// The cursor reading goes ahead of the switches, which is what makes it
 	// outlive them when the terminal is narrow: shedding takes from the far end.
 	// It earns that place for the opposite reason to the broken rule — it is a

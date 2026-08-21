@@ -43,6 +43,10 @@ const state = {
   // them and the second is usually found minutes after the first, so the hold
   // outlives the search — a modal picker would not.
   flowPin: null,
+  // trigger is the armed condition and whatever it caught, read on every
+  // reload like the other two switches: it can be armed from an agent or the
+  // terminal while this window sits open.
+  trigger: null,
   totals: { calls: 0, dropped: 0, byTarget: new Map() },
   stubbed: new Set(),        // services answering from recordings, not the wire
   broken: new Map(),         // service -> the rule Sonda is applying to it
@@ -645,6 +649,22 @@ function renderDiagnosis() {
   }
 }
 
+// renderTriggerLamp gives the armed trigger the fourth state of the lamp that
+// already says what the instrument is doing. Held wins: someone reading a frozen
+// field is not interrupted by a lamp that changes under them.
+function renderTriggerLamp() {
+  const t = state.trigger;
+  if (!t || (!t.armed && !t.fired)) {
+    if (!state.held && !state.frozen) setAcquisition("live", "LIVE");
+    return;
+  }
+  if (t.fired) {
+    setAcquisition("triggered", "TRIGGERED");
+    return;
+  }
+  setAcquisition("armed", "ARMED");
+}
+
 function setAcquisition(stateName, text) {
   dom.acquisition.dataset.state = stateName;
   dom.acquisitionText.textContent = text;
@@ -664,11 +684,12 @@ function query() {
 
 async function reload() {
   try {
-    const [callsRes, statsRes, stubRes, faultRes] = await Promise.all([
+    const [callsRes, statsRes, stubRes, faultRes, triggerRes] = await Promise.all([
       fetch("api/calls?" + query()),
       fetch("api/stats"),
       fetch("api/stub"),
       fetch("api/faults"),
+      fetch("api/trigger"),
     ]);
     if (!callsRes.ok) throw new Error("calls " + callsRes.status);
 
@@ -684,6 +705,11 @@ async function reload() {
         [...next].some((name) => !state.stubbed.has(name));
       state.stubbed = next;
       if (changed) renderRail();
+    }
+
+    if (triggerRes.ok) {
+      state.trigger = await triggerRes.json();
+      renderTriggerLamp();
     }
 
     if (faultRes.ok) {
@@ -765,6 +791,22 @@ function connect() {
       ingest(JSON.parse(event.data));
     } catch (err) {
       console.error("sonda: bad event", err);
+    }
+  });
+  // A trigger firing is not a call, so it arrives as its own event rather than
+  // being guessed at from the shape of the payload.
+  stream.addEventListener("trigger", (event) => {
+    try {
+      const { fired, state: armed } = JSON.parse(event.data);
+      state.trigger = armed;
+      renderTriggerLamp();
+      // The one thing a trigger must never do is take the view away from
+      // someone who is reading it. Held by hand wins over armed by condition.
+      if (state.held) return;
+      freeze(true);
+      select(fired.call_id);
+    } catch (err) {
+      console.error("sonda: bad trigger event", err);
     }
   });
   stream.addEventListener("error", () => {
@@ -1141,7 +1183,60 @@ function renderActions(call) {
   }
 
   bar.appendChild(flowControl(call, bar));
+  bar.appendChild(triggerControl(call, bar));
   return bar;
+}
+
+// triggerControl arms from the call in front of you rather than from a form.
+//
+// The question people arrive with is "this just broke — tell me when it happens
+// again", and every field a form would ask for is already on screen. The
+// condition is the service and a failure, deliberately not the path: this exact
+// path carries this exact order id and would never come round again.
+//
+// The call is named subject here because `call` is already the function that
+// talks to the API, and shadowing it inside a handler that has to POST is how
+// a control ends up unable to do the one thing it exists for.
+function triggerControl(subject, bar) {
+  const armed = state.trigger && (state.trigger.armed || state.trigger.fired);
+
+  if (armed) {
+    const disarm = el("button", "switch__key switch__key--lone", "DISARM TRIGGER");
+    disarm.type = "button";
+    disarm.addEventListener("click", async () => {
+      try {
+        state.trigger = await call("POST", "api/trigger", { clear: true });
+        renderTriggerLamp();
+        switchNote(bar, "trigger disarmed");
+      } catch (err) {
+        switchNote(bar, err.message, true);
+      }
+    });
+    return disarm;
+  }
+
+  const arm = el("button", "switch__key switch__key--lone", "TRIGGER ON THIS");
+  arm.type = "button";
+  arm.title = "Arm on failures from " + subject.target + ", and hold the field when the next one crosses.";
+  arm.addEventListener("click", async () => {
+    try {
+      state.trigger = await call("POST", "api/trigger", { service: subject.target, failed: true });
+      renderTriggerLamp();
+      switchNote(bar, "armed on failures from " + subject.target + " — fires once and holds the field");
+    } catch (err) {
+      switchNote(bar, err.message, true);
+    }
+  });
+  return arm;
+}
+
+// switchNote replaces the last line this bar wrote, so a run of clicks does not
+// stack up a paragraph of stale answers. Named apart from the admin's note(),
+// which writes to a different place entirely.
+function switchNote(bar, text, failed) {
+  for (const stale of bar.querySelectorAll(".actions__note--switch")) stale.remove();
+  const line = el("span", "actions__note actions__note--switch" + (failed ? " actions__note--fault" : ""), text);
+  bar.appendChild(line);
 }
 
 // flowControl holds one run and then compares the next one against it. Two

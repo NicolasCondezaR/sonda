@@ -109,6 +109,27 @@ body {
 .acquisition[data-state="lost"] .acquisition__lamp { background: var(--fault); }
 .acquisition[data-state="lost"] .acquisition__text { color: var(--fault); }
 
+/* An armed trigger is the lamp's fourth state, and it belongs there rather than
+   in a badge of its own: the lamp is already the one place that says what the
+   instrument is doing, and a switch that is armed somewhere else is a switch
+   left on unnoticed. Triggered pulses once so it is caught out of the corner of
+   an eye, then holds. */
+.acquisition[data-state="armed"] .acquisition__lamp {
+  background: var(--armed);
+  animation: trigger-wait 2s ease-in-out infinite;
+}
+.acquisition[data-state="triggered"] .acquisition__lamp { background: var(--fault); }
+.acquisition[data-state="triggered"] .acquisition__text { color: var(--fault); }
+
+@keyframes trigger-wait {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acquisition[data-state="armed"] .acquisition__lamp { animation: none; }
+}
+
 .bar__controls {
   display: flex;
   align-items: center;

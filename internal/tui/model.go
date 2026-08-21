@@ -57,6 +57,10 @@ type Model struct {
 	// agent while this window sits open.
 	broken map[string]string
 
+	// armed is the trigger somebody left waiting, read on every refresh like
+	// the broken rules and for the same reason.
+	armed *TriggerState
+
 	detail *CallDetail
 	diff   *Diff
 	trace  *Trace
@@ -131,6 +135,8 @@ func (m Model) divisions() int        { return windows[m.windowIdx].Divisions }
 type tickMsg time.Time
 type reloadMsg time.Time
 type loadedMsg struct {
+	armed *TriggerState
+
 	calls  []Call
 	stats  Stats
 	broken map[string]string
@@ -219,7 +225,13 @@ func (m Model) load() tea.Cmd {
 			return loadedMsg{err: err}
 		}
 		broken, err := m.client.Faults(m.ctx)
-		return loadedMsg{calls: calls, stats: stats, broken: broken, err: err}
+		if err != nil {
+			return loadedMsg{calls: calls, stats: stats, err: err}
+		}
+		// A Sonda too old to know about triggers answers 404, and that is not
+		// worth failing a refresh over: nil simply draws nothing.
+		armed, _ := m.client.Trigger(m.ctx)
+		return loadedMsg{calls: calls, stats: stats, broken: broken, armed: armed}
 	}
 }
 
@@ -323,7 +335,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Oldest first, so appending a streamed call keeps the order.
 		sort.Slice(msg.calls, func(i, j int) bool { return msg.calls[i].ID < msg.calls[j].ID })
 		m.calls, m.stats, m.err, m.live = msg.calls, msg.stats, nil, true
-		m.broken = msg.broken
+		m.broken, m.armed = msg.broken, msg.armed
 		if m.stats.Calls > 0 {
 			// Traffic is arriving; the question the diagnosis answers is no
 			// longer being asked, and a stale one on screen would be worse than

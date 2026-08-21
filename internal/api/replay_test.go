@@ -67,13 +67,24 @@ func newStack(t *testing.T, terminateTLS bool) *liveStack {
 		client:   http.DefaultClient,
 	}
 
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Bound through freePort, not through httptest's own allocator: this package
+	// hands ports to real listeners too, and a port httptest took behind
+	// freePort's back is one freePort can hand out again. See the note on the
+	// helper in internal/runtime, where CI hit exactly that.
+	ln, err := net.Listen("tcp", freePort(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		stack.received <- r.Clone(context.Background())
 		stack.bodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok":true,"echo":` + strconv.Quote(string(body)) + `}`))
 	}))
+	upstream.Listener.Close()
+	upstream.Listener = ln
+	upstream.Start()
 	t.Cleanup(upstream.Close)
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "replay.db"))
