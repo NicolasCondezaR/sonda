@@ -42,6 +42,7 @@ that is already running, so it is still the same data:
 | `search_calls` | By service, method, path, status, or text in the bodies. `failed` takes three states: true for the failures, false for what worked, absent for both |
 | `get_call` | One call in full, decoded |
 | `diff_calls` | "This one worked and this one did not — what changed?" |
+| `diff_flows` | "This worked yesterday and today it does not" — two whole runs aligned, and the first call where they parted ways |
 | `trace_call` | Every call that was part of the same request, as a tree |
 | `list_services` | What is being observed, on which ports, whether it is listening — and what is stubbed or being broken right now |
 | `schema_status` | Where each gRPC service's field names came from: reflection, the descriptor set, or nothing. When a service resolved nothing it also names the services affected and the command that compiles a descriptor set for them |

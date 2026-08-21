@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -23,24 +24,18 @@ const window = 60 * time.Second
 // A debugging window holds hundreds; a busy hour holds enough to matter.
 const maxWindowCalls = 2000
 
-// traceForCall answers the question a flat list cannot: this call was part of
-// something larger — what else did that touch, and where did it break.
-func (s *Server) traceForCall(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.URL.Query().Get("call"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "call must be a call id")
-		return
-	}
+// errNoTree means the call exists but did not land in any tree, which can only
+// happen if the window logic changed underneath us: a call is always in some
+// tree, on its own if nothing else relates to it.
+var errNoTree = errors.New("the call did not land in any tree")
 
-	target, err := s.store.Get(r.Context(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "no call with that id")
-		return
-	}
+// treeForCall groups a call with everything that happened around it. Both the
+// trace endpoint and the flow comparison need exactly this, and two copies of a
+// window this fiddly would drift apart within a release.
+func (s *Server) treeForCall(ctx context.Context, id int64) (trace.Tree, int, error) {
+	target, err := s.store.Get(ctx, id)
 	if err != nil {
-		slog.Error("trace: read call", "id", id, "error", err)
-		writeError(w, http.StatusInternalServerError, "could not read the call")
-		return
+		return trace.Tree{}, 0, err
 	}
 
 	filter := store.Filter{
@@ -49,11 +44,9 @@ func (s *Server) traceForCall(w http.ResponseWriter, r *http.Request) {
 		Since:   target.StartedAt.Add(-window),
 		Until:   target.StartedAt.Add(window),
 	}
-	calls, err := s.store.List(r.Context(), filter)
+	calls, err := s.store.List(ctx, filter)
 	if err != nil {
-		slog.Error("trace: list window", "error", err)
-		writeError(w, http.StatusInternalServerError, "could not read the surrounding calls")
-		return
+		return trace.Tree{}, 0, err
 	}
 
 	// A trace id narrows the candidates to certainty. Without one, everything
@@ -68,23 +61,47 @@ func (s *Server) traceForCall(w http.ResponseWriter, r *http.Request) {
 
 	for _, tree := range trace.Build(subject) {
 		if containsCall(tree.Root, id) {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"trace":     tree,
-				"rendered":  trace.Render(tree),
-				"of_window": len(calls),
-			})
-			return
+			return tree, len(calls), nil
 		}
 	}
+	return trace.Tree{}, len(calls), errNoTree
+}
 
-	// The call is always in some tree — on its own if nothing else relates to
-	// it — so reaching here means the window logic changed underneath us.
-	writeError(w, http.StatusInternalServerError, "the call did not land in any tree")
+// traceForCall answers the question a flat list cannot: this call was part of
+// something larger — what else did that touch, and where did it break.
+func (s *Server) traceForCall(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("call"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "call must be a call id")
+		return
+	}
+
+	tree, ofWindow, err := s.treeForCall(r.Context(), id)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		writeError(w, http.StatusNotFound, "no call with that id")
+		return
+	case errors.Is(err, errNoTree):
+		slog.Error("trace: call landed in no tree", "id", id)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	case err != nil:
+		slog.Error("trace: build tree", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "could not read the surrounding calls")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"trace":     tree,
+		"rendered":  trace.Render(tree),
+		"of_window": ofWindow,
+	})
 }
 
 func toTraceCall(c store.Summary) trace.Call {
 	out := trace.Call{
-		ID: c.ID, Target: c.Target, Method: c.Method, Path: c.Path,
+		ID: c.ID, Target: c.Target, Protocol: c.Protocol,
+		Method: c.Method, Path: c.Path, Op: c.GraphQLOp,
 		Status: c.Status, Started: c.StartedAt, Duration: c.Duration,
 		TraceID: c.TraceID,
 		Failed:  summaryFailed(c),

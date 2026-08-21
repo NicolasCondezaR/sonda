@@ -61,6 +61,13 @@ type Model struct {
 	diff   *Diff
 	trace  *Trace
 	drift  *Drift
+	flow   *FlowDiff
+
+	// flowPin is the run held for comparison, remembered across selections.
+	// Comparing two flows needs two of them, and the second one is usually
+	// found minutes after the first: a pin outlives that search, a modal picker
+	// would not.
+	flowPin *int64
 
 	// diag is held only while nothing has been captured, which is the only time
 	// it is on screen. probes keeps the last upstream dial separately, with the
@@ -151,6 +158,11 @@ type diffMsg struct {
 	diff *Diff
 	err  error
 }
+
+type flowMsg struct {
+	flow *FlowDiff
+	err  error
+}
 type replayMsg struct {
 	result *ReplayResult
 	err    error
@@ -236,6 +248,13 @@ func (m Model) loadDiff(a, b int64) tea.Cmd {
 	return func() tea.Msg {
 		diff, err := m.client.Diff(m.ctx, a, b)
 		return diffMsg{diff: diff, err: err}
+	}
+}
+
+func (m Model) loadFlowDiff(a, b int64) tea.Cmd {
+	return func() tea.Msg {
+		flow, err := m.client.FlowDiff(m.ctx, a, b)
+		return flowMsg{flow: flow, err: err}
 	}
 }
 
@@ -366,6 +385,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.withError(msg.err), nil
 		}
 		m.diff = msg.diff
+		return m, nil
+
+	case flowMsg:
+		if msg.err != nil {
+			return m.withError(msg.err), nil
+		}
+		m.flow, m.trace, m.diff, m.drift, m.status = msg.flow, nil, nil, nil, ""
 		return m, nil
 
 	case replayMsg:

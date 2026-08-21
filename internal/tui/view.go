@@ -256,6 +256,9 @@ func (m Model) renderInspector() string {
 	if m.drift != nil {
 		return m.renderDrift()
 	}
+	if m.flow != nil {
+		return m.renderFlowDiff()
+	}
 	if m.trace != nil {
 		return m.renderTrace()
 	}
@@ -873,6 +876,35 @@ func (m Model) renderTrace() string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+// renderFlowDiff shows where two runs of the same flow parted ways. Like the
+// tree, the drawing arrives already made from the API.
+func (m Model) renderFlowDiff() string {
+	f := m.flow
+	head := fmt.Sprintf(" FLOW DIFF   %d matched", f.Matched)
+	if f.Unmatched > 0 {
+		head += fmt.Sprintf(" · %d unpaired", f.Unmatched)
+	}
+
+	lines := []string{styleInk.Render(head)}
+	for _, line := range strings.Split(strings.TrimRight(f.Rendered, "\n"), "\n") {
+		style := styleDim
+		switch {
+		// A call that stopped happening, or one whose outcome moved, is why
+		// the comparison was opened.
+		case strings.Contains(line, "only in a"), strings.Contains(line, "only in b"),
+			strings.Contains(line, "changed"):
+			style = styleFault
+		case strings.HasPrefix(line, "first divergence:"):
+			style = styleInk
+		case strings.HasPrefix(line, "("):
+			style = styleFaint
+		}
+		lines = append(lines, style.Render(" "+truncate(line, m.width-2)))
+	}
+	lines = append(lines, "", styleFaint.Render(" esc to go back"))
+	return strings.Join(lines, "\n") + "\n"
+}
+
 func (m Model) renderDiff() string {
 	lines := []string{styleLabel.Render(" DIFF") + styleFaint.Render("   a is red, b is green")}
 
@@ -958,7 +990,7 @@ func (m Model) renderFooter() string {
 	// lane, and only the tree and the contract views say how to close themselves.
 	keys := []string{
 		"↑↓ chan", "←→ call", "g/G ends", "⏎ read", "a/b cursors", "esc close",
-		"t tree", "c contract", "r replay", "d diff", "f faults", "w window",
+		"t tree", "c contract", "r replay", "d diff", "x flows", "f faults", "w window",
 		"h hold", "/ find",
 	}
 	prefix := " "

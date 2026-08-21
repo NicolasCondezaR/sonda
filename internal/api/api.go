@@ -87,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/calls/{id}/replay", s.replayCall)
 	mux.HandleFunc("GET /api/diff", s.diffCalls)
 	mux.HandleFunc("GET /api/trace", s.traceForCall)
+	mux.HandleFunc("GET /api/flowdiff", s.flowDiffCalls)
 	mux.HandleFunc("GET /api/stub", s.stubState)
 	mux.HandleFunc("POST /api/stub", s.setStub)
 	mux.HandleFunc("GET /api/faults", s.faultState)

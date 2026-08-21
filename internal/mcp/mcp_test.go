@@ -210,7 +210,7 @@ func TestEveryToolIsListedWithASchema(t *testing.T) {
 	// renamed out from under every client that was calling it.
 	want := map[string]bool{
 		"recent_failures": true, "search_calls": true, "get_call": true,
-		"diff_calls": true, "trace_call": true, "contract_drift": true, "list_services": true, "wait_for_call": true,
+		"diff_calls": true, "diff_flows": true, "trace_call": true, "contract_drift": true, "list_services": true, "wait_for_call": true,
 		"trust_certificate": true, "diagnose_silence": true, "schema_status": true,
 		"replay_call": true, "connect_project": true, "configure_service": true,
 		"remove_service": true, "upload_schemas": true,

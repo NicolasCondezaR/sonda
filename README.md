@@ -119,6 +119,7 @@ crossed the wire instead of asking you to paste logs:
 ```
 recent_failures      what just broke
 diff_calls           this one worked and this one did not — what changed
+diff_flows           two whole runs aligned, and where they parted ways
 wait_for_call        trigger something, then verify what went over the wire
 trace_call           the tree of calls one request caused
 ```
@@ -134,6 +135,9 @@ Capture is the floor. On top of the recorded bytes:
 
 - **[Replay and diff](docs/replay.md)** — send a stored call again, or compare
   two structurally to see what actually differs.
+- **[Compare two runs](docs/replay.md#comparing-two-runs)** — align a flow that
+  worked with one that did not, and name the first call where they parted ways.
+  Ids in the paths do not stop two runs matching.
 - **[Stub mode](docs/experiments.md#stub-mode)** — answer for a service from its
   own recordings instead of calling it.
 - **[Breaking things on purpose](docs/experiments.md#breaking-things-on-purpose)**

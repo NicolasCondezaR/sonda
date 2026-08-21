@@ -53,3 +53,79 @@ instead of a wall of red and green:
 - When a side is not JSON, or has no schema, the diff says so and reports
   whether the bytes match rather than inventing a structural comparison.
 
+
+## Comparing two runs
+
+Comparing two calls answers "why did this request fail and that one work". It
+does not answer the question people actually arrive with, which is **"this
+worked yesterday and today it does not"** — because a flow is a tree of calls,
+and the thing that changed is usually several hops down it, or is a call that
+stopped happening at all.
+
+Give it one call from each run and it finds the rest of both trees:
+
+```
+GET /api/flowdiff?a=1204&b=1731
+```
+
+In the interface, open a call from the run that worked, press **HOLD RUN**, then
+open a call from the run that failed and press **DIFF FLOW**. In the terminal
+client the same two steps are `x` and `x`. An agent calls `diff_flows`.
+
+```
+4 matched, 1 only in a, 0 only in b
+first divergence: gateway http POST /orders/{} → ms-rates http GET /rates/{}
+
+gateway http POST /orders/{}                                   same
+├─ ms-rates http GET /rates/{}                                 changed
+│      status: 200 → 500
+│  └─ ms-schedules http GET /schedules/{}                      same
+└─ ms-billing http POST /invoices                              only in a — this call is no longer made
+```
+
+### How two runs are aligned
+
+Not by id and not by trace id: those are exactly what differs between runs. Two
+calls are the same call when they agree on **service, protocol, method and the
+shape of the path**, and then by their position among the siblings that share
+that signature.
+
+- **The shape of the path** means `/orders/ORD-1` and `/orders/ORD-2` are one
+  call. A segment becomes a wildcard when it is all digits, a UUID, a long hex
+  string, or an identifier with a separator in it. `normalize=loose` also
+  wildcards any segment containing a digit, which will flatten `/v2/` and `/v3/`
+  into the same route; `normalize=off` compares paths literally.
+- **gRPC needs none of that.** Its path is `/package.Service/Method` and carries
+  no values, so the signature is exact.
+- **GraphQL is aligned by operation**, because every GraphQL request in a
+  codebase is a POST to the same endpoint and matching by path would pair a
+  mutation with a query.
+
+### Read `unmatched` before you believe the rest
+
+A comparison where most calls found no partner did not find real differences: it
+found a path shape that is not being recognised. That is the knob, not a
+finding, and the answer says so rather than presenting a wall of missing calls
+as though the system had changed.
+
+Two more honesty flags travel with every answer. `same_entry` is false when the
+two seeds were not even the same call, which makes everything below meaningless.
+`certain` is false when either run was grouped by timing instead of a real trace
+id — a difference between two guesses is not the same claim as a difference
+between two facts.
+
+### What is compared, and what is not
+
+Per aligned pair: status, whether it failed, the failure detail, and whether one
+side was answered from a recording. Duration is deliberately left out, for the
+same reason it is left out of a call diff — it changes on every run and would
+flag every node.
+
+Payloads are compared only for the divergence and its direct children by
+default, using the same structural diff as above. `bodies=all` compares every
+aligned pair, which on a wide flow means dozens of payload reads and a wall of
+JSON; `bodies=none` skips them.
+
+One limitation worth knowing: siblings that share a signature are paired by
+position. Two runs that made the same three calls in a different order will pair
+them up wrongly.
