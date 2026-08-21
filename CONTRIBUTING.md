@@ -20,6 +20,8 @@ It is not a formality. The proxy reads a request body on the transport's
 goroutine while the handler reads the capture, and the fault and stub registries
 are written from an HTTP handler while the proxy reads them on every call.
 
+`go run ./cmd/sonda -version` prints the commit a binary came from.
+
 ## Benchmarks
 
 ```bash
@@ -91,7 +93,9 @@ trace id, a stubbed answer. Confident nonsense is worse than an honest gap.
 
 `PRODUCT.md` holds the product record and `DESIGN.md` the visual system. A
 change to the interface is expected to hold to `DESIGN.md`, or to argue with it
-on purpose.
+on purpose. The interface itself is plain HTML, CSS and JavaScript under
+`internal/web/static`, served through `go:embed`: editing it needs no toolchain,
+only a rebuild.
 
 ## Protos
 
@@ -100,6 +104,11 @@ it carries its own descriptor embedded as raw bytes, and changing text in it
 corrupts the length prefixes so the package panics in `init()`. Regenerate:
 
 ```bash
+go install github.com/bufbuild/buf/cmd/buf@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+buf lint
 buf generate
 buf build -o examples/grpcdemo/descriptors.binpb
 ```
