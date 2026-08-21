@@ -343,3 +343,74 @@ func TestSlowRecorderDoesNotBlockTheResponse(t *testing.T) {
 		t.Error("expected drops to be counted once the buffer filled up")
 	}
 }
+
+// A request with no trace id of its own leaves every call it causes ungroupable
+// except by guessing from timing. Sonda writes one before forwarding, so what
+// is captured and what the upstream actually received have to be the same
+// value — anything else would mean the capture lied about what crossed.
+func TestARequestWithNoTraceIDGetsOneBeforeForwarding(t *testing.T) {
+	var receivedHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Request-Id")
+	}))
+	t.Cleanup(upstream.Close)
+
+	rec := &collector{}
+	front := newProxy(t, upstream, 1<<20, rec)
+
+	req, err := http.NewRequest(http.MethodGet, front.URL+"/orders", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	}
+
+	call := rec.only(t)
+	if call.TraceID == "" {
+		t.Fatal("the captured call still has no trace id")
+	}
+	if !call.TraceIDInjected {
+		t.Error("a trace id Sonda wrote was not marked as injected")
+	}
+	if !strings.HasPrefix(call.TraceID, "sonda-") {
+		t.Errorf("trace id %q does not carry the prefix that marks it as synthetic", call.TraceID)
+	}
+	if receivedHeader != call.TraceID {
+		t.Errorf("upstream received X-Request-Id=%q, capture recorded %q — forwarding and capture disagree", receivedHeader, call.TraceID)
+	}
+}
+
+// A client's own trace id, however it arrived, must never be overwritten or
+// reported as Sonda's own — that would be inventing evidence about the client's
+// instrumentation.
+func TestAClientsOwnTraceIDIsNeverTouched(t *testing.T) {
+	var receivedHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get("X-Correlation-Id")
+	}))
+	t.Cleanup(upstream.Close)
+
+	rec := &collector{}
+	front := newProxy(t, upstream, 1<<20, rec)
+
+	req, err := http.NewRequest(http.MethodGet, front.URL+"/orders", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Correlation-Id", "already-tracked")
+	if _, err := http.DefaultClient.Do(req); err != nil {
+		t.Fatal(err)
+	}
+
+	call := rec.only(t)
+	if call.TraceID != "already-tracked" {
+		t.Errorf("trace id = %q, want the client's own id untouched", call.TraceID)
+	}
+	if call.TraceIDInjected {
+		t.Error("a trace id the client sent was reported as injected")
+	}
+	if receivedHeader != "already-tracked" {
+		t.Errorf("upstream received X-Correlation-Id=%q, want the client's original value unchanged", receivedHeader)
+	}
+}

@@ -37,12 +37,15 @@ client ──▶ sonda :9101 ──▶ your service :3000
 ```
 
 Two properties drive the design. **Forwarding is byte exact** — a debugger that
-alters the traffic invalidates every conclusion drawn from it. And **the stored
-bytes are the record**: bodies are saved exactly as they crossed the wire and
-decoded only when displayed, so replay stays meaningful and an old capture
-becomes readable once its schema shows up. The two deliberate exceptions,
-PostgreSQL passwords and AMQP SASL exchanges, are blanked before anything is
-written. See [Storage, behaviour and cost](docs/storage.md).
+alters the traffic invalidates every conclusion drawn from it, with [one named
+exception](docs/replay.md#where-a-trace-id-comes-from): a request with no trace
+id of its own gets one written before it is forwarded, so what it causes can
+still be grouped. And **the stored bytes are the record**: bodies are saved
+exactly as they crossed the wire and decoded only when displayed, so replay
+stays meaningful and an old capture becomes readable once its schema shows up.
+The two storage exceptions, PostgreSQL passwords and AMQP SASL exchanges, are
+blanked before anything is written. See
+[Storage, behaviour and cost](docs/storage.md).
 
 ## What it captures
 

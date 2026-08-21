@@ -24,6 +24,7 @@
 | 18 | TLS: terminado para el cliente desde una autoridad local que Sonda nunca instala, hablado hacia el upstream, y registrado en cada captura como verificado o no | listo |
 | 19 | AMQP 0-9-1 y AMQPS: reenvío byte a byte, unidades de captura útiles, sanitización SASL, búsqueda y vistas decodificadas en API/MCP/web/TUI | listo |
 | 20 | Diff de flujos y el trigger: dos corridas alineadas hasta la llamada donde se separaron, y una condición armada para atrapar lo que pasa mientras nadie mira | listo |
+| 21 | Un id de traza propio de Sonda, escrito sobre una petición que llegó sin ninguno, para que lo que causó se agrupe con exactitud en vez de adivinarse — marcado en cada captura que lo lleva, para que nunca se confunda con la instrumentación del cliente | listo |
 
 Kafka falta de esa tabla a propósito. Por qué, va abajo.
 
@@ -103,7 +104,4 @@ protocolo.
   dirección y retomar el enmarcado en el segundo mensaje de arranque. Por eso
   `tls: true` se rechaza en un target postgres en vez de aceptarse e
   ignorarse.
-- No se inyecta un id de traza propio. Las peticiones que traen uno se agrupan
-  con exactitud; el resto se agrupa por anidamiento y el árbol avisa de que lo
-  infirió.
 

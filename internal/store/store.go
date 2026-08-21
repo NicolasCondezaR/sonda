@@ -66,9 +66,18 @@ type Call struct {
 	Project string
 
 	// TraceID is whatever the request carried to identify the wider operation
-	// it belongs to. Read, never invented: an id Sonda made up would group
-	// calls by nothing and look exactly as authoritative as a real one.
+	// it belongs to — or, when nothing did, an id Sonda wrote onto the
+	// forwarded request itself so the calls it caused still have something to
+	// be grouped by. TraceIDInjected is what tells the two apart.
 	TraceID string
+
+	// TraceIDInjected says TraceID is Sonda's own, written onto the request
+	// because it arrived with none. The grouping it produces is exactly as
+	// real either way — nothing downstream can tell the difference between a
+	// header a client sent and one Sonda wrote — but a reader deciding how
+	// much to trust a client's own instrumentation needs to know which one
+	// this is.
+	TraceIDInjected bool
 
 	// StubOf points at the capture this answer was replayed from, when the
 	// service was not called at all. It is the difference between a recording
@@ -123,24 +132,25 @@ type Call struct {
 // Summary is the list view. It deliberately carries no bodies: a listing of a
 // few hundred calls with payloads attached is unusable and slow.
 type Summary struct {
-	ID           int64
-	Target       string
-	Protocol     string
-	Method       string
-	Path         string
-	Status       int
-	StartedAt    time.Time
-	Duration     time.Duration
-	Error        string
-	RequestSize  int64
-	ResponseSize int64
-	GRPCStatus   *int32
-	GRPCMessage  string
-	ReplayOf     *int64
-	Project      string
-	TraceID      string
-	StubOf       *int64
-	Injected     bool
+	ID              int64
+	Target          string
+	Protocol        string
+	Method          string
+	Path            string
+	Status          int
+	StartedAt       time.Time
+	Duration        time.Duration
+	Error           string
+	RequestSize     int64
+	ResponseSize    int64
+	GRPCStatus      *int32
+	GRPCMessage     string
+	ReplayOf        *int64
+	Project         string
+	TraceID         string
+	TraceIDInjected bool
+	StubOf          *int64
+	Injected        bool
 
 	GraphQLOp     string
 	GraphQLErrors int
@@ -214,6 +224,7 @@ CREATE TABLE IF NOT EXISTS calls (
 	grpc_message   TEXT    NOT NULL DEFAULT '',
 	replay_of      INTEGER,
 	project        TEXT    NOT NULL DEFAULT '',
+	trace_id_injected INTEGER NOT NULL DEFAULT 0,
 	graphql_op     TEXT    NOT NULL DEFAULT '',
 	graphql_errors INTEGER NOT NULL DEFAULT 0,
 	pg_summary     TEXT    NOT NULL DEFAULT '',
@@ -237,8 +248,13 @@ var addedColumns = map[string]string{
 	"replay_of":     `ALTER TABLE calls ADD COLUMN replay_of INTEGER`,
 	"project":       `ALTER TABLE calls ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
 	"trace_id":      `ALTER TABLE calls ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`,
-	"stub_of":       `ALTER TABLE calls ADD COLUMN stub_of INTEGER`,
-	"injected":      `ALTER TABLE calls ADD COLUMN injected INTEGER NOT NULL DEFAULT 0`,
+	// A capture taken before this column existed has no way to say whether its
+	// trace_id came from the client or from Sonda. false is the honest default:
+	// the id was read from a real request for every version before injection
+	// existed at all.
+	"trace_id_injected": `ALTER TABLE calls ADD COLUMN trace_id_injected INTEGER NOT NULL DEFAULT 0`,
+	"stub_of":           `ALTER TABLE calls ADD COLUMN stub_of INTEGER`,
+	"injected":          `ALTER TABLE calls ADD COLUMN injected INTEGER NOT NULL DEFAULT 0`,
 	// Calls captured before this column existed report no operation and no
 	// errors. Backfilling would mean re-reading every stored body to write a
 	// value nobody measured at the time, and an old capture that quietly
@@ -360,15 +376,15 @@ func (s *Store) Insert(ctx context.Context, c *Call) (int64, error) {
 			duration_us, error, req_headers, req_body, req_size, req_truncated,
 			resp_headers, resp_body, resp_size, resp_truncated,
 			resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-			stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors,
+			trace_id_injected, stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors,
 			tls, upstream_tls, upstream_insecure
-		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		c.Target, c.Protocol, c.Method, c.Path, c.Status, c.ClientAddr,
 		c.StartedAt.UnixMicro(), c.Duration.Microseconds(), c.Error,
 		reqHeaders, c.Request.Body, c.Request.Size, boolToInt(c.Request.Truncated),
 		respHeaders, c.Response.Body, c.Response.Size, boolToInt(c.Response.Truncated),
 		respTrailers, nullableInt32(c.GRPCStatus), c.GRPCMessage, nullableInt64(c.ReplayOf),
-		c.Project, c.TraceID, nullableInt64(c.StubOf), boolToInt(c.Injected),
+		c.Project, c.TraceID, boolToInt(c.TraceIDInjected), nullableInt64(c.StubOf), boolToInt(c.Injected),
 		c.GraphQLOp, c.GraphQLErrors, c.PostgresSummary, c.PostgresErrors,
 		boolToInt(c.TLS), boolToInt(c.UpstreamTLS), boolToInt(c.UpstreamInsecure),
 	)
@@ -457,7 +473,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	query := `
 		SELECT id, target, protocol, method, path, status, started_at,
 		       duration_us, error, req_size, resp_size, grpc_status, grpc_message,
-		       replay_of, project, trace_id, stub_of, injected, graphql_op, graphql_errors,
+		       replay_of, project, trace_id, trace_id_injected, stub_of, injected, graphql_op, graphql_errors,
 		       pg_summary, pg_errors, tls, upstream_tls, upstream_insecure
 		FROM calls`
 	if len(where) > 0 {
@@ -475,20 +491,21 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 	var out []Summary
 	for rows.Next() {
 		var (
-			s          Summary
-			startedAt  int64
-			durationUS int64
-			grpcStatus sql.NullInt64
-			replayOf   sql.NullInt64
-			stubOf     sql.NullInt64
-			injected   int
+			s               Summary
+			startedAt       int64
+			durationUS      int64
+			grpcStatus      sql.NullInt64
+			replayOf        sql.NullInt64
+			stubOf          sql.NullInt64
+			injected        int
+			traceIDInjected int
 
 			terminated, upstreamTLS, insecure int
 		)
 		if err := rows.Scan(&s.ID, &s.Target, &s.Protocol, &s.Method, &s.Path,
 			&s.Status, &startedAt, &durationUS, &s.Error,
 			&s.RequestSize, &s.ResponseSize, &grpcStatus, &s.GRPCMessage,
-			&replayOf, &s.Project, &s.TraceID, &stubOf, &injected,
+			&replayOf, &s.Project, &s.TraceID, &traceIDInjected, &stubOf, &injected,
 			&s.GraphQLOp, &s.GraphQLErrors, &s.PostgresSummary, &s.PostgresErrors,
 			&terminated, &upstreamTLS, &insecure); err != nil {
 			return nil, err
@@ -499,6 +516,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Summary, error) {
 		s.ReplayOf = int64OrNil(replayOf)
 		s.StubOf = int64OrNil(stubOf)
 		s.Injected = injected != 0
+		s.TraceIDInjected = traceIDInjected != 0
 		s.TLS = terminated != 0
 		s.UpstreamTLS = upstreamTLS != 0
 		s.UpstreamInsecure = insecure != 0
@@ -515,6 +533,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		reqTrunc, respTrunc                 int
 		grpcStatus, replayOf, stubOf        sql.NullInt64
 		injectedFlag                        int
+		traceIDInjectedFlag                 int
 
 		terminated, upstreamTLS, insecure int
 	)
@@ -523,14 +542,14 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 		       duration_us, error, req_headers, req_body, req_size, req_truncated,
 		       resp_headers, resp_body, resp_size, resp_truncated,
 		       resp_trailers, grpc_status, grpc_message, replay_of, project, trace_id,
-		       stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors,
+		       trace_id_injected, stub_of, injected, graphql_op, graphql_errors, pg_summary, pg_errors,
 		       tls, upstream_tls, upstream_insecure
 		FROM calls WHERE id = ?`, id,
 	).Scan(&c.ID, &c.Target, &c.Protocol, &c.Method, &c.Path, &c.Status,
 		&c.ClientAddr, &startedAt, &durationUS, &c.Error,
 		&reqHeaders, &c.Request.Body, &c.Request.Size, &reqTrunc,
 		&respHeader, &c.Response.Body, &c.Response.Size, &respTrunc,
-		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &stubOf, &injectedFlag,
+		&respTrailer, &grpcStatus, &c.GRPCMessage, &replayOf, &c.Project, &c.TraceID, &traceIDInjectedFlag, &stubOf, &injectedFlag,
 		&c.GraphQLOp, &c.GraphQLErrors, &c.PostgresSummary, &c.PostgresErrors,
 		&terminated, &upstreamTLS, &insecure)
 	if err != nil {
@@ -545,6 +564,7 @@ func (s *Store) Get(ctx context.Context, id int64) (*Call, error) {
 	c.ReplayOf = int64OrNil(replayOf)
 	c.StubOf = int64OrNil(stubOf)
 	c.Injected = injectedFlag != 0
+	c.TraceIDInjected = traceIDInjectedFlag != 0
 	c.TLS = terminated != 0
 	c.UpstreamTLS = upstreamTLS != 0
 	c.UpstreamInsecure = insecure != 0
@@ -914,7 +934,7 @@ func (c *Call) Summary() Summary {
 		RequestSize: c.Request.Size, ResponseSize: c.Response.Size,
 		GRPCStatus: c.GRPCStatus, GRPCMessage: c.GRPCMessage,
 		ReplayOf: c.ReplayOf, Project: c.Project,
-		TraceID: c.TraceID, StubOf: c.StubOf, Injected: c.Injected,
+		TraceID: c.TraceID, TraceIDInjected: c.TraceIDInjected, StubOf: c.StubOf, Injected: c.Injected,
 		GraphQLOp: c.GraphQLOp, GraphQLErrors: c.GraphQLErrors,
 		PostgresSummary: c.PostgresSummary, PostgresErrors: c.PostgresErrors,
 		TLS: c.TLS, UpstreamTLS: c.UpstreamTLS, UpstreamInsecure: c.UpstreamInsecure,

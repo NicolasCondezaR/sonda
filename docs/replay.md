@@ -114,6 +114,29 @@ two seeds were not even the same call, which makes everything below meaningless.
 id — a difference between two guesses is not the same claim as a difference
 between two facts.
 
+### Where a trace id comes from
+
+`certain` being true does not always mean the client instrumented itself. A
+request with no trace id of its own leaves everything it causes ungroupable
+except by guessing from timing — so Sonda writes one, as `X-Request-Id`, before
+forwarding the request onward. It is the one place forwarding is not byte
+exact, and it exists for the same reason grouping by timing is a last resort:
+a flow with no way to tell one occurrence from the next is worse debugging, not
+more faithful capture.
+
+The exception is narrow on purpose. An id already present, however it is
+spelled, is never touched — a client's own correlation always outranks a guess
+that it needs one. And every call whose `trace_id` Sonda wrote carries
+`trace_id_injected: true`, in the API, in the tree (`[trace id from Sonda]`),
+and in the interface, so it is never mistaken for something the client sent.
+
+Whether it groups anything beyond the one call Sonda wrote it on depends on the
+client: an id only correlates further hops if whatever receives it echoes
+`X-Request-Id` onto its own outbound calls, the way many services already do
+for their own logs. When it does not, the single call still gets a real id
+instead of none, and the rest of the tree falls back to being grouped by timing
+as it always did.
+
 ### What is compared, and what is not
 
 Per aligned pair: status, whether it failed, the failure detail, and whether one

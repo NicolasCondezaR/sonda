@@ -295,3 +295,66 @@ func TestNothingToArrangeIsNotACrash(t *testing.T) {
 		t.Errorf("%d trees from an empty slice", len(trees))
 	}
 }
+
+func TestInjectWritesAnIDOnlyWhenNoneIsPresent(t *testing.T) {
+	h := http.Header{}
+	id, injected := Inject(h)
+	if !injected || id == "" {
+		t.Fatal("Inject did not write an id onto empty headers")
+	}
+	if got := h.Get(InjectedHeader); got != id {
+		t.Errorf("header %s = %q, want the returned id %q", InjectedHeader, got, id)
+	}
+	if !strings.HasPrefix(id, "sonda-") {
+		t.Errorf("id %q does not carry the sonda- prefix that marks it as synthetic", id)
+	}
+}
+
+// A client's own correlation always outranks a guess that it needs one from
+// Sonda — however the id is spelled, not only the headers ID already reads.
+func TestInjectNeverOverwritesAnExistingID(t *testing.T) {
+	for _, header := range []string{"X-Request-Id", "X-Correlation-Id", "Traceparent"} {
+		h := http.Header{}
+		h.Set(header, "already-here")
+		id, injected := Inject(h)
+		if injected {
+			t.Errorf("%s: Inject reported writing an id that was already present", header)
+		}
+		if id != "already-here" && header != "Traceparent" {
+			t.Errorf("%s: Inject returned %q instead of the existing id", header, id)
+		}
+	}
+}
+
+func TestInjectIsIdempotentAcrossCalls(t *testing.T) {
+	h := http.Header{}
+	first, _ := Inject(h)
+	second, injected := Inject(h)
+	if injected {
+		t.Fatal("a second Inject on the same headers reported writing a new id")
+	}
+	if first != second {
+		t.Errorf("two calls to Inject on the same headers disagreed: %q then %q", first, second)
+	}
+}
+
+func TestTwoInjectionsNeverCollide(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		id, _ := Inject(http.Header{})
+		if seen[id] {
+			t.Fatalf("Inject produced the same id twice: %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestTheTreeSaysWhenATraceIDCameFromSonda(t *testing.T) {
+	c := at(1, "gateway", 0, 100)
+	c.TraceIDInjected = true
+	tree := single(t, Build([]Call{c}))
+
+	if !strings.Contains(Render(tree), "[trace id from Sonda]") {
+		t.Errorf("a call whose trace id Sonda wrote is indistinguishable from one the client sent:\n%s", Render(tree))
+	}
+}

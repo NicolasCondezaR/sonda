@@ -38,12 +38,14 @@ cliente ──▶ sonda :9101 ──▶ tu servicio :3000
 ```
 
 Dos propiedades gobiernan el diseño. **El reenvío es exacto byte a byte**: un
-depurador que altera el tráfico invalida toda conclusión sacada de él. Y **los
-bytes guardados son el registro**: los cuerpos se guardan tal como cruzaron el
-cable y se decodifican solo al mostrarlos, así el replay sigue significando algo
-y una captura vieja se vuelve legible cuando aparece su esquema. Las dos
-excepciones deliberadas —contraseñas de PostgreSQL e intercambios SASL de AMQP—
-se blanquean antes de escribir nada. Ver
+depurador que altera el tráfico invalida toda conclusión sacada de él, con
+[una excepción nombrada](docs/es/replay.md#de-dónde-sale-un-trace-id): una
+petición sin trace id propio recibe uno antes de reenviarse, para que lo que
+causa se pueda agrupar. Y **los bytes guardados son el registro**: los cuerpos
+se guardan tal como cruzaron el cable y se decodifican solo al mostrarlos, así
+el replay sigue significando algo y una captura vieja se vuelve legible cuando
+aparece su esquema. Las dos excepciones de almacenamiento —contraseñas de
+PostgreSQL e intercambios SASL de AMQP— se blanquean antes de escribir nada. Ver
 [Almacenamiento, comportamiento y costo](docs/es/storage.md).
 
 ## Qué captura

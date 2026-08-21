@@ -87,9 +87,12 @@ func (p *Proxy) recordFault(r *http.Request, started time.Time, status int, acti
 		StartedAt:  started,
 		Duration:   time.Since(started),
 		Error:      reason,
-		TraceID:    trace.ID(r.Header),
-		Request:    store.Message{Headers: r.Header.Clone()},
-		Injected:   true,
+		// Read, never injected: a broken call never reaches an upstream for a
+		// written header to reach, so Inject here would produce an id that goes
+		// nowhere and helps nobody.
+		TraceID:  trace.ID(r.Header),
+		Request:  store.Message{Headers: r.Header.Clone()},
+		Injected: true,
 	}
 	// Not forwarded: the service was never reached, so there is no upstream
 	// connection to report as verified or otherwise.

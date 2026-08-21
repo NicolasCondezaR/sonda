@@ -175,9 +175,16 @@ type summaryJSON struct {
 	// hunting a bug that does not exist.
 	Injected bool `json:"injected,omitempty"`
 
-	// TraceID is what groups this call with the rest of its request. Present
-	// only when something upstream put it in the headers.
+	// TraceID is what groups this call with the rest of its request — read from
+	// the headers when something put one there, or written by Sonda itself
+	// when nothing did. TraceIDInjected is what tells the two apart.
 	TraceID string `json:"trace_id,omitempty"`
+
+	// TraceIDInjected says TraceID is Sonda's own rather than the client's. The
+	// grouping it produces is exactly as real either way, but a reader deciding
+	// how much to trust a client's own instrumentation needs to know which id
+	// this is.
+	TraceIDInjected bool `json:"trace_id_injected,omitempty"`
 
 	// TLS says Sonda terminated the client's encryption, UpstreamTLS that the
 	// service's half was encrypted too, and UpstreamInsecure that its
@@ -440,25 +447,26 @@ const timeLayout = time.RFC3339Nano
 
 func toSummary(c store.Summary) summaryJSON {
 	out := summaryJSON{
-		ID:            c.ID,
-		Target:        c.Target,
-		Protocol:      c.Protocol,
-		Method:        c.Method,
-		Path:          c.Path,
-		Status:        c.Status,
-		StartedAt:     c.StartedAt.Format(timeLayout),
-		DurationMS:    float64(c.Duration.Microseconds()) / 1000,
-		Error:         c.Error,
-		RequestSize:   c.RequestSize,
-		ResponseSize:  c.ResponseSize,
-		GRPCStatus:    c.GRPCStatus,
-		GRPCMessage:   c.GRPCMessage,
-		ReplayOf:      c.ReplayOf,
-		StubOf:        c.StubOf,
-		Injected:      c.Injected,
-		TraceID:       c.TraceID,
-		GraphQLOp:     c.GraphQLOp,
-		GraphQLErrors: c.GraphQLErrors,
+		ID:              c.ID,
+		Target:          c.Target,
+		Protocol:        c.Protocol,
+		Method:          c.Method,
+		Path:            c.Path,
+		Status:          c.Status,
+		StartedAt:       c.StartedAt.Format(timeLayout),
+		DurationMS:      float64(c.Duration.Microseconds()) / 1000,
+		Error:           c.Error,
+		RequestSize:     c.RequestSize,
+		ResponseSize:    c.ResponseSize,
+		GRPCStatus:      c.GRPCStatus,
+		GRPCMessage:     c.GRPCMessage,
+		ReplayOf:        c.ReplayOf,
+		StubOf:          c.StubOf,
+		Injected:        c.Injected,
+		TraceID:         c.TraceID,
+		TraceIDInjected: c.TraceIDInjected,
+		GraphQLOp:       c.GraphQLOp,
+		GraphQLErrors:   c.GraphQLErrors,
 
 		PostgresSummary: c.PostgresSummary,
 		PostgresErrors:  c.PostgresErrors,
