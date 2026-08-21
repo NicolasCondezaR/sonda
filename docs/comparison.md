@@ -15,6 +15,28 @@ answer.
 | [Wireshark + gRPC/protobuf dissectors](https://grpc.io/blog/wireshark/) | Network protocol analyser | Sees the frames, with schemas if you feed it some | It is an analyser: no replay, no stub, no fault injection, no correlation between a call and the calls it caused |
 | [Kubeshark](https://github.com/kubeshark/kubeshark) | eBPF network observability for Kubernetes | Multi-protocol — HTTP, gRPC, Kafka, Redis, AMQP, DNS — and it exposes MCP to agents too | It is Kubernetes. It wants a cluster, a DaemonSet and eBPF; it is not the thing you run against three services on a laptop |
 
+## On MCP specifically
+
+An MCP server is not a differentiator any more, and it would be dishonest to
+present it as one. By 2026 it is table stakes, in three layers that are worth
+keeping apart:
+
+| Layer | Who | What the agent gets to see |
+|---|---|---|
+| **Capturing proxy with MCP** | [HTTP Toolkit](https://conare.ai/marketplace/mcp/http-toolkit), [`network-capture-mcp`](https://github.com/sfgarza/network-capture-mcp), [Kubeshark](https://github.com/kubeshark/kubeshark), [MockServer](https://www.mock-server.com/mock_server/ai_traffic_inspection.html) | Real requests and responses — the same idea Sonda is built on |
+| **Browser** | [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) | Network requests and console output, but only the client side of them |
+| **Observability platforms** | Datadog, Grafana, Sentry, Honeycomb | Aggregated metrics, traces and errors: telemetry, not bytes |
+
+The line that matters is not who ships an MCP server. It is what the agent is
+allowed to look at. Datadog can tell it that a span failed; Sonda can tell it
+which field was wrong in the message, because what is stored is the bytes and
+not a summary of them — between backend services, with protobuf decoded even
+when nothing on the network serves a schema.
+
+Two limits stated plainly, because a tool that oversells its eyes is worse than
+one with fewer: Sonda only sees what crossed the proxy, and credentials always
+come back redacted.
+
 ## What Sonda does that none of them do together
 
 - **One capture across protocols.** HTTP, gRPC, WebSocket, server-sent events,

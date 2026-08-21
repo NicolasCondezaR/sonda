@@ -15,6 +15,28 @@ respuesta.
 | [Wireshark + dissectors gRPC/protobuf](https://grpc.io/blog/wireshark/) | Analizador de protocolos de red | Ve los frames, con esquemas si le das alguno | Es un analizador: sin replay, sin stub, sin inyección de fallos, sin correlación entre una llamada y las que provocó |
 | [Kubeshark](https://github.com/kubeshark/kubeshark) | Observabilidad de red con eBPF para Kubernetes | Multi-protocolo — HTTP, gRPC, Kafka, Redis, AMQP, DNS — y también expone MCP a agentes | Es Kubernetes. Quiere un cluster, un DaemonSet y eBPF; no es lo que corres contra tres servicios en un notebook |
 
+## Sobre el MCP en particular
+
+Un servidor MCP ya no es un diferenciador, y presentarlo como tal sería
+deshonesto. En 2026 es tabla de apuestas, en tres capas que conviene no
+mezclar:
+
+| Capa | Quién | Qué alcanza a ver el agente |
+|---|---|---|
+| **Proxy que captura, con MCP** | [HTTP Toolkit](https://conare.ai/marketplace/mcp/http-toolkit), [`network-capture-mcp`](https://github.com/sfgarza/network-capture-mcp), [Kubeshark](https://github.com/kubeshark/kubeshark), [MockServer](https://www.mock-server.com/mock_server/ai_traffic_inspection.html) | Peticiones y respuestas reales — la misma idea sobre la que está construida Sonda |
+| **Navegador** | [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp) | Peticiones de red y consola, pero solo del lado del cliente |
+| **Plataformas de observabilidad** | Datadog, Grafana, Sentry, Honeycomb | Métricas, trazas y errores agregados: telemetría, no bytes |
+
+La línea que importa no es quién publica un servidor MCP, sino qué se le
+permite mirar al agente. Datadog puede decirle que un span falló; Sonda puede
+decirle qué campo venía mal en el mensaje, porque lo que se guarda son los bytes
+y no un resumen de ellos — entre servicios de backend, con protobuf decodificado
+incluso cuando nada en la red sirve un esquema.
+
+Dos límites dichos de frente, porque una herramienta que exagera lo que ve es
+peor que una que ve menos: Sonda solo ve lo que cruzó el proxy, y las
+credenciales siempre vuelven redactadas.
+
 ## Lo que hace Sonda que ninguna hace junto
 
 - **Una sola captura entre protocolos.** HTTP, gRPC, WebSocket, server-sent
